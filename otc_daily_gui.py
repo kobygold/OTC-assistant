@@ -47,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -245,6 +245,14 @@ class NumItem(QTableWidgetItem):
         if isinstance(other, NumItem):
             return self.value < other.value
         return super().__lt__(other)
+
+
+def ticker_risk(ticker: str):
+    """(level, tooltip) if the ticker's last letter marks a riskier case, otherwise None."""
+    risk = TICKER_RISKS.get(ticker[-1]) if len(ticker) == 5 else None
+    if risk is None:
+        return None
+    return risk[2], f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>"
 
 
 def risk_icon(level: int) -> QIcon:
@@ -1147,6 +1155,11 @@ class MainWindow(QMainWindow):
         self.chart.subtitle = " · ".join(x for x in [(name or "")[:40], tier_text] if x)
         self.chart.set_data(ticker, rows, months, label,
                             message="" if rows else f"No data for {ticker} in your database.")
+        risk = ticker_risk(ticker)
+        if risk:
+            self.chart.set_risk(self.risk_icons[risk[0]], risk[1])
+        else:
+            self.chart.set_risk()
         self.chart_analysis = zones.analyze(rows)
         if channel is not None and self.chart_analysis is not None:
             # The scan's copy of a channel; find the same one in this fresh analysis
@@ -1465,11 +1478,11 @@ class MainWindow(QMainWindow):
             first = QTableWidgetItem(ticker)
             first.setData(Qt.ItemDataRole.UserRole, c)
             note = f"Possible split {a.break_date}" if a.break_date else ""
-            risk = TICKER_RISKS.get(ticker[-1]) if len(ticker) == 5 else None
-            risk_item = NumItem("", risk[2] if risk else 0)
+            risk = ticker_risk(ticker)
+            risk_item = NumItem("", risk[0] if risk else 0)
             if risk:
-                risk_item.setIcon(self.risk_icons[risk[2]])
-                risk_item.setToolTip(f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>")
+                risk_item.setIcon(self.risk_icons[risk[0]])
+                risk_item.setToolTip(risk[1])
             cells = [
                 risk_item,
                 first,

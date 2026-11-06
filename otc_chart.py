@@ -9,9 +9,9 @@ import math
 from bisect import bisect_left
 from datetime import date, timedelta
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
-from PyQt6.QtWidgets import QSizePolicy, QWidget
+from PyQt6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 BG = QColor("#000000")
 PANE_BORDER = QColor("#3a3a3a")
@@ -37,6 +37,7 @@ RIGHT_PAD_BARS = 8          # empty space after the last candle, like the screen
 MAX_RIGHT_EMPTY_BARS = 10   # the most empty space zooming or panning can leave there
 PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
+RISK_SIZE = 16
 LEFT_W, RIGHT_W = 62, 74
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
 
@@ -153,6 +154,8 @@ class CandleChart(QWidget):
         self.subtitle = ""
         self.range_label = "1Y"
         self.show_expirations = True
+        self.risk_icon = None
+        self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
         self._set_rows([])
         self.mouse = None
@@ -179,6 +182,12 @@ class CandleChart(QWidget):
         self._set_rows(rows)
         self.message = message or ("" if rows else f"No data for {ticker}.")
         self.set_range(months, label)
+
+    def set_risk(self, icon=None, tip: str = ""):
+        """The sign to show left of the ticker, and its tooltip. No icon means no sign."""
+        self.risk_icon = icon
+        self.risk_tip = tip
+        self.update()
 
     def set_zones(self, zones, channel=None):
         """zones: otc_zones.Zone objects to draw, strongest first. Their row indexes must
@@ -554,6 +563,12 @@ class CandleChart(QWidget):
         if y_text:
             items.append((f"Y: {y_text}", INFO_TEXT, False))
         self._boxes(p, LEFT_W, 3, INFO_H - 6, items)
+        if self.risk_icon is not None:
+            self.risk_icon.paint(p, self._risk_rect())
+
+    def _risk_rect(self) -> QRect:
+        """In the margin left of the ticker's box."""
+        return QRect(LEFT_W - RISK_SIZE - 4, 4, RISK_SIZE, RISK_SIZE)
 
     def _volume_header(self, p, vol, i):
         items = [
@@ -657,6 +672,15 @@ class CandleChart(QWidget):
             last_x = x
 
     # ---- interaction ----
+    def event(self, e):
+        if e.type() == QEvent.Type.ToolTip:
+            if self.risk_icon is not None and self.dates and self._risk_rect().contains(e.pos()):
+                QToolTip.showText(e.globalPos(), self.risk_tip, self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(e)
+
     def mouseMoveEvent(self, e):
         self.mouse = e.position()
         if self.drag is not None:
