@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontDatabase, QIcon
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
     QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
@@ -45,7 +45,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -58,7 +58,19 @@ PLAN_LIMIT_MIN_AGE_DAYS = 30
 PLAN_LIMIT_CONSECUTIVE = 3
 NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
+ZONE_TICKER_COL, ZONE_NAME_COL = 1, 2
 ZONE_NAME_WIDTH = 170
+# The last letter of a 5-letter ticker: (case, risks, level). Level 1 can be risky and pay high
+# commissions, level 2 is the most dangerous and usually better to avoid.
+TICKER_RISKS = {
+    "Q": ("Bankruptcy", "Shares often cancelled; holders usually wiped out", 2),
+    "E": ("Delinquent", "No current financials; may become untradeable", 2),
+    "D": ("ReverseSplit", "Often follows dilution; price tends to keep falling", 2),
+    "W": ("Warrants", "Can expire worthless; thin trading, wide spreads", 2),
+    "R": ("Rights", "Short-lived; can expire worthless; easy to confuse", 2),
+    "F": ("Foreign", "$50 Schwab fee per trade (not Canada); low volume", 1),
+}
+RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff")}     # badge, mark
 ZONE_DEFAULTS = {
     "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
@@ -231,6 +243,28 @@ class NumItem(QTableWidgetItem):
         if isinstance(other, NumItem):
             return self.value < other.value
         return super().__lt__(other)
+
+
+def risk_icon(level: int) -> QIcon:
+    """A round badge with an exclamation mark, the same in a normal and in a selected row."""
+    badge, mark = RISK_COLORS[level]
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(badge))
+    p.drawEllipse(1, 1, 30, 30)
+    font = QFont()
+    font.setPixelSize(24)
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(QColor(mark))
+    p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "!")
+    p.end()
+    icon = QIcon(pix)
+    icon.addPixmap(pix, QIcon.Mode.Selected)
+    return icon
 
 
 class PriceSpinBox(QDoubleSpinBox):
@@ -689,12 +723,15 @@ class MainWindow(QMainWindow):
         brow.addWidget(self.zone_status, 1)
         root.addLayout(brow)
 
-        self.zone_columns = ["Ticker", "Name", "Status", "Score", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
+        self.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
+        self.zone_columns = ["Risk", "Ticker", "Name", "Status", "Score", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
                              "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
         self.zone_table.setHorizontalHeaderLabels(self.zone_columns)
         header_tips = {
+            "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
+                    "Red is the most dangerous and usually better to avoid. Hover over a sign for the details.",
             "Reached Rsst": "Support touches that went on to reach the resistance, out of those plus the "
                          "times the support broke first.",
             "Reached Supp": "Resistance touches that came back down to the support, out of those plus the "
@@ -713,7 +750,7 @@ class MainWindow(QMainWindow):
         self.zone_table.setSortingEnabled(True)
         self.zone_table.sortByColumn(self.zone_columns.index("Score"), Qt.SortOrder.DescendingOrder)
         self.zone_table.verticalHeader().setVisible(False)
-        self.zone_table.horizontalHeader().resizeSection(1, ZONE_NAME_WIDTH)
+        self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
         self.auto_size_zone_columns()
         self.zone_table.cellDoubleClicked.connect(lambda r, c: self.open_chart_from_zones(r))
         root.addWidget(self.zone_table, 1)
@@ -1283,7 +1320,8 @@ class MainWindow(QMainWindow):
             w = csv.writer(f)
             w.writerow([tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())])
             for r in range(tbl.rowCount()):
-                w.writerow([tbl.item(r, c).text() if tbl.item(r, c) else ""
+                # A sign has no text, so its tooltip goes in the file
+                w.writerow([(tbl.item(r, c).text() or tbl.item(r, c).toolTip()) if tbl.item(r, c) else ""
                             for c in range(tbl.columnCount())])
         return path
 
@@ -1384,7 +1422,7 @@ class MainWindow(QMainWindow):
         """All but the Name column, which keeps a readable width the user can drag."""
         hdr = self.zone_table.horizontalHeader()
         for col in range(self.zone_table.columnCount()):
-            if col != 1:
+            if col != ZONE_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
     def apply_zone_filters(self):
@@ -1424,7 +1462,13 @@ class MainWindow(QMainWindow):
             first = QTableWidgetItem(ticker)
             first.setData(Qt.ItemDataRole.UserRole, c)
             note = f"Possible split {a.break_date}" if a.break_date else ""
+            risk = TICKER_RISKS.get(ticker[-1]) if len(ticker) == 5 else None
+            risk_item = NumItem("", risk[2] if risk else 0)
+            if risk:
+                risk_item.setIcon(self.risk_icons[risk[2]])
+                risk_item.setToolTip(f"{ticker[-1]}: {risk[0]} | {risk[1]}")
             cells = [
+                risk_item,
                 first,
                 QTableWidgetItem(name),
                 QTableWidgetItem(c.status),
@@ -1461,7 +1505,7 @@ class MainWindow(QMainWindow):
             self.log(f"Zone results exported to {path}")
 
     def open_chart_from_zones(self, row):
-        item = self.zone_table.item(row, 0)
+        item = self.zone_table.item(row, ZONE_TICKER_COL)
         if not item:
             return
         self.tabs.setCurrentIndex(1)
