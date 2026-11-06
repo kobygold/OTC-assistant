@@ -1,5 +1,5 @@
 @echo off
-rem Double-click to start the OTC Daily Downloader.
+rem Double-click to start OTC Assistant.
 rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py and otc_chart.py.
 setlocal
 cd /d "%~dp0"
@@ -49,7 +49,7 @@ rem ---- First run only: put a shortcut with the app icon on the desktop ----
 rem (Delete shortcut_created.txt to have it created again.)
 if exist "%~dp0shortcut_created.txt" goto shortcut_done
 if not exist "%~dp0app_icon.ico" goto shortcut_done
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'OTC Daily Downloader.lnk')); $s.TargetPath='%~dp0run_otc_gui.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%~dp0app_icon.ico,0'; $s.WindowStyle=7; $s.Description='OTC Daily Downloader'; $s.Save()" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'OTC Assistant.lnk')); $s.TargetPath='%~dp0run_otc_gui.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%~dp0app_icon.ico,0'; $s.WindowStyle=7; $s.Description='OTC Assistant'; $s.Save()" >nul 2>nul
 if not errorlevel 1 echo Desktop shortcut created on first run.> "%~dp0shortcut_created.txt"
 :shortcut_done
 

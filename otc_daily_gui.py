@@ -42,6 +42,9 @@ from PyQt6.QtWidgets import (
 import otc_daily as core
 from otc_chart import CandleChart, fmt_price
 
+APP_NAME = "OTC Assistant"
+APP_VERSION = "0.1.0"
+
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
 DB_PATH = APP_DIR / "otc_daily.db"
@@ -226,7 +229,7 @@ class NumItem(QTableWidgetItem):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OTC Daily Downloader")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1300, 860)
         self.settings = load_settings()
         self.download_job = None
@@ -1070,7 +1073,8 @@ def main():
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OTCScanner.DailyDownloader")
     app = QApplication(sys.argv)
-    app.setApplicationName("OTC Daily Downloader")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(QIcon(str(ICON_PATH)))
     win = MainWindow()
     win.show()
