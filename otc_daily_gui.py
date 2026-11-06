@@ -7,9 +7,10 @@ Keep these files in the SAME FOLDER:
   otc_daily_gui.py   this app
   otc_daily.py       download and database code
   otc_chart.py       the candlestick chart
+  otc_zones.py       support and resistance zones, and the channel search
   app_icon.ico       the window, taskbar and shortcut icon
 
-Install once:   pip install PyQt6
+Install once:   pip install PyQt6 numpy
                 (Windows only: also  pip install tzdata)
 Run:            python otc_daily_gui.py      (or double-click run_otc_gui.bat)
 
@@ -40,10 +41,11 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_daily as core
+import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -56,11 +58,17 @@ PLAN_LIMIT_MIN_AGE_DAYS = 30
 PLAN_LIMIT_CONSECUTIVE = 3
 NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
-RANGES = [("1M", 1), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
+ZONE_NAME_WIDTH = 170
+ZONE_DEFAULTS = {
+    "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3,
+    "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
+}
+RANGES = [("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
 TYPE_NAMES = {"CS": "Common stock", "ADRC": "ADR", "PFD": "Preferred", "WARRANT": "Warrant",
               "RIGHT": "Right", "UNIT": "Unit", "FUND": "Fund", "ETF": "ETF",
               "OS": "Ordinary shares", "SP": "Structured product", "BOND": "Bond",
               "GDR": "GDR", "OTHER": "Other"}
+MAX_ZONE_ROWS = 2000            # the Zones table shows the best rows up to this many
 
 
 # ------------------------------------------------------------- settings ---
@@ -105,6 +113,7 @@ class Stopped(Exception):
 class WorkerSignals(QObject):
     log = pyqtSignal(str)
     day_done = pyqtSignal()
+    progress = pyqtSignal(int, int)        # done, total
     plan_limit = pyqtSignal(str)           # oldest available date, YYYY-MM-DD
     finished = pyqtSignal(str, bool)       # message, success / completed
 
@@ -224,6 +233,33 @@ class NumItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class PriceSpinBox(QDoubleSpinBox):
+    """The arrows step by the price's own power of 10: 0.0001 below 0.001, then 0.001 up to
+    0.01, then 0.01 up to 0.1 and so on. A typed 0.0035 goes to 0.004 or 0.003. Any price can
+    still be typed."""
+
+    DECIMALS = 4
+
+    def __init__(self):
+        super().__init__()
+        self.setDecimals(self.DECIMALS)
+
+    def stepBy(self, steps):
+        value = self.value()
+        for _ in range(abs(steps)):
+            # The small margins keep rounding errors from landing on the value it started at
+            exact = math.log10(value) if value > 0 else -self.DECIMALS
+            if steps > 0:
+                step = 10.0 ** max(math.floor(exact + 1e-9), -self.DECIMALS)
+                value = (math.floor(value / step + 1e-9) + 1) * step
+            elif value > 0:
+                # Going down from an exact power of 10 already uses the smaller step: 0.001 -> 0.0009
+                step = 10.0 ** max(math.ceil(exact - 1e-9) - 1, -self.DECIMALS)
+                value = (math.ceil(value / step - 1e-9) - 1) * step
+            value = round(value, self.DECIMALS)
+        self.setValue(value)
+
+
 # ----------------------------------------------------------- main window ---
 
 class MainWindow(QMainWindow):
@@ -236,13 +272,17 @@ class MainWindow(QMainWindow):
         self.names_job = None
         self.reload_job = None
         self.export_job = None
+        self.zone_job = None
+        self.zone_results = []
+        self.chart_analysis = None
         self.tickers_stale = True
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         self.tabs.addTab(self._build_download_tab(), "Download")
         self.tabs.addTab(self._build_chart_tab(), "Chart")
-        self.tabs.addTab(self._build_screener_tab(), "Screener")
+        self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
+        self.tabs.addTab(self._build_zones_tab(), "Zones")
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
         self.scheduler = ApiScheduler(self.delay())
@@ -394,6 +434,33 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _, lb=label, m=months: self.on_range(lb, m))
             self.range_group.addButton(b)
             row.addWidget(b)
+        row.addSpacing(16)
+
+        self.zones_show = QCheckBox("Zones")
+        self.zones_show.setChecked(bool(self.settings.get("zones_show", True)))
+        self.zones_show.setToolTip(
+            "Support and resistance zones. Green = below the price, red = above it, yellow = the "
+            "price is in the zone. Stronger zones are more opaque, dashed zones haven't traded in "
+            "the last month, and white edges mark the best channel. Triangles mark the swings "
+            "that count as touches. Hover over a zone for its details.")
+        self.zones_show.toggled.connect(self.on_zone_option_changed)
+        row.addWidget(self.zones_show)
+        row.addWidget(QLabel("min strength"))
+        self.zones_min = QSpinBox()
+        self.zones_min.setRange(0, 100)
+        self.zones_min.setSuffix("%")
+        self.zones_min.setValue(int(self.settings.get("zones_min_strength", 40)))
+        self.zones_min.valueChanged.connect(self.on_zone_option_changed)
+        row.addWidget(self.zones_min)
+        row.addSpacing(16)
+
+        self.expirations_show = QCheckBox("Expirations")
+        self.expirations_show.setChecked(bool(self.settings.get("expirations_show", True)))
+        self.expirations_show.setToolTip(
+            "Dashed red lines at the monthly options expirations: the third Friday, or the "
+            "Thursday before it when the market is closed.")
+        self.expirations_show.toggled.connect(self.on_expirations_toggled)
+        row.addWidget(self.expirations_show)
         row.addStretch()
 
         self.reload_btn = QPushButton("Reload history from Massive")
@@ -407,7 +474,12 @@ class MainWindow(QMainWindow):
 
         self.chart_info = QLabel("Mouse wheel zooms, drag pans, double-click resets the view.")
         root.addWidget(self.chart_info)
+        self.zone_info = QLabel()
+        self.zone_info.setWordWrap(True)
+        self.zone_info.hide()
+        root.addWidget(self.zone_info)
         self.chart = CandleChart()
+        self.chart.show_expirations = self.expirations_show.isChecked()
         root.addWidget(self.chart, 1)
         return tab
 
@@ -504,6 +576,152 @@ class MainWindow(QMainWindow):
         self.scr_table.cellDoubleClicked.connect(
             lambda r, c: self.open_chart_from_screener(r))
         root.addWidget(self.scr_table, 1)
+        return tab
+
+    # ================================================== Zones tab ===
+    def _build_zones_tab(self):
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        s = {**ZONE_DEFAULTS, **self.settings.get("zone_filters", {})}
+
+        box = QGroupBox("Find stocks that bounce between a support and a resistance zone")
+        grid = QGridLayout(box)
+
+        def spin(cls, low, high, value, row, col, label, tip=""):
+            grid.addWidget(QLabel(label), row, col)
+            w = cls()
+            w.setRange(low, high)
+            w.setValue(value)
+            w.setToolTip(tip)
+            w.valueChanged.connect(self.schedule_zone_filter)
+            grid.addWidget(w, row, col + 1)
+            return w
+
+        self.zf_score = spin(QSpinBox, 0, 100, int(s["score"]), 0, 0, "Min score",
+                             "How consistently the stock has moved between the two zones. Testing on "
+                             "this database found no clear edge below about 45%.")
+        self.zf_score.setSuffix("%")
+        self.zf_legs = spin(QSpinBox, 3, 50, int(s["legs"]), 0, 2, "Min legs",
+                            "Trips between the zones, in either direction.")
+        self.zf_gain = spin(QSpinBox, 0, 1000, int(s["gain"]), 0, 4, "Min gain %",
+                            "From the top of the support to the bottom of the resistance, before "
+                            "spreads and fees, which can be large on OTC stocks.")
+        self.zf_days = spin(QSpinBox, zones.MIN_BARS, 1000, int(s["days"]), 0, 6, "Min trading days",
+                            "Days with trades in the database. More history means more reliable zones.")
+        price_tip = ("The arrows step by 0.0001 below 0.001, by 0.001 up to 0.01, by 0.01 up to 0.1 and so on, "
+                     "or you can type any price. Below about a cent, "
+                     "a single price tick is a large percentage, so these stocks can look like they "
+                     "bounce when they barely move.")
+        self.zf_pmin = spin(PriceSpinBox, 0, 100000, float(s["pmin"]), 1, 0, "Price from", price_tip)
+        self.zf_pmax = spin(PriceSpinBox, 0, 100000, float(s["pmax"]), 1, 2, "to", price_tip)
+        self.zf_pmax.setSpecialValueText("no limit")
+        self.zf_dollar = spin(QSpinBox, 0, 1_000_000_000, int(s["dollar"]), 1, 4, "Min $ volume",
+                              "Median of close x volume per day over the last 60 calendar days, about 42 trading "
+                              "days. A day with no trades counts as $0, so a stock that trades on fewer than half "
+                              "of those days has a median of $0.")
+        self.zf_dollar.setSingleStep(1000)
+        self.zf_dollar.setPrefix("$ ")
+        self.zf_dollar.setGroupSeparatorShown(True)
+        self.zf_age = spin(QSpinBox, 0, 36, int(s["age"]), 1, 6, "Last touch within",
+                           "Hide channels whose latest touch is older than this.")
+        self.zf_age.setSuffix(" months")
+        self.zf_age.setSpecialValueText("any time")
+
+        states = QHBoxLayout()
+        states.addWidget(QLabel("Status:"))
+        self.zf_status = {}
+        tips = {zones.ACTIVE: "Between the zones now, and for most of the last month.",
+                zones.RETURNED: "Between the zones now, but mostly outside them during the last month.",
+                zones.PAST_ABOVE: "Above the channel now. Set an alert for a drop to the support.",
+                zones.PAST_BELOW: "Below the channel now, so the support has been broken."}
+        chosen = set(s["status"])
+        for name in zones.STATUSES:
+            cb = QCheckBox(name)
+            cb.setChecked(name in chosen)
+            cb.setToolTip(tips[name])
+            cb.toggled.connect(self.schedule_zone_filter)
+            self.zf_status[name] = cb
+            states.addWidget(cb)
+        states.addSpacing(20)
+        self.zf_skip = QCheckBox("Skip warrants, rights and units")
+        self.zf_skip.setChecked(bool(s["skip_types"]))
+        self.zf_skip.toggled.connect(self.schedule_zone_filter)
+        states.addWidget(self.zf_skip)
+        states.addStretch()
+        grid.addLayout(states, 2, 0, 1, 8)
+
+        tiers = QHBoxLayout()
+        tiers.addWidget(QLabel("Tiers:"))
+        self.zf_tiers = {}
+        chosen = set(s["tiers"])
+        for g in core.TIER_GROUPS:
+            cb = QCheckBox(g)
+            cb.setChecked(g in chosen)
+            cb.toggled.connect(self.schedule_zone_filter)
+            self.zf_tiers[g] = cb
+            tiers.addWidget(cb)
+        tiers.addStretch()
+        grid.addLayout(tiers, 3, 0, 1, 8)
+        grid.setColumnStretch(8, 1)
+        root.addWidget(box)
+
+        brow = QHBoxLayout()
+        self.zone_scan_btn = QPushButton("Scan database")
+        self.zone_scan_btn.clicked.connect(self.scan_zones)
+        brow.addWidget(self.zone_scan_btn)
+        self.zone_stop_btn = QPushButton("Stop")
+        self.zone_stop_btn.setEnabled(False)
+        self.zone_stop_btn.clicked.connect(lambda: self.zone_job and self.zone_job.stop())
+        brow.addWidget(self.zone_stop_btn)
+        exp = QPushButton("Export results…")
+        exp.clicked.connect(self.export_zones)
+        brow.addWidget(exp)
+        reset = QPushButton("Reset to defaults")
+        reset.setToolTip("Puts every filter on this tab back to its default value.")
+        reset.clicked.connect(self.reset_zone_filters)
+        brow.addWidget(reset)
+        self.zone_progress = QProgressBar()
+        self.zone_progress.setMaximumWidth(220)
+        self.zone_progress.hide()
+        brow.addWidget(self.zone_progress)
+        self.zone_status = QLabel("Scan the database first. The filters then apply instantly. "
+                                  "Double-click a row to check it on the chart.")
+        brow.addWidget(self.zone_status, 1)
+        root.addLayout(brow)
+
+        self.zone_columns = ["Ticker", "Name", "Status", "Score", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
+                             "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
+                             "$ Volume", "Days", "Note"]
+        self.zone_table = QTableWidget(0, len(self.zone_columns))
+        self.zone_table.setHorizontalHeaderLabels(self.zone_columns)
+        header_tips = {
+            "Reached Rsst": "Support touches that went on to reach the resistance, out of those plus the "
+                         "times the support broke first.",
+            "Reached Supp": "Resistance touches that came back down to the support, out of those plus the "
+                         "times the resistance broke first.",
+            "Buy alert": "Top of the support zone.",
+            "Sell at": "Bottom of the resistance zone.",
+            "Supp str": "Strength of the support zone, 0-100%.",
+            "Rsst str": "Strength of the resistance zone, 0-100%.",
+            "To buy %": "From the last close to the buy alert. Negative means it has to fall this far.",
+        }
+        for col, name in enumerate(self.zone_columns):
+            if name in header_tips:
+                self.zone_table.horizontalHeaderItem(col).setToolTip(header_tips[name])
+        self.zone_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.zone_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.zone_table.setSortingEnabled(True)
+        self.zone_table.sortByColumn(self.zone_columns.index("Score"), Qt.SortOrder.DescendingOrder)
+        self.zone_table.verticalHeader().setVisible(False)
+        self.zone_table.horizontalHeader().resizeSection(1, ZONE_NAME_WIDTH)
+        self.auto_size_zone_columns()
+        self.zone_table.cellDoubleClicked.connect(lambda r, c: self.open_chart_from_zones(r))
+        root.addWidget(self.zone_table, 1)
+
+        self.zone_filter_timer = QTimer(self)
+        self.zone_filter_timer.setSingleShot(True)
+        self.zone_filter_timer.setInterval(200)
+        self.zone_filter_timer.timeout.connect(self.apply_zone_filters)
         return tab
 
     # ================================================== settings ===
@@ -826,7 +1044,51 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.chart.set_range(months, label)
 
-    def show_chart(self, ticker: str):
+    def on_expirations_toggled(self, checked):
+        self.settings["expirations_show"] = checked
+        save_settings(self.settings)
+        self.chart.show_expirations = checked
+        self.chart.update()
+
+    def on_zone_option_changed(self):
+        self.settings["zones_show"] = self.zones_show.isChecked()
+        self.settings["zones_min_strength"] = self.zones_min.value()
+        save_settings(self.settings)
+        self.apply_chart_zones()
+
+    def apply_chart_zones(self, channel=None):
+        """Puts the zones of the current chart on it, outlining the given channel, or the
+        best one. Its two zones are always shown, whatever the minimum strength is."""
+        analysis = self.chart_analysis
+        if analysis is None or not self.zones_show.isChecked():
+            self.chart.set_zones([])
+            self.zone_info.hide()
+            return
+        if channel is None:
+            channel = self.chart.channel if self.chart.channel in analysis.channels else None
+        if channel is None and analysis.channels:
+            channel = analysis.channels[0]
+        minimum = self.zones_min.value()
+        shown = [z for z in analysis.zones
+                 if z.strength >= minimum or (channel and (z is channel.support or z is channel.resistance))]
+        self.chart.set_zones(shown, channel)
+
+        bits = []
+        if channel:
+            bits.append(f"<b>Best channel:</b> buy alert {fmt_price(channel.support.hi)}, "
+                        f"sell at {fmt_price(channel.resistance.lo)} (+{channel.gain * 100:.0f}%), "
+                        f"score {channel.score:.0f}%, {channel.status}, {channel.legs} legs, "
+                        f"reached resistance {channel.wins} of {channel.wins + channel.fails}, "
+                        f"last touch {channel.last_touch}")
+        else:
+            bits.append("No channel found: the price hasn't moved back and forth between two zones.")
+        if analysis.break_date:
+            bits.append(f"Possible split on {analysis.break_date}: earlier candles are ignored. "
+                        "Try Reload history from Massive.")
+        self.zone_info.setText("   ·   ".join(bits))
+        self.zone_info.show()
+
+    def show_chart(self, ticker: str, channel=None):
         ticker = ticker.strip().upper()
         if not ticker:
             return
@@ -846,6 +1108,13 @@ class MainWindow(QMainWindow):
         self.chart.subtitle = " · ".join(x for x in [(name or "")[:40], tier_text] if x)
         self.chart.set_data(ticker, rows, months, label,
                             message="" if rows else f"No data for {ticker} in your database.")
+        self.chart_analysis = zones.analyze(rows)
+        if channel is not None and self.chart_analysis is not None:
+            # The scan's copy of a channel; find the same one in this fresh analysis
+            channel = next((c for c in self.chart_analysis.channels
+                            if (c.support.lo, c.resistance.hi) == (channel.support.lo, channel.resistance.hi)),
+                           None)
+        self.apply_chart_zones(channel)
         self.reload_btn.setEnabled(True)
         bits = [f"<b>{ticker}</b>"]
         if name:
@@ -1004,22 +1273,27 @@ class MainWindow(QMainWindow):
             f"{len(results)} match(es) on {day} out of {len(today):,} OTC tickers that traded.{note}"
             "  Double-click a row to open its chart.")
 
-    def export_screener(self):
-        if self.scr_table.rowCount() == 0:
-            QMessageBox.information(self, "Nothing to export", "Run the screener first.")
-            return
-        default = str(APP_DIR / f"screener_{self.scr_date.currentText()}.csv")
-        path, _ = QFileDialog.getSaveFileName(self, "Export results", default, "CSV files (*.csv)")
+    def export_table(self, tbl: QTableWidget, default_name: str) -> str:
+        """Asks for a file name and writes the table to it. Returns the path, or "" if cancelled."""
+        path, _ = QFileDialog.getSaveFileName(self, "Export results", str(APP_DIR / default_name),
+                                              "CSV files (*.csv)")
         if not path:
-            return
-        tbl = self.scr_table
+            return ""
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow([tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())])
             for r in range(tbl.rowCount()):
                 w.writerow([tbl.item(r, c).text() if tbl.item(r, c) else ""
                             for c in range(tbl.columnCount())])
-        self.log(f"Screener results exported to {path}")
+        return path
+
+    def export_screener(self):
+        if self.scr_table.rowCount() == 0:
+            QMessageBox.information(self, "Nothing to export", "Run the screener first.")
+            return
+        path = self.export_table(self.scr_table, f"screener_{self.scr_date.currentText()}.csv")
+        if path:
+            self.log(f"Screener results exported to {path}")
 
     def open_chart_from_screener(self, row):
         item = self.scr_table.item(row, 0)
@@ -1027,8 +1301,177 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(1)
             self.show_chart(item.text())
 
+    # ================================================== zones ===
+    def scan_zones(self):
+        if self.zone_job is not None and self.zone_job.is_alive():
+            return
+        found = []
+
+        def fn(job):
+            con = db()
+            try:
+                started = time.monotonic()
+                found.extend(zones.scan_database(con, job.signals.progress.emit, job.stopping))
+            finally:
+                con.close()
+            if job.stopping():
+                raise Stopped()
+            return f"Scanned in {time.monotonic() - started:.0f} s: {len(found):,} tickers have channels."
+
+        self.zone_job = Job(fn)
+        self.zone_job.signals.progress.connect(self.on_zone_progress)
+        self.zone_job.signals.finished.connect(lambda msg, ok: self.on_zone_scan_finished(msg, ok, found))
+        self.zone_scan_btn.setEnabled(False)
+        self.zone_stop_btn.setEnabled(True)
+        self.zone_progress.setRange(0, 0)       # reading the database: no percentage yet
+        self.zone_progress.show()
+        self.zone_status.setText("Reading the database…")
+        self.zone_job.start()
+
+    def on_zone_progress(self, done: int, total: int):
+        self.zone_progress.setRange(0, max(total, 1))
+        self.zone_progress.setValue(done)
+        self.zone_status.setText(f"Analyzing tickers: {done:,} of {total:,}…")
+
+    def on_zone_scan_finished(self, message: str, ok: bool, found: list):
+        self.zone_job = None
+        self.zone_scan_btn.setEnabled(True)
+        self.zone_stop_btn.setEnabled(False)
+        self.zone_progress.hide()
+        self.log(message)
+        if ok or found:     # after Stop, keep whatever was found so far
+            self.zone_results = found
+            self.zone_summary = message
+            self.apply_zone_filters()
+        else:
+            self.zone_status.setText(message)
+        if message.startswith(("Error", "Unexpected")):
+            QMessageBox.warning(self, "Scan problem", message[:1500])
+
+    def schedule_zone_filter(self):
+        self.zone_filter_timer.start()
+
+    def save_zone_filters(self):
+        self.settings["zone_filters"] = {
+            "score": self.zf_score.value(), "legs": self.zf_legs.value(), "gain": self.zf_gain.value(),
+            "days": self.zf_days.value(), "pmin": self.zf_pmin.value(), "pmax": self.zf_pmax.value(),
+            "dollar": self.zf_dollar.value(), "age": self.zf_age.value(),
+            "status": [n for n, cb in self.zf_status.items() if cb.isChecked()],
+            "skip_types": self.zf_skip.isChecked(),
+            "tiers": [g for g, cb in self.zf_tiers.items() if cb.isChecked()],
+        }
+        save_settings(self.settings)
+
+    def reset_zone_filters(self):
+        d = ZONE_DEFAULTS
+        self.zf_score.setValue(d["score"])
+        self.zf_legs.setValue(d["legs"])
+        self.zf_gain.setValue(d["gain"])
+        self.zf_days.setValue(d["days"])
+        self.zf_pmin.setValue(d["pmin"])
+        self.zf_pmax.setValue(d["pmax"])
+        self.zf_dollar.setValue(d["dollar"])
+        self.zf_age.setValue(d["age"])
+        for name, cb in self.zf_status.items():
+            cb.setChecked(name in d["status"])
+        self.zf_skip.setChecked(d["skip_types"])
+        for group, cb in self.zf_tiers.items():
+            cb.setChecked(group in d["tiers"])
+        self.zone_filter_timer.stop()
+        self.apply_zone_filters()
+
+    def auto_size_zone_columns(self):
+        """All but the Name column, which keeps a readable width the user can drag."""
+        hdr = self.zone_table.horizontalHeader()
+        for col in range(self.zone_table.columnCount()):
+            if col != 1:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+    def apply_zone_filters(self):
+        self.save_zone_filters()
+        if not self.zone_results:
+            return
+        min_score, min_legs = self.zf_score.value(), self.zf_legs.value()
+        min_gain = self.zf_gain.value() / 100
+        min_days, min_dollar = self.zf_days.value(), self.zf_dollar.value()
+        pmin, pmax = self.zf_pmin.value(), self.zf_pmax.value()
+        status = {n for n, cb in self.zf_status.items() if cb.isChecked()}
+        skip = zones.SKIP_TYPES if self.zf_skip.isChecked() else set()
+        tiers = {g for g, cb in self.zf_tiers.items() if cb.isChecked()}
+        months = self.zf_age.value()
+        oldest = (core.today_eastern() - timedelta(days=int(months * 30.44))).isoformat() if months else ""
+
+        rows = []
+        for ticker, name, typ, group, tier, a in self.zone_results:
+            if (typ in skip or group not in tiers or a.bars < min_days or a.dollar_volume < min_dollar
+                    or a.last_close < pmin or (pmax > 0 and a.last_close > pmax)):
+                continue
+            for c in a.channels:
+                if (c.score >= min_score and c.legs >= min_legs and c.gain >= min_gain
+                        and c.status in status and c.last_touch >= oldest):
+                    rows.append((ticker, name, a, c))
+        rows.sort(key=lambda r: r[3].score, reverse=True)
+        matched = len(rows)
+        rows = rows[:MAX_ZONE_ROWS]
+
+        tbl = self.zone_table
+        tbl.setSortingEnabled(False)
+        # Auto-sized columns can re-measure the whole table for every cell set: 100 rows froze
+        # the app for over a minute. So they are sized once, after filling.
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tbl.setRowCount(len(rows))
+        for row, (ticker, name, a, c) in enumerate(rows):
+            first = QTableWidgetItem(ticker)
+            first.setData(Qt.ItemDataRole.UserRole, c)
+            note = f"Possible split {a.break_date}" if a.break_date else ""
+            cells = [
+                first,
+                QTableWidgetItem(name),
+                QTableWidgetItem(c.status),
+                NumItem(f"{c.score:.0f}%", c.score),
+                NumItem(str(c.legs), c.legs),
+                NumItem(f"{c.wins} of {c.wins + c.fails}", c.wins / max(c.wins + c.fails, 1)),
+                NumItem(f"{c.downs} of {c.downs + c.breakouts}", c.downs / max(c.downs + c.breakouts, 1)),
+                NumItem(fmt_price(c.support.hi), c.support.hi),
+                NumItem(f"{c.support.strength:.0f}%", c.support.strength),
+                NumItem(fmt_price(c.resistance.lo), c.resistance.lo),
+                NumItem(f"{c.resistance.strength:.0f}%", c.resistance.strength),
+                NumItem(f"{c.gain * 100:.0f}%", c.gain),
+                NumItem(fmt_price(a.last_close), a.last_close),
+                NumItem(f"{c.to_buy * 100:+.1f}%", c.to_buy),
+                QTableWidgetItem(c.last_touch),
+                NumItem(f"${a.dollar_volume:,.0f}", a.dollar_volume),
+                NumItem(f"{a.bars:,}", a.bars),
+                QTableWidgetItem(note),
+            ]
+            for col, item in enumerate(cells):
+                tbl.setItem(row, col, item)
+        self.auto_size_zone_columns()
+        tbl.setSortingEnabled(True)
+        shown = f"{matched:,} channels match" if matched <= MAX_ZONE_ROWS else \
+            f"Showing the best {MAX_ZONE_ROWS:,} of {matched:,} matching channels"
+        self.zone_status.setText(f"{shown}.   {self.zone_summary}   Double-click a row to check it on the chart.")
+
+    def export_zones(self):
+        if self.zone_table.rowCount() == 0:
+            QMessageBox.information(self, "Nothing to export", "Scan the database first.")
+            return
+        path = self.export_table(self.zone_table, f"zones_{date.today().isoformat()}.csv")
+        if path:
+            self.log(f"Zone results exported to {path}")
+
+    def open_chart_from_zones(self, row):
+        item = self.zone_table.item(row, 0)
+        if not item:
+            return
+        self.tabs.setCurrentIndex(1)
+        channel = item.data(Qt.ItemDataRole.UserRole)
+        self.show_chart(item.text(), channel)
+
     # ================================================== closing ===
     def closeEvent(self, event):
+        if self.zone_job is not None:
+            self.zone_job.stop()
         running = [j for j in (self.download_job, self.names_job, self.reload_job)
                    if j is not None and j.is_alive()]
         if running:

@@ -1,6 +1,6 @@
 @echo off
 rem Double-click to start OTC Assistant.
-rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py and otc_chart.py.
+rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py.
 setlocal
 cd /d "%~dp0"
 
@@ -27,11 +27,11 @@ if not defined PY (
 )
 
 rem ---- Install the required packages on first run ----
-%PY% -c "import PyQt6.QtWidgets, tzdata" >nul 2>nul
+%PY% -c "import PyQt6.QtWidgets, tzdata, numpy" >nul 2>nul
 if errorlevel 1 (
     echo Installing required packages, first run only. This takes a minute...
     echo.
-    %PY% -m pip install --upgrade PyQt6 tzdata
+    %PY% -m pip install --upgrade PyQt6 tzdata numpy
     if errorlevel 1 (
         echo.
         echo Package installation failed. See the messages above.
@@ -44,6 +44,7 @@ rem ---- Make sure the app files are here ----
 if not exist "otc_daily_gui.py" goto missing
 if not exist "otc_daily.py" goto missing
 if not exist "otc_chart.py" goto missing
+if not exist "otc_zones.py" goto missing
 
 rem ---- First run only: put a shortcut with the app icon on the desktop ----
 rem (Delete shortcut_created.txt to have it created again.)
@@ -58,6 +59,6 @@ start "" %PYW% "%~dp0otc_daily_gui.py"
 exit /b 0
 
 :missing
-echo otc_daily_gui.py, otc_daily.py and otc_chart.py must be in the same folder as this .bat file.
+echo otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py must be in the same folder as this .bat file.
 pause
 exit /b 1

@@ -1,8 +1,8 @@
 """
 otc_chart.py - Dark candlestick chart widget (PyQt6) in a thinkorswim-like style:
 candles, volume pane with a 50-day volume average, info bar, crosshair with axis
-labels, Hi/Lo markers and a last-price tag. Mouse wheel zooms, dragging pans,
-double-click resets the view.
+labels, Hi/Lo markers, monthly expiration lines and a last-price tag. Mouse wheel
+zooms, dragging pans, double-click resets the view.
 """
 
 import math
@@ -26,9 +26,16 @@ VOL_AVG = QColor("#f0a020")
 CROSS = QColor("#8c8c8c")
 LABEL_BG = QColor("#d6d6d6")
 LABEL_TEXT = QColor("#111111")
+SUPPORT_ZONE = QColor("#2ecc71")
+RESISTANCE_ZONE = QColor("#ff5a4a")
+AT_ZONE = QColor("#f0c93c")
+CHANNEL_EDGE = QColor("#ffffff")
+EXPIRATION = QColor("#d32f2f")
 
 AVG_PERIOD = 50
 RIGHT_PAD_BARS = 8          # empty space after the last candle, like the screenshot
+MAX_RIGHT_EMPTY_BARS = 10   # the most empty space zooming or panning can leave there
+PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
 LEFT_W, RIGHT_W = 62, 74
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
@@ -49,8 +56,12 @@ def fmt_price(v) -> str:
     return s or "0"
 
 
+def fmt_chart_price(v: float) -> str:
+    return fmt_price(round(v, PRICE_DECIMALS))
+
+
 def fmt_axis(v: float, step: float) -> str:
-    decimals = max(0, -int(math.floor(math.log10(step))) + 1) if step > 0 else 2
+    decimals = min(max(0, -int(math.floor(math.log10(step))) + 1), PRICE_DECIMALS) if step > 0 else 2
     s = f"{v:.{decimals}f}"
     return (s.rstrip("0").rstrip(".") if "." in s else s) or "0"
 
@@ -84,6 +95,12 @@ def nice_step(span: float, target: int) -> float:
     return 10 * mag
 
 
+def price_step(span: float, target: int) -> float:
+    """A nice grid step that is a whole number of the finest price shown, so 0.00025 becomes 0.0002."""
+    finest = 10.0 ** -PRICE_DECIMALS
+    return round(max(int(nice_step(span, target) / finest + 1e-9), 1) * finest, PRICE_DECIMALS)
+
+
 def sma(values, period):
     out, total = [], 0.0
     for i, v in enumerate(values):
@@ -92,6 +109,35 @@ def sma(values, period):
             total -= values[i - period]
         out.append(total / min(i + 1, period))
     return out
+
+
+def good_friday(year: int) -> date:
+    """From the date of Easter (anonymous Gregorian algorithm)."""
+    a, (b, c) = year % 19, divmod(year, 100)
+    d, e = divmod(b, 4)
+    g = (b - (b + 8) // 25 + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1) - timedelta(days=2)
+
+
+def expiration_days(first: date, last: date):
+    """Monthly options expirations in a date range: the third Friday, or the Thursday
+    before it when the market is closed. Only these two holidays can fall on one."""
+    year, month = first.year, first.month
+    while True:
+        d = date(year, month, 1)
+        d += timedelta(days=(4 - d.weekday()) % 7 + 14)
+        if d == good_friday(year) or (d.month, d.day) == (6, 19):
+            d -= timedelta(days=1)
+        if d > last:
+            return
+        if d >= first:
+            yield d
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 # ------------------------------------------------------------------ widget ---
@@ -106,6 +152,7 @@ class CandleChart(QWidget):
         self.ticker = ""
         self.subtitle = ""
         self.range_label = "1Y"
+        self.show_expirations = True
         self.message = "Type a ticker above and press Enter."
         self._set_rows([])
         self.mouse = None
@@ -122,6 +169,8 @@ class CandleChart(QWidget):
         self.vol_avg = sma(self.v, AVG_PERIOD)
         self.dollar_avg = sma([c * v for c, v in zip(self.c, self.v)], AVG_PERIOD)
         self.first, self.count = 0.0, 100.0
+        self.zones = []
+        self.channel = None
 
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):
@@ -130,6 +179,13 @@ class CandleChart(QWidget):
         self._set_rows(rows)
         self.message = message or ("" if rows else f"No data for {ticker}.")
         self.set_range(months, label)
+
+    def set_zones(self, zones, channel=None):
+        """zones: otc_zones.Zone objects to draw, strongest first. Their row indexes must
+        refer to the rows given to set_data. channel: the Channel to outline, if any."""
+        self.zones = zones
+        self.channel = channel
+        self.update()
 
     def set_range(self, months, label: str):
         """Show the last `months` months (None = everything)."""
@@ -144,8 +200,8 @@ class CandleChart(QWidget):
             cutoff = self.dates[-1] - timedelta(days=int(months * 30.44))
             start = bisect_left(self.dates, cutoff)
         start = min(start, max(n - 10, 0))
-        self.first = float(start)
         self.count = float(max(n - start, 10) + RIGHT_PAD_BARS)
+        self.first = self._clamp_first(float(start))
         self.update()
 
     # ---- geometry ----
@@ -238,7 +294,7 @@ class CandleChart(QWidget):
         p.drawRect(vol)
 
         # Price grid + both axes
-        step = nice_step(price_at(price.top()) - price_at(price.bottom()), 10)
+        step = price_step(price_at(price.top()) - price_at(price.bottom()), 10)
         v = math.ceil(price_at(price.bottom()) / step) * step
         fm = QFontMetrics(p.font())
         while v <= price_at(price.top()):
@@ -269,6 +325,8 @@ class CandleChart(QWidget):
                            fmt_compact(vv))
             vv += vstep
 
+        self._draw_zones(p, price, py)
+
         # Candles and volume bars
         bw = self._bar_w(price)
         body_w = max(1.0, bw * 0.68)
@@ -282,6 +340,9 @@ class CandleChart(QWidget):
                 y1, y2 = py(self.o[i]), py(self.c[i])
                 ytop, height = min(y1, y2), max(abs(y2 - y1), 1.0)
                 p.fillRect(QRectF(x - body_w / 2, ytop, body_w, height), color)
+        if self.show_expirations:
+            self._draw_expirations(p, price)
+        self._draw_zone_touches(p, price, py, i0, i1)
         p.setClipRect(vol.adjusted(1, 1, -1, -1))
         for i in range(i0, i1 + 1):
             x = self._x(i, vol)
@@ -299,15 +360,17 @@ class CandleChart(QWidget):
         if i1 >= i0:
             ih = max(range(i0, i1 + 1), key=lambda i: self.h[i])
             il = min(range(i0, i1 + 1), key=lambda i: self.l[i])
-            self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_price(self.h[ih])}", above=True, pane=price)
-            self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_price(self.l[il])}", above=False, pane=price)
+            self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}", above=True, pane=price)
+            self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}", above=False, pane=price)
 
         # Last price tag on the right axis
         last = len(self.dates) - 1
         ly = py(self.c[last])
         if price.top() <= ly <= price.bottom():
-            self._axis_tag(p, price.right() + 2, ly, fmt_price(self.c[last]),
+            self._axis_tag(p, price.right() + 2, ly, fmt_chart_price(self.c[last]),
                            self._color(last), QColor("#000000"), bold=True)
+
+        self._draw_zone_labels(p, price, py)
 
         # X axis labels
         self._draw_x_axis(p, price, vol)
@@ -329,6 +392,7 @@ class CandleChart(QWidget):
                 if in_price:
                     tag = fmt_axis(price_at(my), step / 10)
                     y_value_text = tag
+                    self._zone_details(p, price, price_at(my))
                 else:
                     tag = fmt_volume(max(0.0, (vbot - my) / (vbot - vtop) * vmax))
                 self._axis_tag(p, pane.right() + 2, my, tag, LABEL_BG, LABEL_TEXT)
@@ -348,6 +412,101 @@ class CandleChart(QWidget):
         self._info_bar(p, i, y_value_text)
         self._volume_header(p, vol, i)
         p.end()
+
+    # ---- support and resistance zones ----
+    @staticmethod
+    def _zone_color(zone, alpha=255):
+        base = {"support": SUPPORT_ZONE, "resistance": RESISTANCE_ZONE}.get(zone.role, AT_ZONE)
+        color = QColor(base)
+        color.setAlpha(alpha)
+        return color
+
+    def _in_channel(self, zone):
+        return self.channel is not None and (zone is self.channel.support or zone is self.channel.resistance)
+
+    def _draw_zones(self, p, price, py):
+        """Each zone is a band from its first touch to the right edge. Stronger zones are more
+        opaque, and zones the price hasn't traded in during the last month are dashed."""
+        p.setClipRect(price.adjusted(1, 1, -1, -1))
+        for zone in reversed(self.zones):
+            y1, y2 = py(zone.hi), py(zone.lo)
+            if y2 < price.top() or y1 > price.bottom():
+                continue
+            x0 = max(self._x(zone.touch_bars[0][0], price), price.left())
+            if x0 >= price.right():
+                continue
+            alpha = int((25 + zone.strength * 0.9) * (1.0 if zone.recent else 0.6))
+            rect = QRectF(x0, y1, price.right() - x0, max(y2 - y1, 2.0))
+            p.fillRect(rect, self._zone_color(zone, alpha))
+            style = Qt.PenStyle.SolidLine if zone.recent else Qt.PenStyle.DashLine
+            if self._in_channel(zone):
+                p.setPen(QPen(CHANNEL_EDGE, 1.4, style))
+            else:
+                p.setPen(QPen(self._zone_color(zone, min(alpha + 60, 255)), 1, style))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(rect)
+        p.setClipping(False)
+
+    def _draw_zone_touches(self, p, price, py, i0, i1):
+        """Triangles on the swings that count as touches, to check the zones by eye."""
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for zone in self.zones:
+            p.setBrush(self._zone_color(zone))
+            for i, kind in zone.touch_bars:
+                if not i0 <= i <= i1:
+                    continue
+                x = self._x(i, price)
+                if kind > 0:
+                    y = py(self.h[i]) - 3
+                    tip, base = y, y - 6
+                else:
+                    y = py(self.l[i]) + 3
+                    tip, base = y, y + 6
+                p.drawPolygon(QPolygonF([QPointF(x, tip), QPointF(x - 4, base), QPointF(x + 4, base)]))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+    def _draw_zone_labels(self, p, price, py):
+        """'Supp 72%' = support with strength 72. Strongest first; a label that would overlap
+        a stronger one is left out (hovering over the zone still shows its details)."""
+        f = QFont(p.font())
+        f.setBold(True)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        taken = []
+        for zone in self.zones:
+            y = (py(zone.hi) + py(zone.lo)) / 2
+            if not price.top() + 8 <= y <= price.bottom() - 8:
+                continue
+            if any(abs(y - t) < 16 for t in taken):
+                continue
+            taken.append(y)
+            role = {"support": "Supp", "resistance": "Rsst"}.get(zone.role, "At")
+            text = f"{role} {zone.strength:.0f}%" + ("" if zone.recent else " past")
+            w = fm.horizontalAdvance(text) + 8
+            r = QRectF(price.right() - w - 2, y - 8, w, 16)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._zone_color(zone, 230))
+            p.drawRoundedRect(r, 2, 2)
+            p.setPen(LABEL_TEXT)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+        f.setBold(False)
+        p.setFont(f)
+
+    def _zone_details(self, p, price, value):
+        for zone in self.zones:
+            if zone.lo <= value <= zone.hi:
+                name = {"support": "Support", "resistance": "Resistance"}.get(zone.role, "Price is at this zone")
+                state = "traded here in the last month" if zone.recent else "not traded here in the last month"
+                text = (f"{name} {fmt_chart_price(zone.lo)} - {fmt_chart_price(zone.hi)}   strength {zone.strength:.0f}%   "
+                        f"{zone.support_touches} bounces up, {zone.resistance_touches} turned down, "
+                        f"{zone.breaks} broken through   typical move {zone.reaction * 100:.0f}%   "
+                        f"last touch {zone.last_touch}   {state}")
+                # Solid background: the box can lie over the candles and the Hi marker
+                width = QFontMetrics(p.font()).horizontalAdvance(text) + 12
+                p.fillRect(QRectF(price.left() + 3, price.top() + 3, width, 18), BG)
+                self._boxes(p, price.left() + 3, price.top() + 3, 18, [(text, self._zone_color(zone), False)])
+                return
 
     def _color(self, i):
         if self.c[i] > self.o[i]:
@@ -383,11 +542,11 @@ class CandleChart(QWidget):
             items.append((self.subtitle, INFO_TEXT, False))
         items += [
             (f"D: {fmt_date(d)}", INFO_TEXT, False),
-            (f"O: {fmt_price(self.o[i])}", INFO_TEXT, False),
-            (f"H: {fmt_price(self.h[i])}", INFO_TEXT, False),
-            (f"L: {fmt_price(self.l[i])}", INFO_TEXT, False),
-            (f"C: {fmt_price(self.c[i])}", self._color(i), False),
-            (f"R: {fmt_price(round(self.h[i] - self.l[i], 8))}", INFO_TEXT, False),
+            (f"O: {fmt_chart_price(self.o[i])}", INFO_TEXT, False),
+            (f"H: {fmt_chart_price(self.h[i])}", INFO_TEXT, False),
+            (f"L: {fmt_chart_price(self.l[i])}", INFO_TEXT, False),
+            (f"C: {fmt_chart_price(self.c[i])}", self._color(i), False),
+            (f"R: {fmt_chart_price(self.h[i] - self.l[i])}", INFO_TEXT, False),
         ]
         if i > 0 and self.c[i - 1]:
             chg = (self.c[i] / self.c[i - 1] - 1) * 100
@@ -435,6 +594,34 @@ class CandleChart(QWidget):
         p.drawRoundedRect(QRectF(bx, by, tw, bh), 4, 4)
         p.setPen(QColor("#202020"))
         p.drawText(QRectF(bx, by, tw, bh), Qt.AlignmentFlag.AlignCenter, text)
+
+    def _draw_expirations(self, p, price):
+        n = len(self.dates)
+        start, end = max(int(math.floor(self.first)), 0), int(math.ceil(self.first + self.count))
+        text_h = QFontMetrics(p.font()).height()
+        last_label = -1e9
+        # Cosmetic: a width in screen pixels, or display scaling would make the lines uneven
+        line_pen = QPen(EXPIRATION, 2, Qt.PenStyle.DashLine)
+        line_pen.setCosmetic(True)
+        for d in expiration_days(self._date_at(start), self._date_at(end)):
+            i = bisect_left(self.dates, d)
+            if i == n:
+                slot = next(k for k in range(n, end + 1) if self._date_at(k) == d)
+            else:
+                # A stock with no trades that day: the line goes between the candles around it
+                slot = i if self.dates[i] == d else i - 0.5
+            x = self._x(slot, price)
+            p.setPen(line_pen)
+            p.drawLine(QPointF(x, price.top()), QPointF(x, price.bottom()))
+            if x - last_label < text_h:
+                continue
+            last_label = x
+            p.save()
+            p.translate(x - 3, price.bottom() - 6)
+            p.rotate(-90)
+            p.setPen(EXPIRATION)
+            p.drawText(QPointF(0, 0), fmt_date(d))
+            p.restore()
 
     def _draw_x_axis(self, p, price, vol):
         bw = self._bar_w(price)
@@ -502,15 +689,15 @@ class CandleChart(QWidget):
         x = min(max(e.position().x(), price.left()), price.right())
         anchor = self.first + (x - price.left()) / self._bar_w(price)
         factor = 0.85 if e.angleDelta().y() > 0 else 1 / 0.85
-        new_count = min(max(self.count * factor, 12), len(self.dates) + RIGHT_PAD_BARS * 4)
+        new_count = min(max(self.count * factor, 12), len(self.dates) + MAX_RIGHT_EMPTY_BARS)
         self.count = new_count
         self.first = self._clamp_first(anchor - (x - price.left()) / price.width() * new_count)
         self.update()
 
     def _clamp_first(self, first):
         n = len(self.dates)
-        return min(max(first, -self.count * 0.5), n - 5)
+        return min(max(first, -self.count * 0.5), n - 5, n + MAX_RIGHT_EMPTY_BARS - self.count)
 
     def reset_view(self):
-        months = {"1M": 1, "3M": 3, "6M": 6, "1Y": 12, "2Y": 24}.get(self.range_label)
+        months = {"1M": 1, "2M": 2, "3M": 3, "6M": 6, "1Y": 12, "2Y": 24}.get(self.range_label)
         self.set_range(months, self.range_label)
