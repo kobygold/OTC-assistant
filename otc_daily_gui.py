@@ -31,7 +31,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import (
+    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QTextDocumentFragment,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
     QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
@@ -45,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1320,9 +1322,10 @@ class MainWindow(QMainWindow):
             w = csv.writer(f)
             w.writerow([tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())])
             for r in range(tbl.rowCount()):
-                # A sign has no text, so its tooltip goes in the file
-                w.writerow([(tbl.item(r, c).text() or tbl.item(r, c).toolTip()) if tbl.item(r, c) else ""
-                            for c in range(tbl.columnCount())])
+                # A sign has no text, so its tooltip goes in the file, without the formatting
+                w.writerow([(tbl.item(r, c).text()
+                             or QTextDocumentFragment.fromHtml(tbl.item(r, c).toolTip()).toPlainText())
+                            if tbl.item(r, c) else "" for c in range(tbl.columnCount())])
         return path
 
     def export_screener(self):
@@ -1466,7 +1469,7 @@ class MainWindow(QMainWindow):
             risk_item = NumItem("", risk[2] if risk else 0)
             if risk:
                 risk_item.setIcon(self.risk_icons[risk[2]])
-                risk_item.setToolTip(f"{ticker[-1]}: {risk[0]} | {risk[1]}")
+                risk_item.setToolTip(f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>")
             cells = [
                 risk_item,
                 first,
