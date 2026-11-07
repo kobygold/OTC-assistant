@@ -47,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -60,6 +60,15 @@ PLAN_LIMIT_MIN_AGE_DAYS = 30
 PLAN_LIMIT_CONSECUTIVE = 3
 NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
+BUTTON_STYLE = """
+QPushButton {
+    background: #e4e4e4; border: 1px solid #c2c2c2; border-radius: 4px; padding: 4px 12px;
+}
+QPushButton:hover { background: #d9d9d9; }
+QPushButton:pressed { background: #cccccc; }
+QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
+QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
+"""
 ZONE_TICKER_COL, ZONE_NAME_COL = 1, 2
 ZONE_NAME_WIDTH = 170
 # The last letter of a 5-letter ticker: (case, risks, level). Level 1 can be risky and pay high
@@ -310,6 +319,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.setStyleSheet(BUTTON_STYLE)
         self.resize(1300, 860)
         self.settings = load_settings()
         self.download_job = None
@@ -473,7 +483,7 @@ class MainWindow(QMainWindow):
         for label, months in RANGES:
             b = QPushButton(label)
             b.setCheckable(True)
-            b.setMaximumWidth(48)
+            b.setFixedWidth(44)
             b.setChecked(label == default_range)
             b.clicked.connect(lambda _, lb=label, m=months: self.on_range(lb, m))
             self.range_group.addButton(b)
