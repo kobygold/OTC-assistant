@@ -10,6 +10,7 @@ otc_daily.db-shm
 error_log.txt
 shortcut_created.txt
 *.csv
+.venv/
 __pycache__/
 
 # C extensions
