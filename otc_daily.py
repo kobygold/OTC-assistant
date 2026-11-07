@@ -48,6 +48,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from bisect import bisect_left
 from datetime import date, datetime, timedelta, timezone
 
 API_BASE = "https://api.massive.com"
@@ -245,10 +246,42 @@ def store_day(con, day: date, results, otc_only: bool, adjusted: bool, log=print
     return len(rows)
 
 
+def _only_rounded(stored, fresh) -> bool:
+    """True if a fresh price is the stored one, or the stored one rounded to 4 decimals."""
+    if stored == fresh:
+        return True
+    if stored is None or fresh is None:
+        return False
+    return abs(fresh - stored) <= 0.00005 + 1e-9 and abs(fresh - round(fresh, 4)) < 1e-9
+
+
 def replace_ticker_history(con, ticker: str, bars, start: date, end: date) -> int:
-    """Replace one ticker's rows in [start, end] with freshly downloaded bars."""
-    rows = [(ticker, b["date"], b.get("o"), b.get("h"), b.get("l"), b.get("c"),
-             b.get("v"), b.get("vw"), b.get("n"), 1) for b in bars]
+    """Replace one ticker's rows in [start, end] with freshly downloaded bars, and return the
+    number of rows it now has there.
+
+    One ticker's history comes rounded to 4 decimals, which is coarse for sub-penny stocks, and
+    can leave out a date the whole-market download has. So where a bar only differs by that
+    rounding the finer stored prices stay. A date it leaves out also stays if the dates around
+    it are unchanged: otherwise a split may have changed them, and the old row would be off."""
+    stored = {r[0]: r[1:] for r in con.execute(
+        "SELECT date, open, high, low, close, volume, vwap, trades FROM candles "
+        "WHERE ticker = ? AND date BETWEEN ? AND ?", (ticker, start.isoformat(), end.isoformat()))}
+    fresh = {b["date"]: b for b in bars}
+    rows, unchanged = [], set()
+    for day, b in fresh.items():
+        new = (b.get("o"), b.get("h"), b.get("l"), b.get("c"), b.get("v"), b.get("vw"), b.get("n"))
+        old = stored.get(day)
+        if old and all(_only_rounded(x, y) for x, y in zip(old[:4], new[:4])):
+            unchanged.add(day)
+            # A different volume means the day was revised, so only the prices stay
+            new = old if (old[4] or 0) == (new[4] or 0) else (*old[:4], *new[4:])
+        rows.append((ticker, day, *new, 1))
+    common = sorted(set(stored) & set(fresh))
+    for day in set(stored) - set(fresh):
+        i = bisect_left(common, day)
+        around = common[max(i - 1, 0):i + 1]
+        if around and unchanged.issuperset(around):
+            rows.append((ticker, day, *stored[day], 1))
     with con:
         con.execute("DELETE FROM candles WHERE ticker = ? AND date BETWEEN ? AND ?",
                     (ticker, start.isoformat(), end.isoformat()))

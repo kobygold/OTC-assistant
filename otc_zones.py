@@ -44,6 +44,7 @@ MAX_CHANNELS = 3            # per ticker
 SPLIT_JUMP = math.log(4)    # a close-to-close jump this big that lasts is treated as a data
 SPLIT_LASTS = math.log(3)   # break (usually a split that isn't adjusted in the database)
 SKIP_TYPES = {"WARRANT", "RIGHT", "UNIT"}
+BAD_PRICE = 0.0000011       # Massive reports 0.000001 far from where a stock trades, and a reload rounds it to 0
 
 ACTIVE, RETURNED, PAST_ABOVE, PAST_BELOW = "Active", "Returned", "Past (above)", "Past (below)"
 STATUSES = [ACTIVE, RETURNED, PAST_ABOVE, PAST_BELOW]
@@ -169,6 +170,37 @@ def channel_status(support: Zone, resistance: Zone, tol: float, lc: np.ndarray, 
     return ACTIVE if np.mean((recent >= lo) & (recent <= hi)) >= ACTIVE_FRACTION else RETURNED
 
 
+def clean_rows(rows) -> list:
+    """Replaces each bad price with the candle's lowest real price, and drops candles that have
+    none. rows: (YYYY-MM-DD, open, high, low, close, volume). Same result as clean_prices()."""
+    out = []
+    for r in rows:
+        prices = r[1:5]
+        if any(p is not None and p <= BAD_PRICE for p in prices):
+            good = [p for p in prices if p is not None and p > BAD_PRICE]
+            if not good:
+                continue
+            low = min(good)
+            r = (r[0], *(low if p is not None and p <= BAD_PRICE else p for p in prices), r[5])
+        out.append(r)
+    return out
+
+
+def clean_prices(data: np.ndarray) -> np.ndarray:
+    """Same as clean_rows(), for arrays with the open, high, low and close as the first columns.
+    A candle with no real price gets zeros, which analyze_arrays() leaves out."""
+    bad = data[:, :4] <= BAD_PRICE
+    rows = bad.any(axis=1)
+    if not rows.any():
+        return data
+    data = data.copy()
+    lowest = np.where(bad[rows], np.inf, data[rows, :4])
+    lowest = np.fmin.reduce(lowest, axis=1)
+    lowest[np.isinf(lowest)] = 0.0
+    data[rows, :4] = np.where(bad[rows], lowest[:, None], data[rows, :4])
+    return data
+
+
 def analyze(rows) -> "Analysis | None":
     """rows: (YYYY-MM-DD, open, high, low, close, volume), oldest first. Returns None if there
     isn't enough clean history. Row indexes in the results refer to the original `rows`."""
@@ -179,6 +211,7 @@ def analyze(rows) -> "Analysis | None":
 
 def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
     """Same as analyze(), with the open, high, low, close and volume as the columns of `data`."""
+    data = clean_prices(data)
     keep = np.flatnonzero((data[:, :4] > 0).all(axis=1))
     if len(keep) < MIN_BARS:
         return None

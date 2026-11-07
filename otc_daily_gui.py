@@ -47,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -520,7 +520,8 @@ class MainWindow(QMainWindow):
         self.reload_btn = QPushButton("Reload history from Massive")
         self.reload_btn.setToolTip(
             "Re-downloads this ticker's full history in one API call, split-adjusted as of "
-            "today. Use it after a split or reverse split.")
+            "today. Use it after a split or reverse split. Stored prices stay where the new ones "
+            "only differ by rounding to 4 decimals.")
         self.reload_btn.clicked.connect(self.reload_ticker)
         self.reload_btn.setEnabled(False)
         row.addWidget(self.reload_btn)
@@ -1159,6 +1160,7 @@ class MainWindow(QMainWindow):
                               "WHERE ticker = ?", (ticker,)).fetchone()
         finally:
             con.close()
+        rows = zones.clean_rows(rows)
         name, typ, tier, group = det if det else (None, None, None, None)
         label, months = self.current_range()
         tier_text = tier or (group if group and group != "Unknown" else "")
