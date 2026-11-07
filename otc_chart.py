@@ -8,6 +8,7 @@ zooms, dragging pans, double-click resets the view.
 import math
 from bisect import bisect_left
 from datetime import date, timedelta
+from statistics import median
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
@@ -23,6 +24,7 @@ UP = QColor("#1fc41f")
 DOWN = QColor("#ff4b14")
 NEUTRAL = QColor("#2ad4e6")
 VOL_AVG = QColor("#f0a020")
+VOL_MEDIAN = QColor("#e000e0")
 CROSS = QColor("#8c8c8c")
 LABEL_BG = QColor("#d6d6d6")
 LABEL_TEXT = QColor("#111111")
@@ -112,6 +114,10 @@ def sma(values, period):
     return out
 
 
+def rolling_median(values, period):
+    return [median(values[max(i + 1 - period, 0):i + 1]) for i in range(len(values))]
+
+
 def good_friday(year: int) -> date:
     """From the date of Easter (anonymous Gregorian algorithm)."""
     a, (b, c) = year % 19, divmod(year, 100)
@@ -170,6 +176,7 @@ class CandleChart(QWidget):
         self.c = [r[4] for r in rows]
         self.v = [r[5] or 0.0 for r in rows]
         self.vol_avg = sma(self.v, AVG_PERIOD)
+        self.vol_median = rolling_median(self.v, AVG_PERIOD)
         self.dollar_avg = sma([c * v for c, v in zip(self.c, self.v)], AVG_PERIOD)
         self.first, self.count = 0.0, 100.0
         self.zones = []
@@ -290,7 +297,7 @@ class CandleChart(QWidget):
             return hi - (y - top) / scale
 
         # Volume scale
-        vmax = max(self.v[i0:i1 + 1] + self.vol_avg[i0:i1 + 1]) if i1 >= i0 else 1
+        vmax = max(self.v[i0:i1 + 1] + self.vol_avg[i0:i1 + 1] + self.vol_median[i0:i1 + 1]) if i1 >= i0 else 1
         vmax = (vmax or 1) * 1.08
         vtop, vbot = vol.top() + VOL_HEADER_H, vol.bottom() - 1
 
@@ -357,11 +364,12 @@ class CandleChart(QWidget):
             x = self._x(i, vol)
             y = vy(self.v[i])
             p.fillRect(QRectF(x - body_w / 2, y, body_w, vbot - y), self._color(i))
-        # 50-day volume average line
-        pts = QPolygonF([QPointF(self._x(i, vol), vy(self.vol_avg[i])) for i in range(i0, i1 + 1)])
-        p.setPen(QPen(VOL_AVG, 1.2))
+        # 50-day volume average and median lines
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.drawPolyline(pts)
+        for values, color in ((self.vol_avg, VOL_AVG), (self.vol_median, VOL_MEDIAN)):
+            pts = QPolygonF([QPointF(self._x(i, vol), vy(values[i])) for i in range(i0, i1 + 1)])
+            p.setPen(QPen(color, 1.2))
+            p.drawPolyline(pts)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         p.setClipping(False)
 
@@ -574,10 +582,13 @@ class CandleChart(QWidget):
         items = [
             ("Volume", INFO_TEXT, False),
             (fmt_volume(self.v[i]), INFO_TEXT, False),
-            (f"VolumeAvg({AVG_PERIOD})", UP, False),
+            (f"VolumeAvg ({AVG_PERIOD})", self._color(i), False),
+            (fmt_volume(self.v[i]), self._color(i), False),
             (fmt_volume(self.vol_avg[i]), VOL_AVG, False),
             (f"AvgDollar{AVG_PERIOD}", VOL_AVG, False),
             (f"{self.dollar_avg[i]:,.1f}", VOL_AVG, False),
+            (f"MedianVolume{AVG_PERIOD} ({AVG_PERIOD})", VOL_MEDIAN, False),
+            (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
         ]
         self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items)
 
