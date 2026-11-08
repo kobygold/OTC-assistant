@@ -586,7 +586,7 @@ class CandleChart(QWidget):
             (fmt_volume(self.v[i]), self._color(i), False),
             (fmt_volume(self.vol_avg[i]), VOL_AVG, False),
             (f"AvgDollar{AVG_PERIOD}", VOL_AVG, False),
-            (f"{self.dollar_avg[i]:,.1f}", VOL_AVG, False),
+            (fmt_volume(self.dollar_avg[i]), VOL_AVG, False),
             (f"MedianVolume{AVG_PERIOD} ({AVG_PERIOD})", VOL_MEDIAN, False),
             (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
         ]

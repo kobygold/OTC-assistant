@@ -47,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.8"
+APP_VERSION = "0.2.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
