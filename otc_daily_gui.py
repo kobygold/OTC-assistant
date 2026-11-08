@@ -47,7 +47,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.7"
+APP_VERSION = "0.2.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -254,6 +254,13 @@ class NumItem(QTableWidgetItem):
         if isinstance(other, NumItem):
             return self.value < other.value
         return super().__lt__(other)
+
+
+def fmt_held(days: int) -> str:
+    """How long the price has stayed inside a channel: days, then months."""
+    if days <= 0:
+        return "outside"
+    return f"{days} d" if days < 60 else f"{days / 30.44:.1f} mo"
 
 
 def ticker_risk(ticker: str):
@@ -745,7 +752,7 @@ class MainWindow(QMainWindow):
         root.addLayout(brow)
 
         self.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
-        self.zone_columns = ["Risk", "Ticker", "Name", "Status", "Score", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
+        self.zone_columns = ["Risk", "Ticker", "Name", "Status", "Score", "Held", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
                              "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
@@ -753,6 +760,13 @@ class MainWindow(QMainWindow):
         header_tips = {
             "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
                     "Red is the most dangerous and usually better to avoid. Hover over a sign for the details.",
+            "Score": "How consistently the stock has moved between the two zones, weighted by recency: "
+                     f"x{zones.HELD_WEIGHTS[0]:g} if the price has stayed inside the channel for 3 months or more, "
+                     f"x{zones.HELD_WEIGHTS[1]:g} for 1-3 months, x{zones.HELD_WEIGHTS[2]:g} if it left in the last month. "
+                     f"A last touch older than 3 months slides down to x{zones.AGE_WEIGHT:g} at a year. "
+                     "Hover over a score for its parts.",
+            "Held": "Time since the last close outside the channel, counted from its first touch. "
+                    "\"outside\" means the last close is outside it.",
             "Reached Rsst": "Support touches that went on to reach the resistance, out of those plus the "
                          "times the support broke first.",
             "Reached Supp": "Resistance touches that came back down to the support, out of those plus the "
@@ -1135,7 +1149,8 @@ class MainWindow(QMainWindow):
         if channel:
             bits.append(f"<b>Best channel:</b> buy alert {fmt_price(channel.support.hi)}, "
                         f"sell at {fmt_price(channel.resistance.lo)} (+{channel.gain * 100:.0f}%), "
-                        f"score {channel.score:.0f}%, {channel.status}, {channel.legs} legs, "
+                        f"score {channel.score:.0f}%, {channel.status}, held {fmt_held(channel.held_days)}, "
+                        f"{channel.legs} legs, "
                         f"reached resistance {channel.wins} of {channel.wins + channel.fails}, "
                         f"last touch {channel.last_touch}")
         else:
@@ -1495,12 +1510,15 @@ class MainWindow(QMainWindow):
             if risk:
                 risk_item.setIcon(self.risk_icons[risk[0]])
                 risk_item.setToolTip(risk[1])
+            score_item = NumItem(f"{c.score:.0f}%", c.score)
+            score_item.setToolTip(f"Pattern {c.pattern:.0f}% x held {c.held_weight:.1f} x last touch {c.age_weight:.2f}")
             cells = [
                 risk_item,
                 first,
                 QTableWidgetItem(name),
                 QTableWidgetItem(c.status),
-                NumItem(f"{c.score:.0f}%", c.score),
+                score_item,
+                NumItem(fmt_held(c.held_days), c.held_days),
                 NumItem(str(c.legs), c.legs),
                 NumItem(f"{c.wins} of {c.wins + c.fails}", c.wins / max(c.wins + c.fails, 1)),
                 NumItem(f"{c.downs} of {c.downs + c.breakouts}", c.downs / max(c.downs + c.breakouts, 1)),

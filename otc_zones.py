@@ -13,7 +13,10 @@ How it works (all in log prices, so a move of 10% counts the same at any price l
      that passed straight through it), with some credit for large reactions and for
      heavy volume at the touches.
   4. Channels: pairs of zones. Each trip from the support to the resistance (or back) is a
-     "leg". The score rewards many legs, few breakouts, and time spent inside the channel.
+     "leg". The pattern score rewards many legs, few breakouts, and time spent inside the
+     channel. The score is the pattern score times two recency weights: how long the price
+     has stayed inside the channel (3 months beats 1 month) and how recent the last touch is.
+     Old channels still show, since OTC prices often come back to them, just lower down.
   5. Status: compared with the last month of trading. See channel_status().
 
 The swings and zones use only the past, but a zone found today includes all of its history,
@@ -45,6 +48,10 @@ SPLIT_JUMP = math.log(4)    # a close-to-close jump this big that lasts is treat
 SPLIT_LASTS = math.log(3)   # break (usually a split that isn't adjusted in the database)
 SKIP_TYPES = {"WARRANT", "RIGHT", "UNIT"}
 BAD_PRICE = 0.0000011       # Massive reports 0.000001 far from where a stock trades, and a reload rounds it to 0
+HELD_LONG, HELD_SHORT = 91, RECENT_DAYS     # calendar days without a close outside the channel
+HELD_WEIGHTS = (1.0, 0.9, 0.8)              # held 3 months+, 1-3 months, broken in the last month
+AGE_FULL, AGE_OLD = 91, 365                 # last touch this recent counts fully; this old or more
+AGE_WEIGHT = 0.8                            # gets this weight, sliding in between
 
 ACTIVE, RETURNED, PAST_ABOVE, PAST_BELOW = "Active", "Returned", "Past (above)", "Past (below)"
 STATUSES = [ACTIVE, RETURNED, PAST_ABOVE, PAST_BELOW]
@@ -71,7 +78,12 @@ class Zone:
 class Channel:
     support: Zone
     resistance: Zone
-    score: float
+    score: float            # pattern x held_weight x age_weight
+    pattern: float          # how consistently the price moved between the zones
+    held_days: int          # calendar days since the last close outside the channel, or since the
+                            # first touch if none (0 = outside now)
+    held_weight: float
+    age_weight: float       # from how old the last touch is
     legs: int               # trips between the zones, in either direction
     wins: int               # support touches followed by reaching the resistance
     fails: int              # support broken before reaching the resistance
@@ -168,6 +180,16 @@ def channel_status(support: Zone, resistance: Zone, tol: float, lc: np.ndarray, 
         return PAST_BELOW
     recent = lc[recent_from:]
     return ACTIVE if np.mean((recent >= lo) & (recent <= hi)) >= ACTIVE_FRACTION else RETURNED
+
+
+def held_weight(days: int) -> float:
+    """Channels the price hasn't left for 3 months rank above those held for only 1."""
+    return HELD_WEIGHTS[0] if days >= HELD_LONG else HELD_WEIGHTS[1] if days >= HELD_SHORT else HELD_WEIGHTS[2]
+
+
+def age_weight(days: int) -> float:
+    """Full weight for a touch in the last 3 months, sliding down to AGE_WEIGHT at a year."""
+    return 1 - (1 - AGE_WEIGHT) * min(1.0, max(0, days - AGE_FULL) / (AGE_OLD - AGE_FULL))
 
 
 def clean_rows(rows) -> list:
@@ -334,9 +356,19 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
         fails, breakouts = len(fail), len(breakout)
         held = (legs + 1) / (legs + fails + breakouts + 2)
         zones_part = 0.7 + 0.3 * math.sqrt(s.strength * r.strength) / 100
+        pattern = 100 * (1 - math.exp(-legs / 3.5)) * held * inside * zones_part
+        # Recency: days since the last close outside the channel (counted from its first touch),
+        # and since its last touch
+        out = np.flatnonzero((lc[a:] < s_lo - tol) | (lc[a:] > r_hi + tol))
+        since = a + int(out[-1]) if len(out) else a
+        today = date.fromisoformat(last_date)
+        held_days = (today - date.fromisoformat(dates[since])).days
+        hw = held_weight(held_days)
+        aw = age_weight((today - date.fromisoformat(dates[b])).days)
         candidates.append(Channel(
             support=s, resistance=r,
-            score=100 * (1 - math.exp(-legs / 3.5)) * held * inside * zones_part,
+            score=pattern * hw * aw,
+            pattern=pattern, held_days=held_days, held_weight=hw, age_weight=aw,
             legs=legs, wins=wins, fails=fails, downs=downs, breakouts=breakouts,
             gain=r.lo / s.hi - 1,
             to_buy=s.hi / result.last_close - 1,
