@@ -70,7 +70,8 @@ def fmt_axis(v: float, step: float) -> str:
 
 
 def fmt_volume(v) -> str:
-    return "-" if v is None else f"{v:,.0f}"
+    # Halves round up, as thinkorswim does (a 50-day median is often x.5)
+    return "-" if v is None else f"{math.floor(v + 0.5):,}"
 
 
 def fmt_compact(v: float) -> str:
@@ -582,12 +583,11 @@ class CandleChart(QWidget):
         items = [
             ("Volume", INFO_TEXT, False),
             (fmt_volume(self.v[i]), INFO_TEXT, False),
-            (f"VolumeAvg ({AVG_PERIOD})", self._color(i), False),
-            (fmt_volume(self.v[i]), self._color(i), False),
-            (fmt_volume(self.vol_avg[i]), VOL_AVG, False),
-            (f"AvgDollar{AVG_PERIOD}", VOL_AVG, False),
+            (f"VolAvg ({AVG_PERIOD})", self._color(i), False),
+            (fmt_volume(self.vol_avg[i]), self._color(i), False),
+            (f"AvgDollar ({AVG_PERIOD})", VOL_AVG, False),
             (fmt_volume(self.dollar_avg[i]), VOL_AVG, False),
-            (f"MedianVolume{AVG_PERIOD} ({AVG_PERIOD})", VOL_MEDIAN, False),
+            (f"MedianVolume ({AVG_PERIOD})", VOL_MEDIAN, False),
             (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
         ]
         self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items)
