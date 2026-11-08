@@ -533,8 +533,8 @@ class CandleChart(QWidget):
             return DOWN
         return NEUTRAL
 
-    def _boxes(self, p, x, y, h, items):
-        """Draw a row of boxed text items: [(text, color, bold)]."""
+    def _boxes(self, p, x, y, h, items, gap=3):
+        """Draw a row of boxed text items: [(text, color, bold)]. With gap=0 neighbours share a border."""
         fm_normal = QFontMetrics(p.font())
         for text, color, bold in items:
             f = QFont(p.font())
@@ -547,7 +547,7 @@ class CandleChart(QWidget):
             p.drawRect(r)
             p.setPen(color)
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
-            x += tw + 3
+            x += tw + gap
             f.setBold(False)
             p.setFont(f)
         return x
@@ -590,7 +590,7 @@ class CandleChart(QWidget):
             (f"MedianVolume ({AVG_PERIOD})", VOL_MEDIAN, False),
             (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
         ]
-        self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items)
+        self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items, gap=0)
 
     def _axis_tag(self, p, x, y, text, bg, fg, bold=False):
         f = QFont(p.font())
