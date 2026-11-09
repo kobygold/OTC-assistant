@@ -16,6 +16,7 @@ Run:            python otc_daily_gui.py      (or double-click run_otc_gui.bat)
 
 Files the app creates next to this script:
   settings.json   your API key and preferences (plain text: keep the folder private)
+  favorites.json  your favorite tickers, their groups and the amounts you typed for them
   otc_daily.db    the downloaded candles (SQLite database)
   error_log.txt   details of unexpected errors, if any
 """
@@ -30,27 +31,29 @@ import traceback
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QPointF, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QTextDocumentFragment,
+    QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap, QPolygonF,
+    QTextDocumentFragment,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
     QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
 
 import otc_daily as core
 import otc_zones as zones
-from otc_chart import CandleChart, fmt_price
+from otc_chart import CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.2.10"
+APP_VERSION = "0.3.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
+FAVORITES_PATH = APP_DIR / "favorites.json"
 DB_PATH = APP_DIR / "otc_daily.db"
 ICON_PATH = APP_DIR / "app_icon.ico"
 
@@ -69,8 +72,15 @@ QPushButton:pressed { background: #cccccc; }
 QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
 QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
 """
-ZONE_TICKER_COL, ZONE_NAME_COL = 1, 2
+ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 1, 2, 3
 ZONE_NAME_WIDTH = 170
+# Favorites groups: number -> (name, star colour). Each ticker is in at most one group.
+FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2f6fe0"),
+              4: ("Cyan", "#16c2d5"), 5: ("Magenta", "#d81bd8"), 6: ("Red", "#e03030")}
+NOT_FAV = 99                    # sorts tickers that aren't favorites after every group
+FAV_COLUMNS = ["Fav", "Ticker", "Name", "Last day", "Close", "Change %", "Volume", "$ Volume",
+               "Bid", "Ask", "Own", "Want to buy", "Own value"]
+FAV_EDITABLE = {"Bid": "bid", "Ask": "ask", "Own": "own", "Want to buy": "want"}     # column -> saved field
 # The last letter of a 5-letter ticker: (case, risks, level). Level 1 can be risky and pay high
 # commissions, level 2 is the most dangerous and usually better to avoid.
 TICKER_RISKS = {
@@ -107,6 +117,21 @@ def save_settings(settings: dict):
     tmp = SETTINGS_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     tmp.replace(SETTINGS_PATH)
+
+
+def load_favorites() -> dict:
+    """{ticker: {"group": 1-6, and optionally "bid", "ask", "own", "want"}}"""
+    try:
+        data = json.loads(FAVORITES_PATH.read_text(encoding="utf-8")).get("tickers", {})
+    except (FileNotFoundError, ValueError, AttributeError):
+        return {}
+    return {t: f for t, f in data.items() if isinstance(f, dict) and f.get("group") in FAV_GROUPS}
+
+
+def save_favorites(favs: dict):
+    tmp = FAVORITES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"tickers": favs}, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(FAVORITES_PATH)
 
 
 def now_utc_iso() -> str:
@@ -293,6 +318,31 @@ def risk_icon(level: int) -> QIcon:
     return icon
 
 
+def star_icon(color=None) -> QIcon:
+    """A five-pointed star in a favorites group's colour, or an empty grey outline for none."""
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    points = [QPointF(16 + r * math.sin(k * math.pi / 5), 17 - r * math.cos(k * math.pi / 5))
+              for k, r in ((k, 15 if k % 2 == 0 else 6.5) for k in range(10))]
+    if color:
+        p.setPen(QPen(QColor(color).darker(160), 1.5))
+        p.setBrush(QColor(color))
+    else:
+        p.setPen(QPen(QColor("#8a8a8a"), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolygon(QPolygonF(points))
+    p.end()
+    icon = QIcon(pix)
+    icon.addPixmap(pix, QIcon.Mode.Selected)
+    return icon
+
+
+def fmt_amount(v) -> str:
+    return "" if v is None else f"{v:,.0f}" if v == int(v) else f"{v:,}"
+
+
 class PriceSpinBox(QDoubleSpinBox):
     """The arrows step by the price's own power of 10: 0.0001 below 0.001, then 0.001 up to
     0.01, then 0.01 up to 0.1 and so on. A typed 0.0035 goes to 0.004 or 0.003. Any price can
@@ -337,6 +387,10 @@ class MainWindow(QMainWindow):
         self.zone_results = []
         self.chart_analysis = None
         self.tickers_stale = True
+        self.favs = load_favorites()
+        self.fav_icons = {g: star_icon(color) for g, (_, color) in FAV_GROUPS.items()}
+        self.no_fav_icon = star_icon()
+        self.fav_filling = False
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -344,6 +398,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_chart_tab(), "Chart")
         self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
         self.tabs.addTab(self._build_zones_tab(), "Zones")
+        self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
         self.scheduler = ApiScheduler(self.delay())
@@ -479,6 +534,15 @@ class MainWindow(QMainWindow):
         self.chart_ticker.setCompleter(completer)
         self.chart_ticker.returnPressed.connect(lambda: self.show_chart(self.chart_ticker.text()))
         row.addWidget(self.chart_ticker)
+        self.chart_fav_btn = QToolButton()
+        self.chart_fav_btn.setAutoRaise(True)
+        self.chart_fav_btn.setIcon(self.no_fav_icon)
+        self.chart_fav_btn.setIconSize(self.chart_fav_btn.iconSize() * 1.4)
+        self.chart_fav_btn.setEnabled(False)
+        self.chart_fav_btn.clicked.connect(lambda: self.choose_fav(
+            self.chart_fav_ticker, self.chart_fav_btn.mapToGlobal(self.chart_fav_btn.rect().bottomLeft())))
+        self.chart_fav_ticker = ""
+        row.addWidget(self.chart_fav_btn)
         show_btn = QPushButton("Show")
         show_btn.clicked.connect(lambda: self.show_chart(self.chart_ticker.text()))
         row.addWidget(show_btn)
@@ -752,7 +816,7 @@ class MainWindow(QMainWindow):
         root.addLayout(brow)
 
         self.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
-        self.zone_columns = ["Risk", "Ticker", "Name", "Status", "Score", "Held", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
+        self.zone_columns = ["Risk", "Fav", "Ticker", "Name", "Status", "Score", "Held", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
                              "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
@@ -760,6 +824,7 @@ class MainWindow(QMainWindow):
         header_tips = {
             "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
                     "Red is the most dangerous and usually better to avoid. Hover over a sign for the details.",
+            "Fav": "Favorites group, 1-6. Click a cell to add the ticker to a group, move it or remove it.",
             "Score": "How consistently the stock has moved between the two zones, weighted by recency: "
                      f"x{zones.HELD_WEIGHTS[0]:g} if the price has stayed inside the channel for 3 months or more, "
                      f"x{zones.HELD_WEIGHTS[1]:g} for 1-3 months, x{zones.HELD_WEIGHTS[2]:g} if it left in the last month. "
@@ -787,7 +852,9 @@ class MainWindow(QMainWindow):
         self.zone_table.verticalHeader().setVisible(False)
         self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
         self.auto_size_zone_columns()
-        self.zone_table.cellDoubleClicked.connect(lambda r, c: self.open_chart_from_zones(r))
+        self.zone_table.cellDoubleClicked.connect(self.open_chart_from_zones)
+        self.zone_table.cellClicked.connect(
+            lambda r, c: c == ZONE_FAV_COL and self.choose_fav(self.zone_table.item(r, ZONE_TICKER_COL).text()))
         root.addWidget(self.zone_table, 1)
 
         self.zone_filter_timer = QTimer(self)
@@ -1096,6 +1163,10 @@ class MainWindow(QMainWindow):
             self.refresh_ticker_list()
         if index == 2:
             self.refresh_screener_dates()
+        if index == self.fav_tab_index:
+            if self.tickers_stale:
+                self.refresh_ticker_list()
+            self.refresh_favorites_table()
 
     def refresh_ticker_list(self):
         con = db()
@@ -1195,6 +1266,8 @@ class MainWindow(QMainWindow):
                            None)
         self.apply_chart_zones(channel)
         self.reload_btn.setEnabled(True)
+        self.chart_fav_ticker = ticker
+        self.update_chart_fav()
         bits = [f"<b>{ticker}</b>"]
         if name:
             bits.append(name)
@@ -1364,7 +1437,8 @@ class MainWindow(QMainWindow):
             for r in range(tbl.rowCount()):
                 # A sign has no text, so its tooltip goes in the file, without the formatting
                 w.writerow([(tbl.item(r, c).text()
-                             or QTextDocumentFragment.fromHtml(tbl.item(r, c).toolTip()).toPlainText())
+                             or (QTextDocumentFragment.fromHtml(tbl.item(r, c).toolTip()).toPlainText()
+                                 if not tbl.item(r, c).icon().isNull() else ""))
                             if tbl.item(r, c) else "" for c in range(tbl.columnCount())])
         return path
 
@@ -1514,6 +1588,7 @@ class MainWindow(QMainWindow):
             score_item.setToolTip(f"Pattern {c.pattern:.0f}% x held {c.held_weight:.1f} x last touch {c.age_weight:.2f}")
             cells = [
                 risk_item,
+                self.fav_item(ticker),
                 first,
                 QTableWidgetItem(name),
                 QTableWidgetItem(c.status),
@@ -1550,13 +1625,271 @@ class MainWindow(QMainWindow):
         if path:
             self.log(f"Zone results exported to {path}")
 
-    def open_chart_from_zones(self, row):
+    def open_chart_from_zones(self, row, col=None):
         item = self.zone_table.item(row, ZONE_TICKER_COL)
-        if not item:
+        if not item or col == ZONE_FAV_COL:
             return
         self.tabs.setCurrentIndex(1)
         channel = item.data(Qt.ItemDataRole.UserRole)
         self.show_chart(item.text(), channel)
+
+    # ================================================== Favorites ===
+    def _build_favorites_tab(self):
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Add ticker:"))
+        self.fav_add_edit = QLineEdit()
+        self.fav_add_edit.setPlaceholderText("e.g. CVAT")
+        self.fav_add_edit.setMaximumWidth(140)
+        completer = QCompleter(self.ticker_model, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        self.fav_add_edit.setCompleter(completer)
+        self.fav_add_edit.returnPressed.connect(self.add_favorite)
+        row.addWidget(self.fav_add_edit)
+        row.addWidget(QLabel("to group"))
+        self.fav_add_group = QComboBox()
+        for g, (name, _) in FAV_GROUPS.items():
+            self.fav_add_group.addItem(self.fav_icons[g], f"{g}  {name}", g)
+        row.addWidget(self.fav_add_group)
+        add_btn = QPushButton("Add")
+        add_btn.clicked.connect(self.add_favorite)
+        row.addWidget(add_btn)
+        exp = QPushButton("Export…")
+        exp.clicked.connect(lambda: self.export_table(self.fav_table, f"favorites_{date.today().isoformat()}.csv"))
+        row.addWidget(exp)
+        row.addSpacing(16)
+        self.fav_status = QLabel()
+        row.addWidget(self.fav_status, 1)
+        root.addLayout(row)
+
+        self.fav_table = QTableWidget(0, len(FAV_COLUMNS))
+        self.fav_table.setHorizontalHeaderLabels(FAV_COLUMNS)
+        tips = {
+            "Fav": "Favorites group, 1-6. Click a cell to move the ticker to another group or remove it. "
+                   "Click this title to sort by group.",
+            "Last day": "The ticker's latest day with trades in the database.",
+            "Close": "Close on the last day.",
+            "Change %": "From the close of the day before.",
+            "Volume": "Shares traded on the last day.",
+            "$ Volume": "Close x volume on the last day.",
+            "Bid": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
+            "Ask": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
+            "Own": "Shares you own. Double-click to edit.",
+            "Want to buy": "Shares you want to buy. Double-click to edit.",
+            "Own value": "Own x close.",
+        }
+        for col, name in enumerate(FAV_COLUMNS):
+            if name in tips:
+                self.fav_table.horizontalHeaderItem(col).setToolTip(tips[name])
+        self.fav_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
+                                       | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.fav_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.fav_table.verticalHeader().setVisible(False)
+        self.fav_table.setSortingEnabled(True)
+        self.fav_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        self.fav_table.cellClicked.connect(self.on_fav_cell_clicked)
+        self.fav_table.cellDoubleClicked.connect(self.on_fav_cell_double_clicked)
+        self.fav_table.itemChanged.connect(self.on_fav_item_changed)
+        root.addWidget(self.fav_table, 1)
+        return tab
+
+    def fav_group(self, ticker: str):
+        return self.favs.get(ticker, {}).get("group")
+
+    def fav_item(self, ticker: str) -> QTableWidgetItem:
+        """The Fav cell: the group's star and number, sorting by group with non-favorites last."""
+        g = self.fav_group(ticker)
+        item = NumItem(str(g) if g else "", g or NOT_FAV)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if g:
+            item.setIcon(self.fav_icons[g])
+            item.setToolTip(f"Favorites {g} ({FAV_GROUPS[g][0]}). Click to change.")
+        else:
+            item.setToolTip("Click to add to favorites.")
+        return item
+
+    def choose_fav(self, ticker: str, pos=None):
+        """Shows the favorites menu for a ticker and applies the choice."""
+        if not ticker:
+            return
+        current = self.fav_group(ticker)
+        menu = QMenu(self)
+        for g, (name, _) in FAV_GROUPS.items():
+            action = menu.addAction(self.fav_icons[g], f"{g}  {name}" + ("   (current)" if g == current else ""))
+            action.setData(g)
+        menu.addSeparator()
+        remove = menu.addAction("Remove from favorites")
+        remove.setData(0)
+        remove.setEnabled(current is not None)
+        chosen = menu.exec(pos or QCursor.pos())
+        if chosen is not None:
+            self.set_fav(ticker, chosen.data() or None)
+
+    def set_fav(self, ticker: str, group):
+        """Puts a ticker in a favorites group (None removes it) and updates every view."""
+        fav = self.favs.get(ticker)
+        if group is None:
+            if fav is None:
+                return
+            typed = [name for name, key in FAV_EDITABLE.items() if fav.get(key) is not None]
+            if typed and QMessageBox.question(
+                    self, "Remove from favorites",
+                    f"Remove {ticker} from favorites? Its {', '.join(typed)} will be lost.") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+            del self.favs[ticker]
+        else:
+            self.favs.setdefault(ticker, {})["group"] = group
+        save_favorites(self.favs)
+        # Later, so no table replaces its cells while it is still handling the click
+        QTimer.singleShot(0, lambda: self.refresh_fav_views(ticker))
+
+    def refresh_fav_views(self, ticker: str):
+        tbl = self.zone_table
+        rows = [r for r in range(tbl.rowCount()) if tbl.item(r, ZONE_TICKER_COL).text() == ticker]
+        if rows:
+            tbl.setSortingEnabled(False)
+            for r in rows:
+                tbl.setItem(r, ZONE_FAV_COL, self.fav_item(ticker))
+            tbl.setSortingEnabled(True)
+        self.refresh_favorites_table()
+        self.update_chart_fav()
+
+    def update_chart_fav(self):
+        g = self.fav_group(self.chart_fav_ticker)
+        self.chart_fav_btn.setEnabled(bool(self.chart_fav_ticker))
+        self.chart_fav_btn.setIcon(self.fav_icons[g] if g else self.no_fav_icon)
+        self.chart_fav_btn.setToolTip(
+            f"{self.chart_fav_ticker} is in favorites {g} ({FAV_GROUPS[g][0]}). Click to change."
+            if g else "Click to add this ticker to favorites.")
+
+    def add_favorite(self):
+        ticker = self.fav_add_edit.text().strip().upper()
+        if not ticker:
+            return
+        con = db()
+        try:
+            known = con.execute("SELECT 1 FROM candles WHERE ticker = ? LIMIT 1", (ticker,)).fetchone()
+        finally:
+            con.close()
+        if not known and QMessageBox.question(
+                self, "Unknown ticker", f"There is no data for {ticker} in your database. Add it anyway?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        group = self.fav_add_group.currentData()
+        old = self.fav_group(ticker)
+        self.set_fav(ticker, group)
+        self.fav_add_edit.clear()
+        self.statusBar().showMessage(f"{ticker} moved from group {old} to {group}." if old and old != group
+                                     else f"{ticker} added to favorites {group}.", 8000)
+
+    def refresh_favorites_table(self):
+        tickers = sorted(self.favs, key=lambda t: (self.favs[t]["group"], t))
+        con = db()
+        try:
+            info = {}
+            for t in tickers:
+                rows = con.execute("SELECT date, open, high, low, close, volume FROM candles "
+                                   "WHERE ticker = ? ORDER BY date DESC LIMIT 2", (t,)).fetchall()
+                det = con.execute("SELECT name FROM ticker_details WHERE ticker = ?", (t,)).fetchone()
+                info[t] = (zones.clean_rows(rows), (det[0] if det else "") or "")
+        finally:
+            con.close()
+
+        def cell(text, value, editable=False):
+            item = NumItem(text, value)
+            if not editable:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return item
+
+        def plain(text):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return item
+
+        tbl = self.fav_table
+        self.fav_filling = True
+        tbl.setSortingEnabled(False)
+        tbl.setRowCount(len(tickers))
+        for r, t in enumerate(tickers):
+            fav = self.favs[t]
+            rows, name = info[t]
+            last = rows[0] if rows else None
+            prev = rows[1] if len(rows) > 1 else None
+            close = last[4] if last else None
+            volume = last[5] if last and last[5] is not None else None
+            change = close / prev[4] - 1 if close and prev and prev[4] else None
+            own = fav.get("own")
+            value = own * close if own is not None and close else None
+            dollars = close * volume if close and volume is not None else None
+            cells = [
+                self.fav_item(t),
+                plain(t),
+                plain(name),
+                plain(last[0] if last else "no data"),
+                cell(fmt_price(close) if close else "", close or 0),
+                cell(f"{change * 100:+.1f}%" if change is not None else "", change if change is not None else -1e9),
+                cell(fmt_volume(volume) if volume is not None else "", volume or 0),
+                cell(f"${dollars:,.0f}" if dollars is not None else "", dollars or 0),
+                cell(fmt_price(fav["bid"]) if fav.get("bid") else "", fav.get("bid") or 0, True),
+                cell(fmt_price(fav["ask"]) if fav.get("ask") else "", fav.get("ask") or 0, True),
+                cell(fmt_amount(own), own or 0, True),
+                cell(fmt_amount(fav.get("want")), fav.get("want") or 0, True),
+                cell(f"${value:,.2f}" if value is not None else "", value or 0),
+            ]
+            for col, item in enumerate(cells):
+                tbl.setItem(r, col, item)
+        tbl.setSortingEnabled(True)
+        tbl.resizeColumnsToContents()
+        self.fav_filling = False
+        counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
+        self.fav_status.setText(
+            f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker to open its chart."
+            if tickers else "No favorites yet. Add a ticker here, or click a star on the Zones or Chart tab.")
+
+    def fav_row_ticker(self, row: int) -> str:
+        item = self.fav_table.item(row, FAV_COLUMNS.index("Ticker"))
+        return item.text() if item else ""
+
+    def on_fav_cell_clicked(self, row, col):
+        if col == 0:
+            self.choose_fav(self.fav_row_ticker(row))
+
+    def on_fav_cell_double_clicked(self, row, col):
+        if col == 0 or FAV_COLUMNS[col] in FAV_EDITABLE:
+            return
+        ticker = self.fav_row_ticker(row)
+        if ticker:
+            self.tabs.setCurrentIndex(1)
+            self.show_chart(ticker)
+
+    def on_fav_item_changed(self, item):
+        """Saves a typed Bid, Ask, Own or Want to buy. A cell that isn't a number is put back."""
+        if self.fav_filling:
+            return
+        key = FAV_EDITABLE.get(FAV_COLUMNS[item.column()])
+        ticker = self.fav_row_ticker(item.row())
+        if key is None or ticker not in self.favs:
+            return
+        text = item.text().replace(",", "").replace("$", "").strip()
+        try:
+            value = float(text) if text else None
+            if value is not None and not (0 <= value < math.inf):
+                raise ValueError
+        except ValueError:
+            self.statusBar().showMessage(f"\"{item.text()}\" isn't a valid amount, so {ticker}'s "
+                                         f"{FAV_COLUMNS[item.column()]} wasn't changed.", 8000)
+        else:
+            if value is None:
+                self.favs[ticker].pop(key, None)
+            else:
+                self.favs[ticker][key] = value
+            save_favorites(self.favs)
+        # Later, so the cell isn't replaced while the table is still handling the edit
+        QTimer.singleShot(0, self.refresh_favorites_table)
 
     # ================================================== closing ===
     def closeEvent(self, event):

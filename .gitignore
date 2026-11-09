@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 settings.json
 settings.tmp
+favorites.json
+favorites.tmp
 otc_daily.db
 otc_daily.db-wal
 otc_daily.db-shm
