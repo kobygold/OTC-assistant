@@ -48,6 +48,7 @@ SPLIT_JUMP = math.log(4)    # a close-to-close jump this big that lasts is treat
 SPLIT_LASTS = math.log(3)   # break (usually a split that isn't adjusted in the database)
 SKIP_TYPES = {"WARRANT", "RIGHT", "UNIT"}
 BAD_PRICE = 0.0000011       # Massive reports 0.000001 far from where a stock trades, and a reload rounds it to 0
+VWAP_MARGIN = 1.1           # a VWAP up to 10% outside the day's low-high still counts
 HELD_LONG, HELD_SHORT = 91, RECENT_DAYS     # calendar days without a close outside the channel
 HELD_WEIGHTS = (1.0, 0.9, 0.8)              # held 3 months+, 1-3 months, broken in the last month
 AGE_FULL, AGE_OLD = 91, 365                 # last touch this recent counts fully; this old or more
@@ -194,7 +195,8 @@ def age_weight(days: int) -> float:
 
 def clean_rows(rows) -> list:
     """Replaces each bad price with the candle's lowest real price, and drops candles that have
-    none. rows: (YYYY-MM-DD, open, high, low, close, volume). Same result as clean_prices()."""
+    none. rows: (YYYY-MM-DD, open, high, low, close, volume, ...), anything after the volume kept
+    as is. Same result as clean_prices()."""
     out = []
     for r in rows:
         prices = r[1:5]
@@ -203,9 +205,19 @@ def clean_rows(rows) -> list:
             if not good:
                 continue
             low = min(good)
-            r = (r[0], *(low if p is not None and p <= BAD_PRICE else p for p in prices), r[5])
+            r = (r[0], *(low if p is not None and p <= BAD_PRICE else p for p in prices), *r[5:])
         out.append(r)
     return out
+
+
+def dollar_price(low, high, close, vwap) -> float:
+    """The price for a day's dollar volume: its VWAP, as thinkorswim uses, or the close if the VWAP
+    is missing or well outside the day's (cleaned) range. Massive's VWAP includes the bad 0.000001
+    trades, so on those days it lands far below the real prices. Some trades don't set the high and
+    low, so a VWAP a little outside them is normal."""
+    if vwap is None or vwap <= BAD_PRICE or not low or not high:
+        return close
+    return vwap if low / VWAP_MARGIN <= vwap <= high * VWAP_MARGIN else close
 
 
 def clean_prices(data: np.ndarray) -> np.ndarray:

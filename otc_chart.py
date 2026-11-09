@@ -14,6 +14,8 @@ from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
+from otc_zones import dollar_price
+
 BG = QColor("#000000")
 PANE_BORDER = QColor("#3a3a3a")
 GRID = QColor("#161616")
@@ -25,6 +27,7 @@ DOWN = QColor("#ff4b14")
 NEUTRAL = QColor("#2ad4e6")
 VOL_AVG = QColor("#f0a020")
 VOL_MEDIAN = QColor("#e000e0")
+DAY_DOLLAR = QColor("#4a6cff")
 CROSS = QColor("#8c8c8c")
 LABEL_BG = QColor("#d6d6d6")
 LABEL_TEXT = QColor("#111111")
@@ -178,14 +181,17 @@ class CandleChart(QWidget):
         self.v = [r[5] or 0.0 for r in rows]
         self.vol_avg = sma(self.v, AVG_PERIOD)
         self.vol_median = rolling_median(self.v, AVG_PERIOD)
-        self.dollar_avg = sma([c * v for c, v in zip(self.c, self.v)], AVG_PERIOD)
+        # VWAP x volume, as thinkorswim's DayVolDollar; rows without a VWAP column use the close
+        self.day_dollar = [dollar_price(r[3], r[2], r[4], r[6] if len(r) > 6 else None) * v
+                           for r, v in zip(rows, self.v)]
+        self.dollar_avg = sma(self.day_dollar, AVG_PERIOD)
         self.first, self.count = 0.0, 100.0
         self.zones = []
         self.channel = None
 
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):
-        """rows: list of (YYYY-MM-DD, open, high, low, close, volume), oldest first."""
+        """rows: list of (YYYY-MM-DD, open, high, low, close, volume[, vwap]), oldest first."""
         self.ticker = ticker
         self._set_rows(rows)
         self.message = message or ("" if rows else f"No data for {ticker}.")
@@ -585,10 +591,12 @@ class CandleChart(QWidget):
             (fmt_volume(self.v[i]), INFO_TEXT, False),
             (f"VolAvg ({AVG_PERIOD})", self._color(i), False),
             (fmt_volume(self.vol_avg[i]), self._color(i), False),
-            (f"AvgDollar ({AVG_PERIOD})", VOL_AVG, False),
-            (fmt_volume(self.dollar_avg[i]), VOL_AVG, False),
             (f"MedianVolume ({AVG_PERIOD})", VOL_MEDIAN, False),
             (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
+            (f"AvgDollar ({AVG_PERIOD})", VOL_AVG, False),
+            (fmt_volume(self.dollar_avg[i]), VOL_AVG, False),
+            ("DayVolDollar", DAY_DOLLAR, False),
+            (fmt_volume(self.day_dollar[i]), DAY_DOLLAR, False),
         ]
         self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items, gap=0)
 

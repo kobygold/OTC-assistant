@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1266,7 +1266,7 @@ class MainWindow(QMainWindow):
         con = db()
         try:
             rows = con.execute(
-                "SELECT date, open, high, low, close, volume FROM candles "
+                "SELECT date, open, high, low, close, volume, vwap FROM candles "
                 "WHERE ticker = ? ORDER BY date", (ticker,)).fetchall()
             det = con.execute("SELECT name, type, tier, tier_group FROM ticker_details "
                               "WHERE ticker = ?", (ticker,)).fetchone()
@@ -1704,9 +1704,9 @@ class MainWindow(QMainWindow):
             "Close": "Close on the last day.",
             "Change %": "From the close of the day before.",
             "Volume": "Shares traded on the last day.",
-            "$ Volume": "Close x volume on the last day.",
+            "$ Volume": "VWAP x volume on the last day (DayVolDollar on the chart).",
             "VolAvg (50)": "Average volume over the last 50 days with trades, as on the chart.",
-            "VolDollar (50)": "Average of close x volume over the last 50 days with trades "
+            "VolDollar (50)": "Average of VWAP x volume over the last 50 days with trades "
                               "(AvgDollar (50) on the chart).",
             "Bid": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
             "Ask": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
@@ -1832,7 +1832,7 @@ class MainWindow(QMainWindow):
             for t in tickers:
                 # Newest first: enough for the change and the 50-day averages, with some spare for
                 # candles that cleaning drops (the chart then reaches further back too)
-                rows = con.execute("SELECT date, open, high, low, close, volume FROM candles "
+                rows = con.execute("SELECT date, open, high, low, close, volume, vwap FROM candles "
                                    "WHERE ticker = ? ORDER BY date DESC LIMIT ?", (t, AVG_PERIOD + 20)).fetchall()
                 det = con.execute("SELECT name FROM ticker_details WHERE ticker = ?", (t,)).fetchone()
                 info[t] = (zones.clean_rows(rows)[:AVG_PERIOD], (det[0] if det else "") or "")
@@ -1864,10 +1864,12 @@ class MainWindow(QMainWindow):
             change = close / prev[4] - 1 if close and prev and prev[4] else None
             own = fav.get("own")
             value = own * close if own is not None and close else None
-            dollars = close * volume if close and volume is not None else None
+            dollars = zones.dollar_price(last[3], last[2], close, last[6]) * volume \
+                if close and volume is not None else None
             # Same as the chart's VolAvg and AvgDollar on the last day: days with trades, missing volume as 0
             vol_avg = sum(x[5] or 0 for x in rows) / len(rows) if rows else None
-            dollar_avg = sum(x[4] * (x[5] or 0) for x in rows) / len(rows) if rows else None
+            dollar_avg = sum(zones.dollar_price(x[3], x[2], x[4], x[6]) * (x[5] or 0)
+                             for x in rows) / len(rows) if rows else None
             cells = [
                 self.fav_item(t),
                 plain(t),
