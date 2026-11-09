@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -72,15 +72,16 @@ QPushButton:pressed { background: #cccccc; }
 QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
 QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
 """
-ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 1, 2, 3
+ZONE_RISK_COL, ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 0, 1, 2, 3
 ZONE_NAME_WIDTH = 170
 # Favorites groups: number -> (name, star colour). Each ticker is in at most one group.
 FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2f6fe0"),
               4: ("Cyan", "#16c2d5"), 5: ("Magenta", "#d81bd8"), 6: ("Red", "#e03030")}
 NOT_FAV = 99                    # sorts tickers that aren't favorites after every group
 FAV_COLUMNS = ["Fav", "Ticker", "Name", "Last day", "Close", "Change %", "Volume", "$ Volume",
-               "Bid", "Ask", "Own", "Want to buy", "Own value"]
-FAV_EDITABLE = {"Bid": "bid", "Ask": "ask", "Own": "own", "Want to buy": "want"}     # column -> saved field
+               "Bid", "Ask", "Own", "Want to buy", "Own value", "Notes"]
+# Column -> saved field. All are numbers except Notes, which is free text.
+FAV_EDITABLE = {"Bid": "bid", "Ask": "ask", "Own": "own", "Want to buy": "want", "Notes": "notes"}
 # The last letter of a 5-letter ticker: (case, risks, level). Level 1 can be risky and pay high
 # commissions, level 2 is the most dangerous and usually better to avoid.
 TICKER_RISKS = {
@@ -120,7 +121,7 @@ def save_settings(settings: dict):
 
 
 def load_favorites() -> dict:
-    """{ticker: {"group": 1-6, and optionally "bid", "ask", "own", "want"}}"""
+    """{ticker: {"group": 1-6, and optionally "bid", "ask", "own", "want", "notes"}}"""
     try:
         data = json.loads(FAVORITES_PATH.read_text(encoding="utf-8")).get("tickers", {})
     except (FileNotFoundError, ValueError, AttributeError):
@@ -279,6 +280,15 @@ class NumItem(QTableWidgetItem):
         if isinstance(other, NumItem):
             return self.value < other.value
         return super().__lt__(other)
+
+
+def sort_descending_first(tbl: QTableWidget, ascending=("Fav",)):
+    """Clicking a column title sorts high to low first, except for these columns (Fav: group 1 first).
+    Call after the header labels are set."""
+    for col in range(tbl.columnCount()):
+        item = tbl.horizontalHeaderItem(col)
+        order = Qt.SortOrder.AscendingOrder if item.text() in ascending else Qt.SortOrder.DescendingOrder
+        item.setData(Qt.ItemDataRole.InitialSortOrderRole, order.value)
 
 
 def fmt_held(days: int) -> str:
@@ -695,6 +705,7 @@ class MainWindow(QMainWindow):
         self.scr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.scr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.scr_table.setSortingEnabled(True)
+        sort_descending_first(self.scr_table)
         self.scr_table.verticalHeader().setVisible(False)
         hdr = self.scr_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -848,9 +859,11 @@ class MainWindow(QMainWindow):
         self.zone_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.zone_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.zone_table.setSortingEnabled(True)
+        sort_descending_first(self.zone_table)
         self.zone_table.sortByColumn(self.zone_columns.index("Score"), Qt.SortOrder.DescendingOrder)
         self.zone_table.verticalHeader().setVisible(False)
         self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
+        self.risk_col_width = self.zone_table.horizontalHeader().sectionSizeHint(ZONE_RISK_COL) // 2
         self.auto_size_zone_columns()
         self.zone_table.cellDoubleClicked.connect(self.open_chart_from_zones)
         self.zone_table.cellClicked.connect(
@@ -1536,10 +1549,14 @@ class MainWindow(QMainWindow):
         self.apply_zone_filters()
 
     def auto_size_zone_columns(self):
-        """All but the Name column, which keeps a readable width the user can drag."""
+        """All but the Name column, which keeps a readable width the user can drag, and the Risk
+        column, which is half the width of its title: the signs need little room."""
         hdr = self.zone_table.horizontalHeader()
         for col in range(self.zone_table.columnCount()):
-            if col != ZONE_NAME_COL:
+            if col == ZONE_RISK_COL:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                hdr.resizeSection(col, self.risk_col_width)
+            elif col != ZONE_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
     def apply_zone_filters(self):
@@ -1679,6 +1696,7 @@ class MainWindow(QMainWindow):
             "Own": "Shares you own. Double-click to edit.",
             "Want to buy": "Shares you want to buy. Double-click to edit.",
             "Own value": "Own x close.",
+            "Notes": "Your own notes. Double-click to edit.",
         }
         for col, name in enumerate(FAV_COLUMNS):
             if name in tips:
@@ -1687,7 +1705,9 @@ class MainWindow(QMainWindow):
                                        | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.fav_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.fav_table.verticalHeader().setVisible(False)
+        self.fav_table.horizontalHeader().setStretchLastSection(True)
         self.fav_table.setSortingEnabled(True)
+        sort_descending_first(self.fav_table)
         self.fav_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.fav_table.cellClicked.connect(self.on_fav_cell_clicked)
         self.fav_table.cellDoubleClicked.connect(self.on_fav_cell_double_clicked)
@@ -1839,11 +1859,16 @@ class MainWindow(QMainWindow):
                 cell(fmt_amount(own), own or 0, True),
                 cell(fmt_amount(fav.get("want")), fav.get("want") or 0, True),
                 cell(f"${value:,.2f}" if value is not None else "", value or 0),
+                QTableWidgetItem(fav.get("notes", "")),
             ]
+            cells[-1].setToolTip(fav.get("notes", ""))
             for col, item in enumerate(cells):
                 tbl.setItem(r, col, item)
         tbl.setSortingEnabled(True)
         tbl.resizeColumnsToContents()
+        # Long notes would push the table wide; they stretch to the window and show in full on hover
+        notes = FAV_COLUMNS.index("Notes")
+        tbl.setColumnWidth(notes, min(tbl.columnWidth(notes), 400))
         self.fav_filling = False
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
@@ -1867,12 +1892,21 @@ class MainWindow(QMainWindow):
             self.show_chart(ticker)
 
     def on_fav_item_changed(self, item):
-        """Saves a typed Bid, Ask, Own or Want to buy. A cell that isn't a number is put back."""
+        """Saves a typed Bid, Ask, Own, Want to buy or Notes. A number cell that isn't a number is put back."""
         if self.fav_filling:
             return
         key = FAV_EDITABLE.get(FAV_COLUMNS[item.column()])
         ticker = self.fav_row_ticker(item.row())
         if key is None or ticker not in self.favs:
+            return
+        if key == "notes":
+            text = item.text().strip()
+            if text:
+                self.favs[ticker]["notes"] = text
+            else:
+                self.favs[ticker].pop("notes", None)
+            save_favorites(self.favs)
+            QTimer.singleShot(0, self.refresh_favorites_table)
             return
         text = item.text().replace(",", "").replace("$", "").strip()
         try:
