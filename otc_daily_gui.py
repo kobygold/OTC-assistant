@@ -46,10 +46,10 @@ from PyQt6.QtWidgets import (
 
 import otc_daily as core
 import otc_zones as zones
-from otc_chart import CandleChart, fmt_price, fmt_volume
+from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -83,7 +83,7 @@ FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2
               4: ("Cyan", "#16c2d5"), 5: ("Magenta", "#d81bd8"), 6: ("Red", "#e03030")}
 NOT_FAV = 99                    # sorts tickers that aren't favorites after every group
 FAV_COLUMNS = ["Fav", "Ticker", "Name", "Last day", "Close", "Change %", "Volume", "$ Volume",
-               "Bid", "Ask", "Own", "Want to buy", "Own value", "Notes"]
+               "VolAvg (50)", "VolDollar (50)", "Bid", "Ask", "Own", "Want to buy", "Own value", "Notes"]
 # Column -> saved field. All are numbers except Notes, which is free text.
 FAV_EDITABLE = {"Bid": "bid", "Ask": "ask", "Own": "own", "Want to buy": "want", "Notes": "notes"}
 # The last letter of a 5-letter ticker: (case, risks, level). Level 1 can be risky and pay high
@@ -1705,6 +1705,9 @@ class MainWindow(QMainWindow):
             "Change %": "From the close of the day before.",
             "Volume": "Shares traded on the last day.",
             "$ Volume": "Close x volume on the last day.",
+            "VolAvg (50)": "Average volume over the last 50 days with trades, as on the chart.",
+            "VolDollar (50)": "Average of close x volume over the last 50 days with trades "
+                              "(AvgDollar (50) on the chart).",
             "Bid": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
             "Ask": "Typed by you: your Massive plan doesn't include live quotes. Double-click to edit.",
             "Own": "Shares you own. Double-click to edit.",
@@ -1827,10 +1830,12 @@ class MainWindow(QMainWindow):
         try:
             info = {}
             for t in tickers:
+                # Newest first: enough for the change and the 50-day averages, with some spare for
+                # candles that cleaning drops (the chart then reaches further back too)
                 rows = con.execute("SELECT date, open, high, low, close, volume FROM candles "
-                                   "WHERE ticker = ? ORDER BY date DESC LIMIT 2", (t,)).fetchall()
+                                   "WHERE ticker = ? ORDER BY date DESC LIMIT ?", (t, AVG_PERIOD + 20)).fetchall()
                 det = con.execute("SELECT name FROM ticker_details WHERE ticker = ?", (t,)).fetchone()
-                info[t] = (zones.clean_rows(rows), (det[0] if det else "") or "")
+                info[t] = (zones.clean_rows(rows)[:AVG_PERIOD], (det[0] if det else "") or "")
         finally:
             con.close()
 
@@ -1860,6 +1865,9 @@ class MainWindow(QMainWindow):
             own = fav.get("own")
             value = own * close if own is not None and close else None
             dollars = close * volume if close and volume is not None else None
+            # Same as the chart's VolAvg and AvgDollar on the last day: days with trades, missing volume as 0
+            vol_avg = sum(x[5] or 0 for x in rows) / len(rows) if rows else None
+            dollar_avg = sum(x[4] * (x[5] or 0) for x in rows) / len(rows) if rows else None
             cells = [
                 self.fav_item(t),
                 plain(t),
@@ -1869,6 +1877,8 @@ class MainWindow(QMainWindow):
                 cell(f"{change * 100:+.1f}%" if change is not None else "", change if change is not None else -1e9),
                 cell(fmt_volume(volume) if volume is not None else "", volume or 0),
                 cell(f"${dollars:,.0f}" if dollars is not None else "", dollars or 0),
+                cell(fmt_volume(vol_avg) if vol_avg is not None else "", vol_avg or 0),
+                cell(f"${fmt_volume(dollar_avg)}" if dollar_avg is not None else "", dollar_avg or 0),
                 cell(fmt_price(fav["bid"]) if fav.get("bid") else "", fav.get("bid") or 0, True),
                 cell(fmt_price(fav["ask"]) if fav.get("ask") else "", fav.get("ask") or 0, True),
                 cell(fmt_amount(own), own or 0, True),
@@ -1885,7 +1895,7 @@ class MainWindow(QMainWindow):
         # with it), and a long note shows in full on hover
         notes = FAV_COLUMNS.index("Notes")
         room = tbl.viewport().width() - sum(tbl.columnWidth(c) for c in range(notes))
-        tbl.setColumnWidth(notes, max(min(tbl.columnWidth(notes), room), 150))
+        tbl.setColumnWidth(notes, max(min(tbl.columnWidth(notes), room), 100))
         self.fav_filling = False
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
