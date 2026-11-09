@@ -33,7 +33,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QPointF, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap, QPolygonF,
+    QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment,
 )
 from PyQt6.QtWidgets import (
@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -63,7 +63,11 @@ PLAN_LIMIT_MIN_AGE_DAYS = 30
 PLAN_LIMIT_CONSECUTIVE = 3
 NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
-BUTTON_STYLE = """
+APP_STYLE = """
+QHeaderView::section {
+    background: #f0f0f0; border: none; border-right: 1px solid #d6d6d6; border-bottom: 1px solid #d6d6d6;
+    padding: 4px 3px;
+}
 QPushButton {
     background: #e4e4e4; border: 1px solid #c2c2c2; border-radius: 4px; padding: 4px 12px;
 }
@@ -394,7 +398,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setStyleSheet(BUTTON_STYLE)
+        self.setStyleSheet(APP_STYLE)
         self.resize(1300, 860)
         self.settings = load_settings()
         self.download_job = None
@@ -873,7 +877,6 @@ class MainWindow(QMainWindow):
         self.zone_table.sortByColumn(self.zone_columns.index("Score"), Qt.SortOrder.DescendingOrder)
         self.zone_table.verticalHeader().setVisible(False)
         self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
-        self.risk_col_width = self.zone_table.horizontalHeader().sectionSizeHint(ZONE_RISK_COL) // 2
         self.auto_size_zone_columns()
         self.zone_table.cellDoubleClicked.connect(self.open_chart_from_zones)
         self.zone_table.cellClicked.connect(
@@ -1560,12 +1563,13 @@ class MainWindow(QMainWindow):
 
     def auto_size_zone_columns(self):
         """All but the Name column, which keeps a readable width the user can drag, and the Risk
-        column, which is half the width of its title: the signs need little room."""
+        column, which is just wide enough for its title: the signs need little room."""
         hdr = self.zone_table.horizontalHeader()
         for col in range(self.zone_table.columnCount()):
             if col == ZONE_RISK_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-                hdr.resizeSection(col, self.risk_col_width)
+                # The title plus the 3px side padding from APP_STYLE and the border
+                hdr.resizeSection(col, QFontMetrics(hdr.font()).horizontalAdvance("Risk") + 9)
             elif col != ZONE_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
@@ -1877,9 +1881,11 @@ class MainWindow(QMainWindow):
                 tbl.setItem(r, col, item)
         tbl.setSortingEnabled(True)
         tbl.resizeColumnsToContents()
-        # Long notes would push the table wide; they stretch to the window and show in full on hover
+        # Long notes would push the table wide: Notes gets the room left in the window (it stretches
+        # with it), and a long note shows in full on hover
         notes = FAV_COLUMNS.index("Notes")
-        tbl.setColumnWidth(notes, min(tbl.columnWidth(notes), 400))
+        room = tbl.viewport().width() - sum(tbl.columnWidth(c) for c in range(notes))
+        tbl.setColumnWidth(notes, max(min(tbl.columnWidth(notes), room), 150))
         self.fav_filling = False
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
