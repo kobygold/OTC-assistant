@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -289,6 +289,14 @@ def sort_descending_first(tbl: QTableWidget, ascending=("Fav",)):
         item = tbl.horizontalHeaderItem(col)
         order = Qt.SortOrder.AscendingOrder if item.text() in ascending else Qt.SortOrder.DescendingOrder
         item.setData(Qt.ItemDataRole.InitialSortOrderRole, order.value)
+
+
+def bold_header(tbl: QTableWidget):
+    """Qt bolds the titles of selected columns, so with whole-row selection they turned bold only
+    once a row was clicked. Bold from the start, they stay the same."""
+    font = QFont(tbl.horizontalHeader().font())
+    font.setBold(True)
+    tbl.horizontalHeader().setFont(font)
 
 
 def fmt_held(days: int) -> str:
@@ -706,6 +714,7 @@ class MainWindow(QMainWindow):
         self.scr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.scr_table.setSortingEnabled(True)
         sort_descending_first(self.scr_table)
+        bold_header(self.scr_table)
         self.scr_table.verticalHeader().setVisible(False)
         hdr = self.scr_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -860,6 +869,7 @@ class MainWindow(QMainWindow):
         self.zone_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.zone_table.setSortingEnabled(True)
         sort_descending_first(self.zone_table)
+        bold_header(self.zone_table)
         self.zone_table.sortByColumn(self.zone_columns.index("Score"), Qt.SortOrder.DescendingOrder)
         self.zone_table.verticalHeader().setVisible(False)
         self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
@@ -1708,6 +1718,7 @@ class MainWindow(QMainWindow):
         self.fav_table.horizontalHeader().setStretchLastSection(True)
         self.fav_table.setSortingEnabled(True)
         sort_descending_first(self.fav_table)
+        bold_header(self.fav_table)
         self.fav_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.fav_table.cellClicked.connect(self.on_fav_cell_clicked)
         self.fav_table.cellDoubleClicked.connect(self.on_fav_cell_double_clicked)
