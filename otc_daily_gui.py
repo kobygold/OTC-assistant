@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.3.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -397,6 +397,16 @@ class FavDelegate(QStyledItemDelegate):
     @classmethod
     def width(cls, fm) -> int:
         return cls.LEFT + cls.ICON + cls.GAP + fm.horizontalAdvance("6") + cls.RIGHT
+
+
+def on_enter(tbl: QTableWidget, handler):
+    """Enter (either key) on a table calls handler(row) for the current row, like a double-click. While a
+    cell is being edited the editor has the focus, so Enter there still just finishes the edit."""
+    def go():
+        if tbl.currentRow() >= 0:
+            handler(tbl.currentRow())
+    for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        QShortcut(QKeySequence(key), tbl, go, context=Qt.ShortcutContext.WidgetShortcut)
 
 
 def fix_fav_column(tbl: QTableWidget, col: int):
@@ -936,6 +946,7 @@ class MainWindow(QMainWindow):
         self.zone_table.horizontalHeader().resizeSection(ZONE_NAME_COL, ZONE_NAME_WIDTH)
         self.auto_size_zone_columns()
         self.zone_table.cellDoubleClicked.connect(self.open_chart_from_zones)
+        on_enter(self.zone_table, self.open_chart_from_zones)
         self.zone_table.cellClicked.connect(
             lambda r, c: c == ZONE_FAV_COL and self.choose_fav(self.zone_table.item(r, ZONE_TICKER_COL).text()))
         root.addWidget(self.zone_table, 1)
@@ -1790,6 +1801,7 @@ class MainWindow(QMainWindow):
         self.fav_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.fav_table.cellClicked.connect(self.on_fav_cell_clicked)
         self.fav_table.cellDoubleClicked.connect(self.on_fav_cell_double_clicked)
+        on_enter(self.fav_table, self.open_chart_from_fav)
         self.fav_table.itemChanged.connect(self.on_fav_item_changed)
         root.addWidget(self.fav_table, 1)
         return tab
@@ -1963,7 +1975,7 @@ class MainWindow(QMainWindow):
         self.fav_filling = False
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
-            f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker to open its chart."
+            f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker, or press Enter, to open its chart."
             if tickers else "No favorites yet. Add a ticker here, or click a star on the Zones or Chart tab.")
 
     def fav_row_ticker(self, row: int) -> str:
@@ -1977,6 +1989,9 @@ class MainWindow(QMainWindow):
     def on_fav_cell_double_clicked(self, row, col):
         if col == 0 or FAV_COLUMNS[col] in FAV_EDITABLE:
             return
+        self.open_chart_from_fav(row)
+
+    def open_chart_from_fav(self, row):
         ticker = self.fav_row_ticker(row)
         if ticker:
             self.tabs.setCurrentIndex(1)
