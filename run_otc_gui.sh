@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start OTC Assistant on macOS.
-# Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py.
+# Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py.
 # Run it from Terminal with:  ./run_otc_gui.sh   (once: chmod +x run_otc_gui.sh)
 # To start it with a double-click in Finder, make a copy named "OTC Assistant.command".
 #
@@ -18,8 +18,8 @@ fail() {
 }
 
 # ---- Make sure the app files are here ----
-for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py; do
-    [ -f "$f" ] || fail "otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py must be in the same folder as this script."
+for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py; do
+    [ -f "$f" ] || fail "otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py must be in the same folder as this script."
 done
 
 # ---- Find Python 3.9 or newer: Homebrew, python.org, then whatever is on PATH ----

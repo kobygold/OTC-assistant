@@ -45,11 +45,12 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_daily as core
+import otc_atm as atm
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.10"
+APP_VERSION = "0.3.11"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -77,6 +78,7 @@ QPushButton:checked { background: palette(highlight); color: palette(highlighted
 QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
 """
 ZONE_RISK_COL, ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 0, 1, 2, 3
+ATM_RISK_COL, ATM_FAV_COL, ATM_TICKER_COL, ATM_NAME_COL = 0, 1, 2, 3
 ZONE_NAME_WIDTH = 170
 # Favorites groups: number -> (name, star colour). Each ticker is in at most one group.
 FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2f6fe0"),
@@ -100,6 +102,10 @@ RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff")}     # badge
 ZONE_DEFAULTS = {
     "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3, "window": 6,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
+}
+ATM_DEFAULTS = {
+    "lookback": 20, "gap": 25, "tol": 5.0, "legs": 4, "pmin": 0.0005, "pmax": 0.05, "dollar": 500, "days": 5,
+    "skip_types": True, "tiers": core.TIER_GROUPS,
 }
 RANGES = [("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
 TYPE_NAMES = {"CS": "Common stock", "ADRC": "ADR", "PFD": "Preferred", "WARRANT": "Warrant",
@@ -480,6 +486,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_chart_tab(), "Chart")
         self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
         self.tabs.addTab(self._build_zones_tab(), "Zones")
+        self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
@@ -1752,6 +1759,308 @@ class MainWindow(QMainWindow):
         channel = item.data(Qt.ItemDataRole.UserRole)
         self.show_chart(item.text(), channel)
 
+    # ================================================== ATM tab ===
+    def _build_atm_tab(self):
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        s = {**ATM_DEFAULTS, **self.settings.get("atm_filters", {})}
+
+        box = QGroupBox("Find stocks trading in a range now: a low and a high level the price keeps reaching")
+        grid = QGridLayout(box)
+
+        def spin(cls, low, high, value, row, col, label, tip, search=False):
+            grid.addWidget(QLabel(label), row, col)
+            w = cls()
+            w.setRange(low, high)
+            w.setValue(value)
+            w.setToolTip(tip)
+            w.valueChanged.connect(self.schedule_atm_search if search else self.schedule_atm_filter)
+            grid.addWidget(w, row, col + 1)
+            return w
+
+        self.af_lookback = spin(QSpinBox, 3, atm.MAX_LOOKBACK, int(s["lookback"]), 0, 0, "Look back",
+                                "Market days to search for the range. The range itself starts after the last "
+                                "close outside it, so it can be shorter.", True)
+        self.af_lookback.setSuffix(" days")
+        self.af_gap = spin(QSpinBox, 5, 1000, int(s["gap"]), 0, 2, "Min gap %",
+                           "From the low level to the high level, before spreads and fees.", True)
+        self.af_tol = spin(QDoubleSpinBox, 0, 20, float(s["tol"]), 0, 4, "Touch within ±",
+                           "A day touches a level when its low (or high) is within this much of it. A close "
+                           "further than this outside the levels ends the range.", True)
+        self.af_tol.setDecimals(1)
+        self.af_tol.setSingleStep(0.5)
+        self.af_tol.setSuffix(" %")
+        self.af_legs = spin(QSpinBox, 1, 200, int(s["legs"]), 0, 6, "Min legs",
+                            "Trips from one level to the other since the range started. A day that touches "
+                            "both levels counts as one.")
+        price_tip = ("Last close. Below about a cent, one price tick is a large percentage, so a stock "
+                     "moving a single tick up and down can look like a wide range.")
+        self.af_pmin = spin(PriceSpinBox, 0, 100000, float(s["pmin"]), 1, 0, "Price from", price_tip)
+        self.af_pmax = spin(PriceSpinBox, 0, 100000, float(s["pmax"]), 1, 2, "to", price_tip)
+        self.af_pmax.setSpecialValueText("no limit")
+        self.af_dollar = spin(QSpinBox, 0, 1_000_000_000, int(s["dollar"]), 1, 4, "Min $ volume",
+                              "Median of close x volume per day over the last 60 calendar days, as on the Zones tab.")
+        self.af_dollar.setSingleStep(1000)
+        self.af_dollar.setPrefix("$ ")
+        self.af_dollar.setGroupSeparatorShown(True)
+        self.af_days = spin(QSpinBox, 1, atm.MAX_LOOKBACK, int(s["days"]), 1, 6, "Min days in range",
+                            "Days with trades since the last close outside the range.")
+
+        opts = QHBoxLayout()
+        self.af_skip = QCheckBox("Skip warrants, rights and units")
+        self.af_skip.setChecked(bool(s["skip_types"]))
+        self.af_skip.toggled.connect(self.schedule_atm_filter)
+        opts.addWidget(self.af_skip)
+        opts.addSpacing(20)
+        opts.addWidget(QLabel("Tiers:"))
+        self.af_tiers = {}
+        chosen = set(s["tiers"])
+        for g in core.TIER_GROUPS:
+            cb = QCheckBox(g)
+            cb.setChecked(g in chosen)
+            cb.toggled.connect(self.schedule_atm_filter)
+            self.af_tiers[g] = cb
+            opts.addWidget(cb)
+        opts.addStretch()
+        grid.addLayout(opts, 2, 0, 1, 8)
+        grid.setColumnStretch(8, 1)
+        root.addWidget(box)
+
+        brow = QHBoxLayout()
+        self.atm_scan_btn = QPushButton("Scan database")
+        self.atm_scan_btn.setToolTip("Reads the recent days from the database and searches them. Changing "
+                                     "Look back, Min gap or Touch within searches again by itself.")
+        self.atm_scan_btn.clicked.connect(lambda: self.run_atm_search(reload=True))
+        brow.addWidget(self.atm_scan_btn)
+        exp = QPushButton("Export results…")
+        exp.clicked.connect(self.export_atm)
+        brow.addWidget(exp)
+        reset = QPushButton("Reset to defaults")
+        reset.setToolTip("Puts every filter on this tab back to its default value.")
+        reset.clicked.connect(self.reset_atm_filters)
+        brow.addWidget(reset)
+        self.atm_status = QLabel("Scan the database first. Double-click a row, or press Enter, to check it on the chart.")
+        brow.addWidget(self.atm_status, 1)
+        root.addLayout(brow)
+
+        self.atm_columns = ["Risk", "Fav", "Ticker", "Name", "Legs", "Low", "High", "Gap %", "Low touches",
+                            "High touches", "Days in range", "Since", "Close", "To buy %", "Position", "$ Volume"]
+        tbl = self.atm_table = QTableWidget(0, len(self.atm_columns))
+        tbl.setHorizontalHeaderLabels(self.atm_columns)
+        tbl.setItemDelegateForColumn(ATM_FAV_COL, FavDelegate(tbl))
+        tips = {
+            "Risk": "From the last letter of a 5-letter ticker. Hover over a sign for the details.",
+            "Fav": "Favorites group, 1-6. Click a cell to add the ticker to a group, move it or remove it.",
+            "Legs": "Trips from one level to the other since the range started. A day that touches both "
+                    "levels counts as one.",
+            "Low": "The low level: a buy order here.",
+            "High": "The high level: a sell order here.",
+            "Gap %": "From the low level to the high level.",
+            "Low touches": "Days whose low reached the low level.",
+            "High touches": "Days whose high reached the high level.",
+            "Days in range": "Days with trades since the last close outside the range.",
+            "Since": "The first day of the range.",
+            "To buy %": "From the last close to the low level. Negative means it has to fall this far.",
+            "Position": "Where the last close sits: 0% at the low level, 100% at the high level.",
+            "$ Volume": "Median close x volume per day over the last 60 calendar days.",
+        }
+        for col, name in enumerate(self.atm_columns):
+            if name in tips:
+                tbl.horizontalHeaderItem(col).setToolTip(tips[name])
+        tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setSortingEnabled(True)
+        sort_descending_first(tbl)
+        bold_header(tbl)
+        tbl.sortByColumn(self.atm_columns.index("Legs"), Qt.SortOrder.DescendingOrder)
+        tbl.horizontalHeader().resizeSection(ATM_NAME_COL, ZONE_NAME_WIDTH)
+        tbl.cellDoubleClicked.connect(self.open_chart_from_atm)
+        on_enter(tbl, self.open_chart_from_atm)
+        tbl.cellClicked.connect(lambda r, c: c == ATM_FAV_COL and self.choose_fav(tbl.item(r, ATM_TICKER_COL).text()))
+        root.addWidget(tbl, 1)
+
+        self.atm_loaded = None          # recent candles read from the database, reused by each search
+        self.atm_results = []
+        self.atm_summary = ""
+        self.atm_job = None
+        self.atm_search_again = False
+        self.atm_filter_timer = QTimer(self)
+        self.atm_filter_timer.setSingleShot(True)
+        self.atm_filter_timer.setInterval(200)
+        self.atm_filter_timer.timeout.connect(self.apply_atm_filters)
+        self.atm_search_timer = QTimer(self)
+        self.atm_search_timer.setSingleShot(True)
+        self.atm_search_timer.setInterval(500)
+        self.atm_search_timer.timeout.connect(lambda: self.run_atm_search(reload=False))
+        return tab
+
+    def schedule_atm_filter(self):
+        self.atm_filter_timer.start()
+
+    def schedule_atm_search(self):
+        self.save_atm_filters()
+        if self.atm_loaded is not None:
+            self.atm_search_timer.start()
+
+    def run_atm_search(self, reload: bool):
+        """Searches for ranges in a background thread, first reading the database if asked to (or if
+        it hasn't been read yet). A change made while a search runs searches again after it."""
+        if self.atm_job is not None and self.atm_job.is_alive():
+            self.atm_search_again = True
+            return
+        self.atm_search_again = False
+        self.save_atm_filters()
+        lookback, gap, tol = self.af_lookback.value(), self.af_gap.value() / 100, self.af_tol.value() / 100
+        loaded = None if reload else self.atm_loaded
+        found = []
+
+        def fn(job):
+            nonlocal loaded
+            started = time.monotonic()
+            if loaded is None:
+                con = db()
+                try:
+                    loaded = atm.load_recent(con)
+                finally:
+                    con.close()
+            found.extend(atm.scan(loaded, lookback, tol, gap, stopping=job.stopping))
+            if job.stopping():
+                raise Stopped()
+            return f"Searched in {time.monotonic() - started:.0f} s: {len(found):,} stocks have a range."
+
+        def finished(message, ok):
+            self.atm_job = None
+            self.atm_scan_btn.setEnabled(True)
+            if ok:
+                self.atm_loaded = loaded
+                self.atm_results = found
+                self.atm_summary = message
+                self.apply_atm_filters()
+            else:
+                self.atm_status.setText(message)
+                if message.startswith(("Error", "Unexpected")):
+                    QMessageBox.warning(self, "Search problem", message[:1500])
+            if self.atm_search_again:
+                self.run_atm_search(reload=False)
+
+        self.atm_job = Job(fn)
+        self.atm_job.signals.finished.connect(finished)
+        self.atm_scan_btn.setEnabled(False)
+        self.atm_status.setText("Reading the database…" if loaded is None else "Searching…")
+        self.atm_job.start()
+
+    def save_atm_filters(self):
+        self.settings["atm_filters"] = {
+            "lookback": self.af_lookback.value(), "gap": self.af_gap.value(), "tol": self.af_tol.value(),
+            "legs": self.af_legs.value(), "pmin": self.af_pmin.value(), "pmax": self.af_pmax.value(),
+            "dollar": self.af_dollar.value(), "days": self.af_days.value(),
+            "skip_types": self.af_skip.isChecked(),
+            "tiers": [g for g, cb in self.af_tiers.items() if cb.isChecked()],
+        }
+        save_settings(self.settings)
+
+    def reset_atm_filters(self):
+        d = ATM_DEFAULTS
+        search = (self.af_lookback.value(), self.af_gap.value(), self.af_tol.value()) != \
+            (d["lookback"], d["gap"], d["tol"])
+        for w in (self.af_lookback, self.af_gap, self.af_tol):
+            w.blockSignals(True)
+        self.af_lookback.setValue(d["lookback"])
+        self.af_gap.setValue(d["gap"])
+        self.af_tol.setValue(d["tol"])
+        for w in (self.af_lookback, self.af_gap, self.af_tol):
+            w.blockSignals(False)
+        self.af_legs.setValue(d["legs"])
+        self.af_pmin.setValue(d["pmin"])
+        self.af_pmax.setValue(d["pmax"])
+        self.af_dollar.setValue(d["dollar"])
+        self.af_days.setValue(d["days"])
+        self.af_skip.setChecked(d["skip_types"])
+        for group, cb in self.af_tiers.items():
+            cb.setChecked(group in d["tiers"])
+        self.atm_filter_timer.stop()
+        if search and self.atm_loaded is not None:
+            self.run_atm_search(reload=False)
+        else:
+            self.apply_atm_filters()
+
+    def apply_atm_filters(self):
+        self.save_atm_filters()
+        if self.atm_loaded is None:
+            return
+        min_legs, min_days, min_dollar = self.af_legs.value(), self.af_days.value(), self.af_dollar.value()
+        pmin, pmax = self.af_pmin.value(), self.af_pmax.value()
+        skip = zones.SKIP_TYPES if self.af_skip.isChecked() else set()
+        tiers = {g for g, cb in self.af_tiers.items() if cb.isChecked()}
+        rows = [(t, name, r) for t, name, typ, group, tier, r in self.atm_results
+                if typ not in skip and group in tiers and r.legs >= min_legs and r.days >= min_days
+                and r.dollar_volume >= min_dollar and r.last_close >= pmin and (pmax <= 0 or r.last_close <= pmax)]
+        rows.sort(key=lambda x: (x[2].legs, x[2].days, x[2].gap), reverse=True)
+        matched = len(rows)
+        rows = rows[:MAX_ZONE_ROWS]
+
+        tbl = self.atm_table
+        tbl.setSortingEnabled(False)
+        # As on the Zones tab, columns are sized once after filling: auto-sizing per cell is very slow
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tbl.setRowCount(len(rows))
+        for row, (ticker, name, r) in enumerate(rows):
+            risk = ticker_risk(ticker)
+            risk_item = NumItem("", risk[0] if risk else 0)
+            if risk:
+                risk_item.setIcon(self.risk_icons[risk[0]])
+                risk_item.setToolTip(risk[1])
+            cells = [
+                risk_item,
+                self.fav_item(ticker),
+                QTableWidgetItem(ticker),
+                QTableWidgetItem(name),
+                NumItem(str(r.legs), r.legs),
+                NumItem(fmt_price(r.low), r.low),
+                NumItem(fmt_price(r.high), r.high),
+                NumItem(f"{r.gap * 100:.0f}%", r.gap),
+                NumItem(str(r.low_touches), r.low_touches),
+                NumItem(str(r.high_touches), r.high_touches),
+                NumItem(str(r.days), r.days),
+                QTableWidgetItem(r.since),
+                NumItem(fmt_price(r.last_close), r.last_close),
+                NumItem(f"{r.to_buy * 100:+.1f}%", r.to_buy),
+                NumItem(f"{r.position * 100:.0f}%", r.position),
+                NumItem(f"${r.dollar_volume:,.0f}", r.dollar_volume),
+            ]
+            for col, item in enumerate(cells):
+                tbl.setItem(row, col, item)
+        hdr = tbl.horizontalHeader()
+        for col in range(tbl.columnCount()):
+            if col == ATM_RISK_COL:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                hdr.resizeSection(col, QFontMetrics(hdr.font()).horizontalAdvance("Risk") + 9)
+            elif col == ATM_FAV_COL:
+                fix_fav_column(tbl, col)
+            elif col != ATM_NAME_COL:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        tbl.setSortingEnabled(True)
+        shown = f"{matched:,} stocks match" if matched <= MAX_ZONE_ROWS else \
+            f"Showing the best {MAX_ZONE_ROWS:,} of {matched:,} matching stocks"
+        self.atm_status.setText(f"{shown}.   {self.atm_summary}   Double-click a row, or press Enter, "
+                                f"to check it on the chart.")
+
+    def export_atm(self):
+        if self.atm_table.rowCount() == 0:
+            QMessageBox.information(self, "Nothing to export", "Scan the database first.")
+            return
+        path = self.export_table(self.atm_table, f"atm_{date.today().isoformat()}.csv")
+        if path:
+            self.log(f"ATM results exported to {path}")
+
+    def open_chart_from_atm(self, row, col=None):
+        item = self.atm_table.item(row, ATM_TICKER_COL)
+        if not item or col == ATM_FAV_COL:
+            return
+        self.tabs.setCurrentIndex(1)
+        self.show_chart(item.text())
+
     # ================================================== Favorites ===
     def _build_favorites_tab(self):
         tab = QWidget()
@@ -1877,13 +2186,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self.refresh_fav_views(ticker))
 
     def refresh_fav_views(self, ticker: str):
-        tbl = self.zone_table
-        rows = [r for r in range(tbl.rowCount()) if tbl.item(r, ZONE_TICKER_COL).text() == ticker]
-        if rows:
-            tbl.setSortingEnabled(False)
-            for r in rows:
-                tbl.setItem(r, ZONE_FAV_COL, self.fav_item(ticker))
-            tbl.setSortingEnabled(True)
+        for tbl, tcol, fcol in ((self.zone_table, ZONE_TICKER_COL, ZONE_FAV_COL),
+                                (self.atm_table, ATM_TICKER_COL, ATM_FAV_COL)):
+            rows = [r for r in range(tbl.rowCount()) if tbl.item(r, tcol).text() == ticker]
+            if rows:
+                tbl.setSortingEnabled(False)
+                for r in rows:
+                    tbl.setItem(r, fcol, self.fav_item(ticker))
+                tbl.setSortingEnabled(True)
         self.refresh_favorites_table()
         self.update_chart_fav()
 
@@ -2053,6 +2363,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.zone_job is not None:
             self.zone_job.stop()
+        if self.atm_job is not None:
+            self.atm_job.stop()
         running = [j for j in (self.download_job, self.names_job, self.reload_job)
                    if j is not None and j.is_alive()]
         if running:

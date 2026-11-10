@@ -1,6 +1,6 @@
 @echo off
 rem Double-click to start OTC Assistant.
-rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py.
+rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py.
 setlocal
 cd /d "%~dp0"
 
@@ -45,6 +45,7 @@ if not exist "otc_daily_gui.py" goto missing
 if not exist "otc_daily.py" goto missing
 if not exist "otc_chart.py" goto missing
 if not exist "otc_zones.py" goto missing
+if not exist "otc_atm.py" goto missing
 
 rem ---- First run only: put a shortcut with the app icon on the desktop ----
 rem (Delete shortcut_created.txt to have it created again.)
@@ -59,6 +60,6 @@ start "" %PYW% "%~dp0otc_daily_gui.py"
 exit /b 0
 
 :missing
-echo otc_daily_gui.py, otc_daily.py, otc_chart.py and otc_zones.py must be in the same folder as this .bat file.
+echo otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py must be in the same folder as this .bat file.
 pause
 exit /b 1
