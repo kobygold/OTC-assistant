@@ -31,7 +31,7 @@ import traceback
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QPointF, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
     QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
+    QPushButton, QSpinBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
 
@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -363,6 +363,49 @@ def star_icon(color=None) -> QIcon:
 
 def fmt_amount(v) -> str:
     return "" if v is None else f"{v:,.0f}" if v == int(v) else f"{v:,}"
+
+
+class FavDelegate(QStyledItemDelegate):
+    """Draws a Fav cell as the star with its group number right beside it, so the column stays narrow."""
+
+    ICON, LEFT, GAP, RIGHT = 16, 3, 1, 3
+
+    def paint(self, p, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        icon, text = QIcon(opt.icon), opt.text  # a copy: opt.icon is a live reference
+        opt.icon, opt.text = QIcon(), ""
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDecoration
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, p, opt.widget)  # background, selection
+        r = opt.rect
+        x = r.left() + self.LEFT
+        if not icon.isNull():
+            icon.paint(p, QRect(x, r.center().y() - self.ICON // 2 + 1, self.ICON, self.ICON))
+        if text:
+            x += self.ICON + self.GAP
+            p.save()
+            p.setFont(opt.font)
+            p.setPen(opt.palette.color(opt.palette.ColorRole.Text))  # as the other cells, selected or not
+            p.drawText(QRect(x, r.top(), r.right() - x + 1, r.height()),
+                       int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
+            p.restore()
+
+    def sizeHint(self, option, index):
+        return QSize(self.width(option.fontMetrics), super().sizeHint(option, index).height())
+
+    @classmethod
+    def width(cls, fm) -> int:
+        return cls.LEFT + cls.ICON + cls.GAP + fm.horizontalAdvance("6") + cls.RIGHT
+
+
+def fix_fav_column(tbl: QTableWidget, col: int):
+    """A fixed Fav column: as wide as the star and number, or the title if that's wider."""
+    hdr = tbl.horizontalHeader()
+    hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+    # The title plus the 3px side padding from APP_STYLE and the border, as for Risk
+    hdr.resizeSection(col, max(QFontMetrics(hdr.font()).horizontalAdvance("Fav") + 9,
+                               FavDelegate.width(QFontMetrics(tbl.font()))))
 
 
 class UpperValidator(QValidator):
@@ -853,6 +896,7 @@ class MainWindow(QMainWindow):
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
         self.zone_table.setHorizontalHeaderLabels(self.zone_columns)
+        self.zone_table.setItemDelegateForColumn(ZONE_FAV_COL, FavDelegate(self.zone_table))
         header_tips = {
             "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
                     "Red is the most dangerous and usually better to avoid. Hover over a sign for the details.",
@@ -1578,6 +1622,8 @@ class MainWindow(QMainWindow):
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
                 # The title plus the 3px side padding from APP_STYLE and the border
                 hdr.resizeSection(col, QFontMetrics(hdr.font()).horizontalAdvance("Risk") + 9)
+            elif col == ZONE_FAV_COL:
+                fix_fav_column(self.zone_table, col)
             elif col != ZONE_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
 
@@ -1706,6 +1752,7 @@ class MainWindow(QMainWindow):
 
         self.fav_table = QTableWidget(0, len(FAV_COLUMNS))
         self.fav_table.setHorizontalHeaderLabels(FAV_COLUMNS)
+        self.fav_table.setItemDelegateForColumn(0, FavDelegate(self.fav_table))
         tips = {
             "Fav": "Favorites group, 1-6. Click a cell to move the ticker to another group or remove it. "
                    "Click this title to sort by group.",
@@ -1902,6 +1949,7 @@ class MainWindow(QMainWindow):
                 tbl.setItem(r, col, item)
         tbl.setSortingEnabled(True)
         tbl.resizeColumnsToContents()
+        fix_fav_column(tbl, 0)
         # Long notes would push the table wide: Notes gets the room left in the window (it stretches
         # with it), and a long note shows in full on hover
         notes = FAV_COLUMNS.index("Notes")
