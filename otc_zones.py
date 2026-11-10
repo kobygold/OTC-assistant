@@ -97,6 +97,30 @@ class Channel:
     first_touch: str
     last_touch: str
     status: str
+    # For window_stats(): bar rows of each counted leg and break, the channel's first and last
+    # touch bars, its log bounds with the tolerance, and the zone-strength part of the pattern
+    win_rows: np.ndarray = None
+    down_rows: np.ndarray = None
+    fail_rows: np.ndarray = None
+    out_rows: np.ndarray = None
+    first_bar: int = 0
+    last_bar: int = 0
+    log_lo: float = 0.0
+    log_hi: float = 0.0
+    zones_part: float = 1.0
+
+
+@dataclass
+class WindowStats:
+    """A channel judged on a recent window only (or its whole history): see window_stats()."""
+    legs: int
+    wins: int
+    fails: int
+    downs: int
+    breakouts: int
+    inside: float
+    pattern: float
+    score: float
 
 
 @dataclass
@@ -109,6 +133,9 @@ class Analysis:
     swing: float            # reversal size used, 0.12 = about 12%
     dollar_volume: float    # median close x volume per trading day over the last 60 days
     bars: int
+    candidates: list = None # every channel found, best first; `channels` is the top few that don't share a zone
+    days: np.ndarray = None # date ordinal of each bar
+    lc: np.ndarray = None   # log close of each bar
 
 
 def _swings(lh: np.ndarray, ll: np.ndarray, size: float):
@@ -181,6 +208,49 @@ def channel_status(support: Zone, resistance: Zone, tol: float, lc: np.ndarray, 
         return PAST_BELOW
     recent = lc[recent_from:]
     return ACTIVE if np.mean((recent >= lo) & (recent <= hi)) >= ACTIVE_FRACTION else RETURNED
+
+
+def pattern_score(legs: int, fails: int, breakouts: int, inside: float, zones_part: float) -> float:
+    """How consistently the price moved between the zones, 0-100: many legs, few breaks, and most
+    closes inside the channel."""
+    held = (legs + 1) / (legs + fails + breakouts + 2)
+    return 100 * (1 - math.exp(-legs / 3.5)) * held * inside * zones_part
+
+
+def window_stats(a: "Analysis", c: "Channel", since=None) -> WindowStats:
+    """The channel judged only on the bars from date `since` on: legs and breaks that happened
+    then, and closes inside the channel from then (or its first touch) to its last touch. The
+    recency weights stay as they are. since=None is the whole history, as scanned."""
+    if since is None:
+        return WindowStats(c.legs, c.wins, c.fails, c.downs, c.breakouts, c.inside, c.pattern, c.score)
+    k = int(np.searchsorted(a.days, since.toordinal()))
+    wins, downs = int((c.win_rows >= k).sum()), int((c.down_rows >= k).sum())
+    fails, breakouts = int((c.fail_rows >= k).sum()), int((c.out_rows >= k).sum())
+    legs = wins + downs
+    start = max(c.first_bar, k)
+    span = a.lc[start:c.last_bar + 1]
+    inside = float(np.mean((span >= c.log_lo) & (span <= c.log_hi))) if len(span) else 0.0
+    pattern = pattern_score(legs, fails, breakouts, inside, c.zones_part)
+    return WindowStats(legs, wins, fails, downs, breakouts, inside, pattern,
+                       pattern * c.held_weight * c.age_weight)
+
+
+def pick_channels(a: "Analysis", since=None) -> list:
+    """[(channel, stats)] for the best channels judged from `since` on, that don't share a zone,
+    as the scan picks them for the whole history."""
+    if since is None:
+        return [(c, window_stats(a, c)) for c in a.channels]
+    judged = sorted(((c, window_stats(a, c, since)) for c in a.candidates or []),
+                    key=lambda cs: cs[1].score, reverse=True)
+    picked, used = [], set()
+    for c, st in judged:
+        if id(c.support) in used or id(c.resistance) in used:
+            continue
+        picked.append((c, st))
+        used.update((id(c.support), id(c.resistance)))
+        if len(picked) == MAX_CHANNELS:
+            break
+    return picked
 
 
 def held_weight(days: int) -> float:
@@ -286,7 +356,8 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
     dollar_volume = float(np.median(np.concatenate((dollars, np.zeros(missing)))))
 
     result = Analysis([], [], float(closes[-1]), last_date, break_date, math.expm1(size),
-                      dollar_volume, len(dates))
+                      dollar_volume, len(dates), [],
+                      np.array([date.fromisoformat(d).toordinal() for d in dates], dtype=np.int32), lc)
     sw_rows, kinds, current = _swings(lh, ll, size)
     if len(sw_rows) < MIN_TOUCHES:
         return result
@@ -296,6 +367,7 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
     now = lh[current[0]] if current[1] > 0 else ll[current[0]]
     path = np.append(prices, now)
     path_kinds = np.append(kinds, current[1])
+    path_rows = np.append(sw_rows, current[0])
     leg_lo, leg_hi = np.minimum(path[:-1], path[1:]), np.maximum(path[:-1], path[1:])
     moves = leg_hi - leg_lo
     positive = volume[volume > 0]
@@ -357,8 +429,9 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
 
         up_next, fail_next = _next_event(reach_up, s_touch), _next_event(fail, s_touch)
         down_next, out_next = _next_event(reach_down, r_touch), _next_event(breakout, r_touch)
-        wins = len(np.unique(up_next[up_next < fail_next]))
-        downs = len(np.unique(down_next[down_next < out_next]))
+        win_rows = path_rows[np.unique(up_next[up_next < fail_next])]
+        down_rows = path_rows[np.unique(down_next[down_next < out_next])]
+        wins, downs = len(win_rows), len(down_rows)
         legs = wins + downs
         if legs < MIN_LEGS:
             continue
@@ -366,9 +439,8 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
         span = lc[a:b + 1]
         inside = float(np.mean((span >= s_lo - tol) & (span <= r_hi + tol)))
         fails, breakouts = len(fail), len(breakout)
-        held = (legs + 1) / (legs + fails + breakouts + 2)
         zones_part = 0.7 + 0.3 * math.sqrt(s.strength * r.strength) / 100
-        pattern = 100 * (1 - math.exp(-legs / 3.5)) * held * inside * zones_part
+        pattern = pattern_score(legs, fails, breakouts, inside, zones_part)
         # Recency: days since the last close outside the channel (counted from its first touch),
         # and since its last touch
         out = np.flatnonzero((lc[a:] < s_lo - tol) | (lc[a:] > r_hi + tol))
@@ -388,10 +460,13 @@ def analyze_arrays(all_dates: list, data: np.ndarray) -> "Analysis | None":
             bars_per_leg=(b - a) / legs,
             first_touch=dates[a], last_touch=dates[b],
             status=channel_status(s, r, tol, lc, recent_from),
+            win_rows=win_rows, down_rows=down_rows, fail_rows=path_rows[fail], out_rows=path_rows[breakout],
+            first_bar=a, last_bar=b, log_lo=s_lo - tol, log_hi=r_hi + tol, zones_part=zones_part,
         ))
 
     # Best channels that don't share a zone
     candidates.sort(key=lambda c: c.score, reverse=True)
+    result.candidates = candidates
     used = set()
     for c in candidates:
         if id(c.support) in used or id(c.resistance) in used:

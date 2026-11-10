@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.3.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -98,7 +98,7 @@ TICKER_RISKS = {
 }
 RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff")}     # badge, mark
 ZONE_DEFAULTS = {
-    "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3,
+    "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3, "window": 6,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
 }
 RANGES = [("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
@@ -818,7 +818,8 @@ class MainWindow(QMainWindow):
                              "this database found no clear edge below about 45%.")
         self.zf_score.setSuffix("%")
         self.zf_legs = spin(QSpinBox, 3, 50, int(s["legs"]), 0, 2, "Min legs",
-                            "Trips between the zones, in either direction.")
+                            "Trips between the zones, in either direction, during the \"Bouncing in the last\" "
+                            "window (or the whole history if that's set to all).")
         self.zf_gain = spin(QSpinBox, 0, 1000, int(s["gain"]), 0, 4, "Min gain %",
                             "From the top of the support to the bottom of the resistance, before "
                             "spreads and fees, which can be large on OTC stocks.")
@@ -842,6 +843,13 @@ class MainWindow(QMainWindow):
                            "Hide channels whose latest touch is older than this.")
         self.zf_age.setSuffix(" months")
         self.zf_age.setSpecialValueText("any time")
+        self.zf_window = spin(QSpinBox, 0, 36, int(s["window"]), 0, 8, "Bouncing in the last",
+                              "Judge each channel only on this recent window: the legs, breaks and time "
+                              "inside the channel count only if they happened in it, and the score, Min legs "
+                              "and the Recent legs and Reached columns use those. A stock that bounced a lot "
+                              "long ago but rarely lately drops out. \"all history\" judges the whole history.")
+        self.zf_window.setSuffix(" months")
+        self.zf_window.setSpecialValueText("all history")
 
         states = QHBoxLayout()
         states.addWidget(QLabel("Status:"))
@@ -878,7 +886,7 @@ class MainWindow(QMainWindow):
             tiers.addWidget(cb)
         tiers.addStretch()
         grid.addLayout(tiers, 3, 0, 1, 8)
-        grid.setColumnStretch(8, 1)
+        grid.setColumnStretch(10, 1)
         root.addWidget(box)
 
         brow = QHBoxLayout()
@@ -906,7 +914,7 @@ class MainWindow(QMainWindow):
         root.addLayout(brow)
 
         self.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
-        self.zone_columns = ["Risk", "Fav", "Ticker", "Name", "Status", "Score", "Held", "Legs", "Reached Rsst", "Reached Supp", "Buy alert",
+        self.zone_columns = ["Risk", "Fav", "Ticker", "Name", "Status", "Score", "Held", "Legs", "Recent legs", "Reached Rsst", "Reached Supp", "Buy alert",
                              "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
@@ -916,17 +924,20 @@ class MainWindow(QMainWindow):
             "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
                     "Red is the most dangerous and usually better to avoid. Hover over a sign for the details.",
             "Fav": "Favorites group, 1-6. Click a cell to add the ticker to a group, move it or remove it.",
-            "Score": "How consistently the stock has moved between the two zones, weighted by recency: "
+            "Score": "How consistently the stock has moved between the two zones during the \"Bouncing in the "
+                     "last\" window, weighted by recency: "
                      f"x{zones.HELD_WEIGHTS[0]:g} if the price has stayed inside the channel for 3 months or more, "
                      f"x{zones.HELD_WEIGHTS[1]:g} for 1-3 months, x{zones.HELD_WEIGHTS[2]:g} if it left in the last month. "
                      f"A last touch older than 3 months slides down to x{zones.AGE_WEIGHT:g} at a year. "
                      "Hover over a score for its parts.",
+            "Legs": "Trips between the zones over the whole history, in either direction.",
+            "Recent legs": "Trips between the zones during the \"Bouncing in the last\" window.",
             "Held": "Time since the last close outside the channel, counted from its first touch. "
                     "\"outside\" means the last close is outside it.",
             "Reached Rsst": "Support touches that went on to reach the resistance, out of those plus the "
-                         "times the support broke first.",
+                         "times the support broke first During the \"Bouncing in the last\" window.",
             "Reached Supp": "Resistance touches that came back down to the support, out of those plus the "
-                         "times the resistance broke first.",
+                         "times the resistance broke first During the \"Bouncing in the last\" window.",
             "Buy alert": "Top of the support zone.",
             "Sell at": "Bottom of the resistance zone.",
             "Supp str": "Strength of the support zone, 0-100%.",
@@ -1604,7 +1615,7 @@ class MainWindow(QMainWindow):
         self.settings["zone_filters"] = {
             "score": self.zf_score.value(), "legs": self.zf_legs.value(), "gain": self.zf_gain.value(),
             "days": self.zf_days.value(), "pmin": self.zf_pmin.value(), "pmax": self.zf_pmax.value(),
-            "dollar": self.zf_dollar.value(), "age": self.zf_age.value(),
+            "dollar": self.zf_dollar.value(), "age": self.zf_age.value(), "window": self.zf_window.value(),
             "status": [n for n, cb in self.zf_status.items() if cb.isChecked()],
             "skip_types": self.zf_skip.isChecked(),
             "tiers": [g for g, cb in self.zf_tiers.items() if cb.isChecked()],
@@ -1621,6 +1632,7 @@ class MainWindow(QMainWindow):
         self.zf_pmax.setValue(d["pmax"])
         self.zf_dollar.setValue(d["dollar"])
         self.zf_age.setValue(d["age"])
+        self.zf_window.setValue(d["window"])
         for name, cb in self.zf_status.items():
             cb.setChecked(name in d["status"])
         self.zf_skip.setChecked(d["skip_types"])
@@ -1656,17 +1668,19 @@ class MainWindow(QMainWindow):
         tiers = {g for g, cb in self.zf_tiers.items() if cb.isChecked()}
         months = self.zf_age.value()
         oldest = (core.today_eastern() - timedelta(days=int(months * 30.44))).isoformat() if months else ""
+        window = self.zf_window.value()
+        since = core.today_eastern() - timedelta(days=int(window * 30.44)) if window else None
 
         rows = []
         for ticker, name, typ, group, tier, a in self.zone_results:
             if (typ in skip or group not in tiers or a.bars < min_days or a.dollar_volume < min_dollar
                     or a.last_close < pmin or (pmax > 0 and a.last_close > pmax)):
                 continue
-            for c in a.channels:
-                if (c.score >= min_score and c.legs >= min_legs and c.gain >= min_gain
+            for c, st in zones.pick_channels(a, since):
+                if (st.score >= min_score and st.legs >= min_legs and c.gain >= min_gain
                         and c.status in status and c.last_touch >= oldest):
-                    rows.append((ticker, name, a, c))
-        rows.sort(key=lambda r: r[3].score, reverse=True)
+                    rows.append((ticker, name, a, c, st))
+        rows.sort(key=lambda r: r[4].score, reverse=True)
         matched = len(rows)
         rows = rows[:MAX_ZONE_ROWS]
 
@@ -1676,7 +1690,8 @@ class MainWindow(QMainWindow):
         # the app for over a minute. So they are sized once, after filling.
         tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         tbl.setRowCount(len(rows))
-        for row, (ticker, name, a, c) in enumerate(rows):
+        when = f"in the last {window} months" if window else "over the whole history"
+        for row, (ticker, name, a, c, st) in enumerate(rows):
             first = QTableWidgetItem(ticker)
             first.setData(Qt.ItemDataRole.UserRole, c)
             note = f"Possible split {a.break_date}" if a.break_date else ""
@@ -1685,8 +1700,10 @@ class MainWindow(QMainWindow):
             if risk:
                 risk_item.setIcon(self.risk_icons[risk[0]])
                 risk_item.setToolTip(risk[1])
-            score_item = NumItem(f"{c.score:.0f}%", c.score)
-            score_item.setToolTip(f"Pattern {c.pattern:.0f}% x held {c.held_weight:.1f} x last touch {c.age_weight:.2f}")
+            score_item = NumItem(f"{st.score:.0f}%", st.score)
+            score_item.setToolTip(f"Pattern {st.pattern:.0f}% {when} ({st.legs} legs, {st.fails + st.breakouts} breaks, "
+                                  f"{st.inside * 100:.0f}% of closes inside) x held {c.held_weight:.1f} "
+                                  f"x last touch {c.age_weight:.2f}")
             cells = [
                 risk_item,
                 self.fav_item(ticker),
@@ -1696,8 +1713,9 @@ class MainWindow(QMainWindow):
                 score_item,
                 NumItem(fmt_held(c.held_days), c.held_days),
                 NumItem(str(c.legs), c.legs),
-                NumItem(f"{c.wins} of {c.wins + c.fails}", c.wins / max(c.wins + c.fails, 1)),
-                NumItem(f"{c.downs} of {c.downs + c.breakouts}", c.downs / max(c.downs + c.breakouts, 1)),
+                NumItem(str(st.legs), st.legs),
+                NumItem(f"{st.wins} of {st.wins + st.fails}", st.wins / max(st.wins + st.fails, 1)),
+                NumItem(f"{st.downs} of {st.downs + st.breakouts}", st.downs / max(st.downs + st.breakouts, 1)),
                 NumItem(fmt_price(c.support.hi), c.support.hi),
                 NumItem(f"{c.support.strength:.0f}%", c.support.strength),
                 NumItem(fmt_price(c.resistance.lo), c.resistance.lo),
