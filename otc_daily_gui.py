@@ -34,7 +34,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QPointF, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
-    QTextDocumentFragment,
+    QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -365,6 +365,13 @@ def fmt_amount(v) -> str:
     return "" if v is None else f"{v:,.0f}" if v == int(v) else f"{v:,}"
 
 
+class UpperValidator(QValidator):
+    """Turns typed or pasted text into capitals as it's entered, keeping the cursor where it was."""
+
+    def validate(self, text, pos):
+        return QValidator.State.Acceptable, text.upper(), pos
+
+
 class PriceSpinBox(QDoubleSpinBox):
     """The arrows step by the price's own power of 10: 0.0001 below 0.001, then 0.001 up to
     0.01, then 0.01 up to 0.1 and so on. A typed 0.0035 goes to 0.004 or 0.003. Any price can
@@ -547,6 +554,7 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("Ticker:"))
         self.chart_ticker = QLineEdit()
         self.chart_ticker.setPlaceholderText("e.g. CVAT")
+        self.chart_ticker.setValidator(UpperValidator(self.chart_ticker))
         self.chart_ticker.setMaximumWidth(140)
         self.ticker_model = QStringListModel()
         completer = QCompleter(self.ticker_model, self)
@@ -1672,6 +1680,7 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("Add ticker:"))
         self.fav_add_edit = QLineEdit()
         self.fav_add_edit.setPlaceholderText("e.g. CVAT")
+        self.fav_add_edit.setValidator(UpperValidator(self.fav_add_edit))
         self.fav_add_edit.setMaximumWidth(140)
         completer = QCompleter(self.ticker_model, self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
