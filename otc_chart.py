@@ -45,6 +45,7 @@ PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
 RISK_SIZE = 16
 LEFT_W, RIGHT_W = 62, 74
+SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
 
 
@@ -424,11 +425,15 @@ class CandleChart(QWidget):
                 p.drawLine(QPointF(cx, price.top() + 1), QPointF(cx, price.bottom() - 1))
                 p.drawLine(QPointF(cx, vol.top() + 1), QPointF(cx, vol.bottom() - 1))
                 pane = price if in_price else vol
+                snapped = self._snap(idx, my, py) if in_price else None
+                if snapped is not None:
+                    my = py(snapped)
                 p.drawLine(QPointF(pane.left() + 1, my), QPointF(pane.right() - 1, my))
                 if in_price:
-                    tag = fmt_axis(price_at(my), step / 10)
+                    value = snapped if snapped is not None else price_at(my)
+                    tag = fmt_chart_price(snapped) if snapped is not None else fmt_axis(value, step / 10)
                     y_value_text = tag
-                    self._zone_details(p, price, price_at(my))
+                    self._zone_details(p, price, value)
                 else:
                     tag = fmt_volume(max(0.0, (vbot - my) / (vbot - vtop) * vmax))
                 self._axis_tag(p, pane.right() + 2, my, tag, LABEL_BG, LABEL_TEXT)
@@ -448,6 +453,13 @@ class CandleChart(QWidget):
         self._info_bar(p, i, y_value_text)
         self._volume_header(p, vol, i)
         p.end()
+
+    def _snap(self, i: int, y: float, py):
+        """The hovered candle's high, low, open or close nearest to y, if it's within SNAP_PX, else None."""
+        if not 0 <= i < len(self.dates):
+            return None
+        best = min((self.h[i], self.l[i], self.o[i], self.c[i]), key=lambda v: abs(py(v) - y))
+        return best if abs(py(best) - y) <= SNAP_PX else None
 
     # ---- support and resistance zones ----
     @staticmethod
