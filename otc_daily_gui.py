@@ -33,7 +33,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
+    QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
@@ -49,7 +49,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -472,6 +472,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_zones_tab(), "Zones")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
+        visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
+        for n, i in enumerate(visible[:9], 1):
+            QShortcut(QKeySequence(f"Ctrl+{n}"), self, lambda i=i: self.tabs.setCurrentIndex(i))
+            self.tabs.setTabToolTip(i, f"Ctrl+{n}")
 
         self.scheduler = ApiScheduler(self.delay())
         core.throttle = self.scheduler.wait
