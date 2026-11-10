@@ -15,6 +15,7 @@ history, this looks only at recent days and counts every day's wicks:
   5. The pair with the most legs wins, then the longer range, then the wider gap.
 """
 
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -42,6 +43,7 @@ class AtmRange:
     to_buy: float           # last close -> low level, -0.05 = needs to fall 5%
     position: float         # where the last close sits, 0 = at the low, 1 = at the high
     dollar_volume: float
+    tol: float = 0.0        # the touch tolerance used, 0.05 = 5%
 
 
 def find_range(dates: list, data: np.ndarray, tol: float, min_gap: float) -> "AtmRange | None":
@@ -96,6 +98,7 @@ def find_range(dates: list, data: np.ndarray, tol: float, min_gap: float) -> "At
         to_buy=low / close - 1,
         position=(close - low) / (high - low),
         dollar_volume=0.0,
+        tol=tol,
     )
 
 
@@ -135,6 +138,31 @@ def dollar_volume(dates: list, data: np.ndarray) -> float:
     return float(np.median(np.concatenate((dollars, np.zeros(missing)))))
 
 
+def clean(dates: list, data: np.ndarray) -> tuple:
+    """Bad prices replaced as everywhere else, and candles with no real price left out."""
+    data = zones.clean_prices(data)
+    good = (data[:, :4] > 0).all(axis=1)
+    if not good.all():
+        dates = [d for d, g in zip(dates, good) if g]
+        data = data[good]
+    return dates, data
+
+
+def recent_range(dates: list, data: np.ndarray, first_day: str, tol: float, min_gap: float) -> "AtmRange | None":
+    """The range in the cleaned candles from first_day on, with its $ volume."""
+    k = bisect_left(dates, first_day)
+    found = find_range(dates[k:], data[k:], tol, min_gap)
+    if found is not None:
+        found.dollar_volume = dollar_volume(dates, data)
+    return found
+
+
+def first_market_day(con, lookback: int) -> str:
+    """The first of the last `lookback` market days in the database, "" if it has none."""
+    rows = con.execute("SELECT DISTINCT date FROM candles ORDER BY date DESC LIMIT ?", (lookback,)).fetchall()
+    return rows[-1][0] if rows else ""
+
+
 def scan(loaded: tuple, lookback: int, tol: float, min_gap: float, keep=None, stopping=None) -> list:
     """[(ticker, name, type, tier group, tier, AtmRange)] for the stocks with a range in the last
     `lookback` market days. keep(ticker, details, last_close, dollar_volume) can skip a stock
@@ -151,19 +179,12 @@ def scan(loaded: tuple, lookback: int, tol: float, min_gap: float, keep=None, st
         if dates[-1] < alive:
             continue
         info = details.get(ticker, ("", "", "Unknown", ""))
-        data = zones.clean_prices(data)
-        good = (data[:, :4] > 0).all(axis=1)
-        if not good.all():
-            dates = [d for d, g in zip(dates, good) if g]
-            data = data[good]
+        dates, data = clean(dates, data)
         if not len(dates):
             continue
-        dv = dollar_volume(dates, data)
-        if keep is not None and not keep(ticker, info, float(data[-1, 3]), dv):
+        if keep is not None and not keep(ticker, info, float(data[-1, 3]), dollar_volume(dates, data)):
             continue
-        k = next((i for i, d in enumerate(dates) if d >= first_day), len(dates))
-        found = find_range(dates[k:], data[k:], tol, min_gap)
+        found = recent_range(dates, data, first_day, tol, min_gap)
         if found is not None:
-            found.dollar_volume = dv
             results.append((ticker, *info, found))
     return results

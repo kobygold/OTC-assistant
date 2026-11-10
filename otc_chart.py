@@ -36,6 +36,7 @@ RESISTANCE_ZONE = QColor("#ff5a4a")
 AT_ZONE = QColor("#f0c93c")
 CHANNEL_EDGE = QColor("#ffffff")
 EXPIRATION = QColor("#d32f2f")
+BOUNCE = QColor("#b36bff")
 
 AVG_PERIOD = 50
 RIGHT_PAD_BARS = 8          # empty space after the last candle, like the screenshot
@@ -188,6 +189,8 @@ class CandleChart(QWidget):
         self.first, self.count = 0.0, 100.0
         self.zones = []
         self.channel = None
+        self.bounce = None
+        self.bounce_start = 0
 
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):
@@ -208,6 +211,12 @@ class CandleChart(QWidget):
         refer to the rows given to set_data. channel: the Channel to outline, if any."""
         self.zones = zones
         self.channel = channel
+        self.update()
+
+    def set_bounce(self, rng):
+        """rng: the otc_atm.AtmRange to draw, or None. Its dates must be in the rows given to set_data."""
+        self.bounce = rng
+        self.bounce_start = bisect_left(self.dates, date.fromisoformat(rng.since)) if rng else 0
         self.update()
 
     def set_range(self, months, label: str):
@@ -349,6 +358,7 @@ class CandleChart(QWidget):
             vv += vstep
 
         self._draw_zones(p, price, py)
+        self._draw_bounce(p, price, py)
 
         # Candles and volume bars
         bw = self._bar_w(price)
@@ -366,6 +376,7 @@ class CandleChart(QWidget):
         if self.show_expirations:
             self._draw_expirations(p, price)
         self._draw_zone_touches(p, price, py, i0, i1)
+        self._draw_bounce_touches(p, price, py, i0, i1)
         p.setClipRect(vol.adjusted(1, 1, -1, -1))
         for i in range(i0, i1 + 1):
             x = self._x(i, vol)
@@ -395,6 +406,7 @@ class CandleChart(QWidget):
                            self._color(last), QColor("#000000"), bold=True)
 
         self._draw_zone_labels(p, price, py)
+        self._draw_bounce_labels(p, price, py)
 
         # X axis labels
         self._draw_x_axis(p, price, vol)
@@ -518,6 +530,15 @@ class CandleChart(QWidget):
         p.setFont(f)
 
     def _zone_details(self, p, price, value):
+        b = self.bounce
+        if b is not None and any(level * (1 - b.tol) <= value <= level * (1 + b.tol) for level in (b.low, b.high)):
+            text = (f"Bounce range {fmt_chart_price(b.low)} - {fmt_chart_price(b.high)} (+{b.gap * 100:.0f}%)   "
+                    f"{b.legs} legs   low touched on {b.low_touches} days, high on {b.high_touches}   "
+                    f"since {b.since} ({b.days} days)")
+            width = QFontMetrics(p.font()).horizontalAdvance(text) + 12
+            p.fillRect(QRectF(price.left() + 3, price.top() + 3, width, 18), BG)
+            self._boxes(p, price.left() + 3, price.top() + 3, 18, [(text, BOUNCE, False)])
+            return
         for zone in self.zones:
             if zone.lo <= value <= zone.hi:
                 name = {"support": "Support", "resistance": "Resistance"}.get(zone.role, "Price is at this zone")
@@ -531,6 +552,70 @@ class CandleChart(QWidget):
                 p.fillRect(QRectF(price.left() + 3, price.top() + 3, width, 18), BG)
                 self._boxes(p, price.left() + 3, price.top() + 3, 18, [(text, self._zone_color(zone), False)])
                 return
+
+    # ---- the range the price is bouncing in now (ATM tab) ----
+    def _bounce_x0(self, price):
+        return max(self._x(self.bounce_start, price) - self._bar_w(price) / 2, price.left())
+
+    def _draw_bounce(self, p, price, py):
+        """Each level as a line, in a light band as wide as the touch tolerance, from the day the
+        range started to the right edge."""
+        b = self.bounce
+        if b is None:
+            return
+        x0 = self._bounce_x0(price)
+        if x0 >= price.right():
+            return
+        p.setClipRect(price.adjusted(1, 1, -1, -1))
+        band = QColor(BOUNCE)
+        band.setAlpha(45)
+        for level in (b.low, b.high):
+            y1, y2 = py(level * (1 + b.tol)), py(level * (1 - b.tol))
+            p.fillRect(QRectF(x0, y1, price.right() - x0, max(y2 - y1, 1.0)), band)
+            p.setPen(QPen(BOUNCE, 1.6))
+            y = py(level)
+            p.drawLine(QPointF(x0, y), QPointF(price.right(), y))
+        p.setClipping(False)
+
+    def _draw_bounce_touches(self, p, price, py, i0, i1):
+        """Dots on the wicks that touched a level, from the day the range started."""
+        b = self.bounce
+        if b is None:
+            return
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(BOUNCE)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for i in range(max(i0, self.bounce_start), i1 + 1):
+            x = self._x(i, price)
+            if b.low * (1 - b.tol) <= self.l[i] <= b.low * (1 + b.tol):
+                p.drawEllipse(QPointF(x, py(self.l[i]) + 6), 3, 3)
+            if b.high * (1 - b.tol) <= self.h[i] <= b.high * (1 + b.tol):
+                p.drawEllipse(QPointF(x, py(self.h[i]) - 6), 3, 3)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+    def _draw_bounce_labels(self, p, price, py):
+        """'Low 0.005' and 'High 0.0083' where the range starts, above each line."""
+        b = self.bounce
+        if b is None:
+            return
+        x0 = self._bounce_x0(price)
+        f = QFont(p.font())
+        f.setBold(True)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        for name, level in (("Low", b.low), ("High", b.high)):
+            y = py(level)
+            if not price.top() + 20 <= y <= price.bottom() - 4 or x0 >= price.right() - 40:
+                continue
+            text = f"{name} {fmt_chart_price(level)}"
+            r = QRectF(x0 + 2, y - 19, fm.horizontalAdvance(text) + 8, 16)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(BOUNCE)
+            p.drawRoundedRect(r, 2, 2)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+        f.setBold(False)
+        p.setFont(f)
 
     def _color(self, i):
         if self.c[i] > self.o[i]:

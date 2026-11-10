@@ -31,6 +31,7 @@ import traceback
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 from PyQt6.QtCore import QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
@@ -44,13 +45,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import otc_daily as core
 import otc_atm as atm
+import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.3.11"
+APP_VERSION = "0.4.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -474,6 +475,7 @@ class MainWindow(QMainWindow):
         self.zone_job = None
         self.zone_results = []
         self.chart_analysis = None
+        self.chart_rows = []
         self.tickers_stale = True
         self.favs = load_favorites()
         self.fav_icons = {g: star_icon(color) for g, (_, color) in FAV_GROUPS.items()}
@@ -672,6 +674,17 @@ class MainWindow(QMainWindow):
         self.zones_min.setValue(int(self.settings.get("zones_min_strength", 40)))
         self.zones_min.valueChanged.connect(self.on_zone_option_changed)
         row.addWidget(self.zones_min)
+        row.addSpacing(16)
+
+        self.bounces_show = QCheckBox("Bounces")
+        self.bounces_show.setChecked(bool(self.settings.get("bounces_show", True)))
+        self.bounces_show.setToolTip(
+            "The range the price is bouncing in now, as found on the ATM tab with its Look back, Min gap "
+            "and Touch within settings: purple lines at the low and high levels, from the day the range "
+            "started, in a band as wide as the touch tolerance. Dots mark the days that touched a level. "
+            "Hover over a band for its details.")
+        self.bounces_show.toggled.connect(self.on_bounce_option_changed)
+        row.addWidget(self.bounces_show)
         row.addSpacing(16)
 
         self.expirations_show = QCheckBox("Expirations")
@@ -1311,13 +1324,49 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.apply_chart_zones()
 
+    def on_bounce_option_changed(self):
+        self.settings["bounces_show"] = self.bounces_show.isChecked()
+        save_settings(self.settings)
+        self.apply_chart_zones()
+
+    def chart_bounce(self):
+        """The current chart's range with the ATM tab's settings, or None."""
+        if not self.bounces_show.isChecked() or not self.chart.ticker or not self.chart.dates:
+            return None
+        con = db()
+        try:
+            first_day = atm.first_market_day(con, self.af_lookback.value())
+        finally:
+            con.close()
+        if not first_day:
+            return None
+        rows = [r for r in self.chart_rows if None not in r[1:5]]
+        if not rows:
+            return None
+        dates, data = atm.clean([r[0] for r in rows], np.array([[*r[1:5], r[5] or 0.0] for r in rows], dtype=float))
+        if not dates:
+            return None
+        return atm.recent_range(dates, data, first_day, self.af_tol.value() / 100, self.af_gap.value() / 100)
+
     def apply_chart_zones(self, channel=None):
         """Puts the zones of the current chart on it, outlining the given channel, or the
-        best one. Its two zones are always shown, whatever the minimum strength is."""
+        best one. Its two zones are always shown, whatever the minimum strength is. Then the
+        bouncing range, if that's turned on."""
+        bounce = self.chart_bounce()
+        self.chart.set_bounce(bounce)
+        bounce_bit = ""
+        if bounce:
+            bounce_bit = (f"<b>Bouncing:</b> low {fmt_price(bounce.low)}, high {fmt_price(bounce.high)} "
+                          f"(+{bounce.gap * 100:.0f}%), {bounce.legs} legs since {bounce.since}, low touched on "
+                          f"{bounce.low_touches} days, high on {bounce.high_touches}")
+        elif self.bounces_show.isChecked() and self.chart.dates:
+            bounce_bit = (f"No bounce range of {self.af_gap.value()}% or more in the last "
+                          f"{self.af_lookback.value()} market days (settings on the ATM tab).")
         analysis = self.chart_analysis
         if analysis is None or not self.zones_show.isChecked():
             self.chart.set_zones([])
-            self.zone_info.hide()
+            self.zone_info.setText(bounce_bit)
+            self.zone_info.setVisible(bool(bounce_bit))
             return
         if channel is None:
             channel = self.chart.channel if self.chart.channel in analysis.channels else None
@@ -1341,6 +1390,8 @@ class MainWindow(QMainWindow):
         if analysis.break_date:
             bits.append(f"Possible split on {analysis.break_date}: earlier candles are ignored. "
                         "Try Reload history from Massive.")
+        if bounce_bit:
+            bits.append(bounce_bit)
         self.zone_info.setText("   ·   ".join(bits))
         self.zone_info.show()
 
@@ -1359,6 +1410,7 @@ class MainWindow(QMainWindow):
         finally:
             con.close()
         rows = zones.clean_rows(rows)
+        self.chart_rows = rows
         name, typ, tier, group = det if det else (None, None, None, None)
         label, months = self.current_range()
         tier_text = tier or (group if group and group != "Unknown" else "")
@@ -1900,6 +1952,8 @@ class MainWindow(QMainWindow):
 
     def schedule_atm_search(self):
         self.save_atm_filters()
+        if self.chart.bounce is not None or self.bounces_show.isChecked():
+            self.apply_chart_zones()
         if self.atm_loaded is not None:
             self.atm_search_timer.start()
 
@@ -1980,6 +2034,8 @@ class MainWindow(QMainWindow):
         for group, cb in self.af_tiers.items():
             cb.setChecked(group in d["tiers"])
         self.atm_filter_timer.stop()
+        if search:
+            self.apply_chart_zones()
         if search and self.atm_loaded is not None:
             self.run_atm_search(reload=False)
         else:
