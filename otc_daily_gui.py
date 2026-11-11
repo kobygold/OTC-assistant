@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.8"
+APP_VERSION = "0.4.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -636,7 +636,7 @@ class MainWindow(QMainWindow):
         self.chart_ticker = QLineEdit()
         self.chart_ticker.setPlaceholderText("e.g. CVAT")
         self.chart_ticker.setValidator(UpperValidator(self.chart_ticker))
-        self.chart_ticker.setMaximumWidth(140)
+        self.chart_ticker.setFixedWidth(140)  # never shrinks when the window is narrow
         self.ticker_model = QStringListModel()
         completer = QCompleter(self.ticker_model, self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
