@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.10"
+APP_VERSION = "0.5.11"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -831,6 +831,18 @@ class MainWindow(QMainWindow):
             "while Level II streams the ticker.")
         self.bid_ask_tags_show.toggled.connect(self.on_bid_ask_tags_toggled)
         row.addWidget(self.bid_ask_tags_show)
+        row.addSpacing(16)
+
+        row.addWidget(QLabel("Averaging"))
+        self.avg_period = QSpinBox()
+        self.avg_period.setRange(2, 250)
+        self.avg_period.setSuffix(" days")
+        self.avg_period.setValue(int(self.settings.get("vol_avg_period", AVG_PERIOD)))
+        self.avg_period.setToolTip(
+            "Days in the volume pane's average and median lines, and in VolAvg, MedianVolume and "
+            "AvgDollar above it.")
+        self.avg_period.valueChanged.connect(self.on_avg_period_changed)
+        row.addWidget(self.avg_period)
         row.addStretch()
         row = main_row
         row.addStretch()
@@ -859,6 +871,7 @@ class MainWindow(QMainWindow):
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
+        self.chart.avg_period = self.avg_period.value()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json",
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
@@ -1492,6 +1505,11 @@ class MainWindow(QMainWindow):
         if self.settings.get("chart_options_open") != checked:
             self.settings["chart_options_open"] = checked
             save_settings(self.settings)
+
+    def on_avg_period_changed(self, days):
+        self.settings["vol_avg_period"] = days
+        save_settings(self.settings)
+        self.chart.set_avg_period(days)
 
     def on_bid_ask_tags_toggled(self, checked):
         self.settings["bid_ask_tags_show"] = checked

@@ -186,6 +186,7 @@ class CandleChart(QWidget):
         self.show_expirations = True
         self.show_last_tags = True     # the last price tag on the right axis
         self.show_bid_ask_tags = True  # the live bid and ask tags on the right
+        self.avg_period = AVG_PERIOD   # days in the volume average and median
         self.risk_icon = None
         self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
@@ -211,18 +212,26 @@ class CandleChart(QWidget):
         self.live = {}              # live quote for the axis tags: price, volume, open
 
     def _load(self, rows):
+        self.rows = rows
         self.dates = [date.fromisoformat(r[0]) for r in rows]
         self.o = [r[1] for r in rows]
         self.h = [r[2] for r in rows]
         self.l = [r[3] for r in rows]
         self.c = [r[4] for r in rows]
         self.v = [r[5] or 0.0 for r in rows]
-        self.vol_avg = sma(self.v, AVG_PERIOD)
-        self.vol_median = rolling_median(self.v, AVG_PERIOD)
+        self.vol_avg = sma(self.v, self.avg_period)
+        self.vol_median = rolling_median(self.v, self.avg_period)
         # VWAP x volume, as thinkorswim's DayVolDollar; rows without a VWAP column use the close
         self.day_dollar = [dollar_price(r[3], r[2], r[4], r[6] if len(r) > 6 else None) * v
                            for r, v in zip(rows, self.v)]
-        self.dollar_avg = sma(self.day_dollar, AVG_PERIOD)
+        self.dollar_avg = sma(self.day_dollar, self.avg_period)
+
+    def set_avg_period(self, days):
+        """The days in the volume average, median and AvgDollar lines and labels."""
+        if days != self.avg_period:
+            self.avg_period = days
+            self._load(self.rows)
+            self.update()
 
     def set_live(self, q=None):
         """A live Level 1 quote from Schwab (stream field names), or None to drop it.
@@ -820,11 +829,11 @@ class CandleChart(QWidget):
         items = [
             ("Volume", INFO_TEXT, False),
             (fmt_volume(self.v[i]), INFO_TEXT, False),
-            (f"VolAvg ({AVG_PERIOD})", self._color(i), False),
+            (f"VolAvg ({self.avg_period})", self._color(i), False),
             (fmt_volume(self.vol_avg[i]), self._color(i), False),
-            (f"MedianVolume ({AVG_PERIOD})", VOL_MEDIAN, False),
+            (f"MedianVolume ({self.avg_period})", VOL_MEDIAN, False),
             (fmt_volume(self.vol_median[i]), VOL_MEDIAN, False),
-            (f"AvgDollar ({AVG_PERIOD})", VOL_AVG, False),
+            (f"AvgDollar ({self.avg_period})", VOL_AVG, False),
             (fmt_volume(self.dollar_avg[i]), VOL_AVG, False),
             ("DayVolDollar", DAY_DOLLAR, False),
             (fmt_volume(self.day_dollar[i]), DAY_DOLLAR, False),
