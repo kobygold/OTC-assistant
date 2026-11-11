@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -685,7 +685,7 @@ class MainWindow(QMainWindow):
         self.bounces_show.setToolTip(
             "The range the price is bouncing in now, as found on the ATM tab with its Look back, Min gap "
             "and Touch within settings: purple lines at the low and high levels, from the day the range "
-            "started, in a band as wide as the touch tolerance. Dots mark the days that touched a level. "
+            "started, in a band as wide as the touch tolerance. "
             "Hover over a band for its details.")
         self.bounces_show.toggled.connect(self.on_bounce_option_changed)
         row.addWidget(self.bounces_show)

@@ -376,7 +376,6 @@ class CandleChart(QWidget):
         if self.show_expirations:
             self._draw_expirations(p, price)
         self._draw_zone_touches(p, price, py, i0, i1)
-        self._draw_bounce_touches(p, price, py, i0, i1)
         p.setClipRect(vol.adjusted(1, 1, -1, -1))
         for i in range(i0, i1 + 1):
             x = self._x(i, vol)
@@ -588,24 +587,9 @@ class CandleChart(QWidget):
             p.drawLine(QPointF(x0, y), QPointF(price.right(), y))
         p.setClipping(False)
 
-    def _draw_bounce_touches(self, p, price, py, i0, i1):
-        """Dots on the wicks that touched a level, from the day the range started."""
-        b = self.bounce
-        if b is None:
-            return
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(BOUNCE)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for i in range(max(i0, self.bounce_start), i1 + 1):
-            x = self._x(i, price)
-            if b.low * (1 - b.tol) <= self.l[i] <= b.low * (1 + b.tol):
-                p.drawEllipse(QPointF(x, py(self.l[i]) + 6), 3, 3)
-            if b.high * (1 - b.tol) <= self.h[i] <= b.high * (1 + b.tol):
-                p.drawEllipse(QPointF(x, py(self.h[i]) - 6), 3, 3)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-
     def _draw_bounce_labels(self, p, price, py):
-        """'Low 0.005' and 'High 0.0083' where the range starts, above each line."""
+        """'High 0.0083' just above the high band and 'Low 0.005' just below the low band, where the
+        range starts."""
         b = self.bounce
         if b is None:
             return
@@ -614,12 +598,17 @@ class CandleChart(QWidget):
         f.setBold(True)
         p.setFont(f)
         fm = QFontMetrics(f)
-        for name, level in (("Low", b.low), ("High", b.high)):
-            y = py(level)
-            if not price.top() + 20 <= y <= price.bottom() - 4 or x0 >= price.right() - 40:
+        if x0 >= price.right() - 40:
+            return
+        for name, level, top in (("High", b.high, py(b.high * (1 + b.tol)) - 17),
+                                 ("Low", b.low, py(b.low * (1 - b.tol)) + 1)):
+            # No room outside the band at the chart's edge: keep the label just inside the edge,
+            # as long as its line is still on the chart
+            if not price.top() <= py(level) <= price.bottom():
                 continue
+            top = min(max(top, price.top() + 1), price.bottom() - 17)
             text = f"{name} {fmt_chart_price(level)}"
-            r = QRectF(x0 + 2, y - 19, fm.horizontalAdvance(text) + 8, 16)
+            r = QRectF(x0 + 2, top, fm.horizontalAdvance(text) + 8, 16)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(BOUNCE)
             p.drawRoundedRect(r, 2, 2)
