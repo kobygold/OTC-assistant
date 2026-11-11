@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -761,9 +761,18 @@ class MainWindow(QMainWindow):
             "Drag the line above it to change its height.")
         self.level2_show.toggled.connect(self.on_level2_toggled)
         row.addWidget(self.level2_show)
+        row.addSpacing(16)
+
+        self.last_tags_show = QCheckBox("Price/Vol tags")
+        self.last_tags_show.setChecked(bool(self.settings.get("last_tags_show", True)))
+        self.last_tags_show.setToolTip(
+            "The current price and day volume tags on the right axes: live from Schwab while Level II "
+            "streams the ticker, else the last day's close and volume. Colored like a candle.")
+        self.last_tags_show.toggled.connect(self.on_last_tags_toggled)
+        row.addWidget(self.last_tags_show)
         row.addStretch()
 
-        self.reload_btn = QPushButton("Reload history from Massive")
+        self.reload_btn = QPushButton("Reload History")
         self.reload_btn.setToolTip(
             "Re-downloads this ticker's full history in one API call, split-adjusted as of "
             "today. Use it after a split or reverse split. Stored prices stay where the new ones "
@@ -781,6 +790,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.zone_info)
         self.chart = CandleChart()
         self.chart.show_expirations = self.expirations_show.isChecked()
+        self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json")
         self.level2.setVisible(self.level2_show.isChecked())
         self.level2.live_quote.connect(self.on_live_quote)
@@ -1401,6 +1411,12 @@ class MainWindow(QMainWindow):
         self.chart.show_expirations = checked
         self.chart.update()
 
+    def on_last_tags_toggled(self, checked):
+        self.settings["last_tags_show"] = checked
+        save_settings(self.settings)
+        self.chart.show_last_tags = checked
+        self.chart.update()
+
     def on_level2_toggled(self, checked):
         self.settings["level2_show"] = checked
         save_settings(self.settings)
@@ -1488,7 +1504,7 @@ class MainWindow(QMainWindow):
             bits.append("No channel found: the price hasn't moved back and forth between two zones.")
         if analysis.break_date:
             bits.append(f"Possible split on {analysis.break_date}: earlier candles are ignored. "
-                        "Try Reload history from Massive.")
+                        "Try Reload History.")
         if bounce_bit:
             bits.append(bounce_bit)
         self.zone_info.setText("   ·   ".join(bits))
@@ -1625,7 +1641,7 @@ class MainWindow(QMainWindow):
         self.log(message)
         self.reload_job = None
         self.reload_btn.setEnabled(True)
-        self.reload_btn.setText("Reload history from Massive")
+        self.reload_btn.setText("Reload History")
         if ok:
             self.show_chart(ticker)
             self.statusBar().showMessage(message, 10000)

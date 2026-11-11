@@ -171,6 +171,7 @@ class CandleChart(QWidget):
         self.subtitle = ""
         self.range_label = "1Y"
         self.show_expirations = True
+        self.show_last_tags = True     # the last price and day volume tags on the right
         self.risk_icon = None
         self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
@@ -415,17 +416,18 @@ class CandleChart(QWidget):
         # Last price and day volume tags on the right axes: live from Schwab when the Level II
         # panel streams this ticker, else the last candle's. Colored like a candle: close vs open.
         last = len(self.dates) - 1
-        now = self.live.get("price", self.c[last])
-        if "price" in self.live and self.live.get("open"):
-            color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
-        else:
-            color = self._color(last)
-        ly = py(now)
-        if price.top() <= ly <= price.bottom():
-            self._axis_tag(p, price.right() + 2, ly, fmt_axis(now), color, QColor("#000000"), bold=True)
-        day_vol = self.live.get("volume", self.v[last])
-        self._axis_tag(p, vol.right() + 2, min(max(vy(day_vol), vtop + 8), vbot - 8), fmt_volume(day_vol),
-                       color, QColor("#000000"), bold=True)
+        if self.show_last_tags:
+            now = self.live.get("price", self.c[last])
+            if "price" in self.live and self.live.get("open"):
+                color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
+            else:
+                color = self._color(last)
+            ly = py(now)
+            if price.top() <= ly <= price.bottom():
+                self._axis_tag(p, price.right() + 2, ly, fmt_axis(now), color, QColor("#000000"), bold=True)
+            day_vol = self.live.get("volume", self.v[last])
+            self._axis_tag(p, vol.right() + 2, min(max(vy(day_vol), vtop + 8), vbot - 8), fmt_volume(day_vol),
+                           color, QColor("#000000"), bold=True)
 
         self._draw_zone_labels(p, price, py)
         self._draw_bounce_labels(p, price, py)
