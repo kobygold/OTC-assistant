@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox, QPushButton,
@@ -42,6 +42,14 @@ GREEN = "#1db31d"       # a size that grew, a rise, the bid in the quote bar
 RED = "#e0404f"         # a size that shrank, a fall
 LAST = "#f3c400"        # the last price
 TEXT = "#d8d8d8"
+# Market makers to watch on the ask side, from the OTC course's market maker table. Green ones
+# (retail: ETRF, CSTI, GTSM, NITE) get no sign.
+MM_RED = {"MAXM", "GLED", "CFGN", "PAUL", "JANE", "BBAR", "BLAS", "ALPS", "STXG", "AEXG"}   # bad players: diluters
+MM_YELLOW = {"OTCN", "OTCX", "CDEL", "INTL", "VIRT"}                                         # so-so
+MM_TIPS = {2: "Dilutive Market Maker! Don't buy this stock!",
+           1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks."}
+SIGN_W = 16             # the Ask table's sign column
+
 PANEL_STYLE = f"""
 #level2 {{ background: #000000; }}
 #l2bar {{ background: #333333; }}
@@ -269,9 +277,11 @@ class Level2Panel(QWidget):
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
 
-    def __init__(self, settings: dict, token_path: Path, parent=None):
+    def __init__(self, settings: dict, token_path: Path, mm_icons=None, parent=None):
+        """mm_icons: {1: yellow sign, 2: red sign} for the market makers in MM_YELLOW / MM_RED."""
         super().__init__(parent)
         self.settings, self.token_path = settings, token_path
+        self.mm_icons = mm_icons or {}
         self.ticker = ""
         self.name = ""
         self.feed = None
@@ -329,14 +339,15 @@ class Level2Panel(QWidget):
         sides.setContentsMargins(0, 0, 0, 0)
         sides.setSpacing(6)
         self.bid_table = self._table(["Ex", "Bid", "BS"])
-        self.ask_table = self._table(["Ex", "Ask", "AS"])
+        self.ask_table = self._table(["", "Ex", "Ask", "AS"], sign_col=True)
         sides.addWidget(self.bid_table)
         sides.addWidget(self.ask_table)
         root.addLayout(sides, 1)
         self.show_quote({})
 
     @staticmethod
-    def _table(titles):
+    def _table(titles, sign_col=False):
+        """sign_col: a narrow first column for the market maker signs."""
         t = QTableWidget(0, len(titles))
         t.setHorizontalHeaderLabels(titles)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -351,8 +362,15 @@ class Level2Panel(QWidget):
         hdr = t.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         hdr.setHighlightSections(False)
-        t.horizontalHeaderItem(0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        for col in (1, 2):
+        first = 1 if sign_col else 0
+        if sign_col:
+            hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            hdr.setMinimumSectionSize(SIGN_W)     # the style's minimum would keep it twice as wide
+            hdr.resizeSection(0, SIGN_W)
+            t.setIconSize(QSize(SIGN_W - 4, SIGN_W - 4))
+            t.horizontalHeaderItem(0).setToolTip("Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker.")
+        t.horizontalHeaderItem(first).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for col in (first + 1, first + 2):
             t.horizontalHeaderItem(col).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return t
 
@@ -495,11 +513,21 @@ class Level2Panel(QWidget):
             prev[mm] = size
             bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
             cells = [QTableWidgetItem(mm), QTableWidgetItem(tos_price(price)), QTableWidgetItem(f"{size:,}")]
+            first = 0
+            if side == "ASK":
+                # The sign column: red for a diluter, yellow for a so-so market maker
+                risk = 2 if mm in MM_RED else 1 if mm in MM_YELLOW else 0
+                sign = QTableWidgetItem()
+                if risk in self.mm_icons:
+                    sign.setIcon(self.mm_icons[risk])
+                    sign.setToolTip(MM_TIPS[risk])
+                cells.insert(0, sign)
+                first = 1
             for col, item in enumerate(cells):
                 item.setBackground(bg)
                 item.setForeground(QColor(GOLD))
-                if col:
+                if col > first:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 table.setItem(r, col, item)
             if trend.get(mm):
-                cells[2].setForeground(QColor(GREEN if trend[mm] > 0 else RED))
+                cells[-1].setForeground(QColor(GREEN if trend[mm] > 0 else RED))

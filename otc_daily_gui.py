@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -791,7 +791,8 @@ class MainWindow(QMainWindow):
         self.chart = CandleChart()
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.chart.show_last_tags = self.last_tags_show.isChecked()
-        self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json")
+        self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json",
+                                  mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
         self.level2.live_quote.connect(self.on_live_quote)
         self.chart_split = QSplitter(Qt.Orientation.Vertical)
