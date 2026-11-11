@@ -68,10 +68,9 @@ def fmt_chart_price(v: float) -> str:
     return fmt_price(round(v, PRICE_DECIMALS))
 
 
-def fmt_axis(v: float, step: float) -> str:
-    decimals = min(max(0, -int(math.floor(math.log10(step))) + 1), PRICE_DECIMALS) if step > 0 else 2
-    s = f"{v:.{decimals}f}"
-    return (s.rstrip("0").rstrip(".") if "." in s else s) or "0"
+def fmt_axis(v: float) -> str:
+    """Prices on the price axis: always PRICE_DECIMALS decimals, so 0.02 shows as 0.0200."""
+    return f"{v:,.{PRICE_DECIMALS}f}"
 
 
 def fmt_volume(v) -> str:
@@ -336,7 +335,7 @@ class CandleChart(QWidget):
                 p.setPen(QPen(GRID, 1))
                 p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
                 p.setPen(AXIS_TEXT)
-                text = fmt_axis(v, step)
+                text = fmt_axis(v)
                 p.drawText(QRectF(price.right() + 6, y - 8, RIGHT_W - 8, 16),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
                 p.drawText(QRectF(4, y - 8, LEFT_W - 10, 16),
@@ -403,7 +402,7 @@ class CandleChart(QWidget):
         last = len(self.dates) - 1
         ly = py(self.c[last])
         if price.top() <= ly <= price.bottom():
-            self._axis_tag(p, price.right() + 2, ly, fmt_chart_price(self.c[last]),
+            self._axis_tag(p, price.right() + 2, ly, fmt_axis(self.c[last]),
                            self._color(last), QColor("#000000"), bold=True)
 
         self._draw_zone_labels(p, price, py)
@@ -431,7 +430,7 @@ class CandleChart(QWidget):
                 p.drawLine(QPointF(pane.left() + 1, my), QPointF(pane.right() - 1, my))
                 if in_price:
                     value = snapped if snapped is not None else price_at(my)
-                    tag = fmt_chart_price(snapped) if snapped is not None else fmt_axis(value, step / 10)
+                    tag = fmt_axis(value)
                     y_value_text = tag
                     self._zone_details(p, price, value)
                 else:
