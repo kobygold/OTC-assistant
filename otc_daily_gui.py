@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.9"
+APP_VERSION = "0.5.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -442,16 +442,48 @@ def fix_fav_column(tbl: QTableWidget, col: int):
                                FavDelegate.width(QFontMetrics(tbl.font()))))
 
 
+TICKER_HISTORY = 20     # tickers kept in the ticker boxes' Down-arrow history
+
+
 class SelectAllLineEdit(QLineEdit):
     """Selects all its text when it gets the focus, so typing replaces it. Clicking into it places the
     cursor after the focus arrives, so the selection waits until the click is handled. A click while
     it already has the focus places the cursor as usual. Not when the focus comes back from the
     completer's popup: the user may be in the middle of typing. Enter, or picking from the completer,
     selects it all as well, so the next ticker can be typed straight over it. The selection waits
-    until the completer has put its text in."""
+    until the completer has put its text in.
+    With set_history(), the Down arrow opens a list of the last tickers used; picking one puts it
+    in the box and emits history_picked."""
+    history_picked = pyqtSignal(str)
+
     def __init__(self, *args):
         super().__init__(*args)
         self.returnPressed.connect(self._select_all_later)
+        self._history = None
+
+    def set_history(self, model):
+        """model: a QStringListModel of tickers, newest first, which may be shared by several boxes."""
+        self._history = QCompleter(model, self)
+        self._history.setWidget(self)
+        self._history.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self._history.setMaxVisibleItems(15)
+        self._history.activated.connect(self._history_activated)
+        self.textEdited.connect(lambda _: self._history.popup().hide())
+
+    def _history_activated(self, text):
+        self.setText(text)
+        self._select_all_later()
+        self.history_picked.emit(text)
+
+    def keyPressEvent(self, event):
+        if (event.key() == Qt.Key.Key_Down and self._history is not None
+                and self._history.model().rowCount() and not event.modifiers()):
+            self._history.setCompletionPrefix("")
+            self._history.complete()
+            popup = self._history.popup()
+            popup.setCurrentIndex(self._history.completionModel().index(0, 0))
+            return
+        super().keyPressEvent(event)
 
     def setCompleter(self, completer):
         super().setCompleter(completer)
@@ -686,9 +718,14 @@ class MainWindow(QMainWindow):
         completer = QCompleter(self.ticker_model, self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
-        completer.activated.connect(lambda text: self.show_chart(text))
+        completer.activated.connect(self.chart_from_box)
         self.chart_ticker.setCompleter(completer)
-        self.chart_ticker.returnPressed.connect(lambda: self.show_chart(self.chart_ticker.text()))
+        self.chart_ticker.returnPressed.connect(lambda: self.chart_from_box(self.chart_ticker.text()))
+        # The last tickers used in the Chart and Favorites boxes; the Down arrow lists them
+        self.ticker_history = QStringListModel(
+            [x for x in self.settings.get("ticker_history", []) if isinstance(x, str)][:TICKER_HISTORY])
+        self.chart_ticker.set_history(self.ticker_history)
+        self.chart_ticker.history_picked.connect(self.chart_from_box)
         row.addWidget(self.chart_ticker)
         self.chart_fav_btn = QToolButton()
         self.chart_fav_btn.setAutoRaise(True)
@@ -701,7 +738,7 @@ class MainWindow(QMainWindow):
         self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
         show_btn = QPushButton("Show")
-        show_btn.clicked.connect(lambda: self.show_chart(self.chart_ticker.text()))
+        show_btn.clicked.connect(lambda: self.chart_from_box(self.chart_ticker.text()))
         row.addWidget(show_btn)
         row.addSpacing(16)
 
@@ -1555,6 +1592,22 @@ class MainWindow(QMainWindow):
         self.zone_info.setText("   ·   ".join(bits))
         self.zone_info.show()
 
+    def chart_from_box(self, ticker: str):
+        """A ticker typed or picked in the Chart tab's box: shown, and added to the history if it has data."""
+        self.show_chart(ticker)
+        if self.chart_rows:
+            self.add_ticker_history(ticker)
+
+    def add_ticker_history(self, ticker: str):
+        ticker = ticker.strip().upper()
+        items = self.ticker_history.stringList()
+        if not ticker or (items and items[0] == ticker):
+            return
+        items = [ticker] + [x for x in items if x != ticker]
+        self.ticker_history.setStringList(items[:TICKER_HISTORY])
+        self.settings["ticker_history"] = items[:TICKER_HISTORY]
+        save_settings(self.settings)
+
     def show_chart(self, ticker: str, channel=None):
         ticker = ticker.strip().upper()
         if not ticker:
@@ -2346,6 +2399,7 @@ class MainWindow(QMainWindow):
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
         self.fav_add_edit.setCompleter(completer)
+        self.fav_add_edit.set_history(self.ticker_history)
         self.fav_add_edit.returnPressed.connect(self.add_favorite)
         row.addWidget(self.fav_add_edit)
         row.addWidget(QLabel("to group"))
@@ -2492,6 +2546,7 @@ class MainWindow(QMainWindow):
         group = self.fav_add_group.currentData()
         old = self.fav_group(ticker)
         self.set_fav(ticker, group)
+        self.add_ticker_history(ticker)
         self.fav_add_edit.clear()
         self.statusBar().showMessage(f"{ticker} moved from group {old} to {group}." if old and old != group
                                      else f"{ticker} added to favorites {group}.", 8000)
