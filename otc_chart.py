@@ -12,7 +12,7 @@ from statistics import median
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
-from PyQt6.QtWidgets import QSizePolicy, QToolTip, QWidget
+from PyQt6.QtWidgets import QApplication, QSizePolicy, QToolTip, QWidget
 
 from otc_zones import dollar_price
 
@@ -37,6 +37,9 @@ AT_ZONE = QColor("#f0c93c")
 CHANNEL_EDGE = QColor("#ffffff")
 EXPIRATION = QColor("#d32f2f")
 BOUNCE = QColor("#b36bff")
+MEASURE = QColor("#1e88e5")
+MEASURE_BOX = QColor(8, 22, 38, 225)
+MEASURE_TEXT = QColor("#c8d8e8")
 
 AVG_PERIOD = 50
 RIGHT_PAD_BARS = 8          # empty space after the last candle, like the screenshot
@@ -171,10 +174,15 @@ class CandleChart(QWidget):
         self._set_rows([])
         self.mouse = None
         self.drag = None
+        self.cursor_point = None    # (bar index, price) under the crosshair, as last drawn
+        self.measure = None         # (bar index, price) where Shift was pressed, while it's held
+        # Shift is caught for the whole app: the chart rarely has the keyboard focus
+        QApplication.instance().installEventFilter(self)
 
     # ---- data ----
     def _set_rows(self, rows):
         self.dates = [date.fromisoformat(r[0]) for r in rows]
+        self.measure = None
         self.o = [r[1] for r in rows]
         self.h = [r[2] for r in rows]
         self.l = [r[3] for r in rows]
@@ -432,7 +440,11 @@ class CandleChart(QWidget):
                     tag = fmt_axis(value)
                     y_value_text = tag
                     self._zone_details(p, price, value)
+                    self.cursor_point = (idx, value)
+                    if self.measure is not None:
+                        self._draw_measure(p, price, py, idx, value)
                 else:
+                    self.cursor_point = None
                     tag = fmt_volume(max(0.0, (vbot - my) / (vbot - vtop) * vmax))
                 self._axis_tag(p, pane.right() + 2, my, tag, LABEL_BG, LABEL_TEXT)
                 d = self._date_at(idx)
@@ -458,6 +470,67 @@ class CandleChart(QWidget):
             return None
         best = min((self.h[i], self.l[i], self.o[i], self.c[i]), key=lambda v: abs(py(v) - y))
         return best if abs(py(best) - y) <= SNAP_PX else None
+
+    # ---- measuring line (hold Shift) ----
+    def _draw_measure(self, p, price, py, i1, v1):
+        """A line from where Shift was pressed to the crosshair, and a box with the days, bars,
+        % and price change, and the line's angle on screen."""
+        i0, v0 = self.measure
+        x0, y0 = self._x(i0, price), py(v0)
+        x1, y1 = self._x(i1, price), py(v1)
+        p.setClipRect(price.adjusted(1, 1, -1, -1))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(MEASURE, 1.5))
+        p.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        p.fillRect(QRectF(x0 - 4, y0 - 4, 8, 8), MEASURE)
+
+        d0, d1 = self._date_at(i0), self._date_at(i1)
+        lines = []
+        if d0 and d1:
+            lines.append(f"{abs((d1 - d0).days)} Days")
+        lines.append(f"{abs(i1 - i0)} Bars")
+        if v0 > 0:
+            lines.append(f"{(v1 / v0 - 1) * 100:+.2f}%")
+        lines.append(f"{v1 - v0:+.{PRICE_DECIMALS}f}")
+        lines.append(f"\u2220{math.degrees(math.atan2(y0 - y1, abs(x1 - x0))):.2f}\u00b0")
+        fm = QFontMetrics(p.font())
+        line_h = fm.height() + 1
+        w = max(fm.horizontalAdvance(t) for t in lines) + 14
+        h = line_h * len(lines) + 8
+        # Beside the start point, on the side away from the line, kept inside the price pane
+        bx = x0 - w - 8 if x1 >= x0 else x0 + 8
+        by = y0 - h - 8 if y1 >= y0 else y0 + 8
+        if bx < price.left() + 2 or bx + w > price.right() - 2:
+            bx = x0 + 8 if bx < x0 else x0 - w - 8
+        bx = min(max(bx, price.left() + 2), price.right() - w - 2)
+        by = min(max(by, price.top() + 2), price.bottom() - h - 2)
+        box = QRectF(bx, by, w, h)
+        p.fillRect(box, MEASURE_BOX)
+        p.setPen(QPen(MEASURE, 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(box)
+        p.setPen(MEASURE_TEXT)
+        for k, t in enumerate(lines):
+            p.drawText(QRectF(bx + 7, by + 4 + k * line_h, w - 10, line_h),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, t)
+        p.setClipping(False)
+
+    def eventFilter(self, obj, e):
+        """Shift down over the price pane starts the measuring line at the crosshair; letting go
+        of Shift ends it."""
+        t = e.type()
+        if t in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and e.key() == Qt.Key.Key_Shift \
+                and not e.isAutoRepeat():
+            if t == QEvent.Type.KeyPress:
+                if self.measure is None and self.isVisible() and self.mouse is not None \
+                        and self.drag is None and self.cursor_point is not None:
+                    self.measure = self.cursor_point
+                    self.update()
+            elif self.measure is not None:
+                self.measure = None
+                self.update()
+        return False
 
     # ---- support and resistance zones ----
     @staticmethod
@@ -787,6 +860,8 @@ class CandleChart(QWidget):
 
     def mouseMoveEvent(self, e):
         self.mouse = e.position()
+        if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.measure = None
         if self.drag is not None:
             price, _ = self._layout()
             x0, first0 = self.drag
@@ -795,6 +870,7 @@ class CandleChart(QWidget):
 
     def leaveEvent(self, e):
         self.mouse = None
+        self.cursor_point = None
         self.update()
 
     def mousePressEvent(self, e):
