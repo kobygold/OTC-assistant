@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -487,7 +487,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_download_tab(), "Download")
         self.tabs.addTab(self._build_chart_tab(), "Chart")
         self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
-        self.tabs.addTab(self._build_zones_tab(), "Zones")
+        self.zone_tab_index = self.tabs.addTab(self._build_zones_tab(), "Zones")
         self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -496,6 +496,12 @@ class MainWindow(QMainWindow):
         for n, i in enumerate(visible[:9], 1):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, lambda i=i: self.tabs.setCurrentIndex(i))
             self.tabs.setTabToolTip(i, f"Ctrl+{n}")
+        # On the Chart tab, Ctrl+Down / Ctrl+Up open the next / previous ticker of the last list visited
+        self.nav_tab = None
+        self.nav_shortcuts = [QShortcut(QKeySequence(key), self, lambda d=d: self.chart_step(d))
+                              for key, d in (("Ctrl+Down", 1), ("Ctrl+Up", -1))]
+        for sc in self.nav_shortcuts:
+            sc.setEnabled(False)
 
         self.scheduler = ApiScheduler(self.delay())
         core.throttle = self.scheduler.wait
@@ -1288,6 +1294,10 @@ class MainWindow(QMainWindow):
 
     # ================================================== chart ===
     def on_tab_changed(self, index):
+        if index in (self.zone_tab_index, self.atm_tab_index, self.fav_tab_index):
+            self.nav_tab = index
+        for sc in self.nav_shortcuts:
+            sc.setEnabled(index == 1)
         if index == 1 and self.tickers_stale:
             self.refresh_ticker_list()
         if index == 2:
@@ -1447,7 +1457,49 @@ class MainWindow(QMainWindow):
             bits.append(TYPE_NAMES.get(typ, typ))
         if rows:
             bits.append(f"{len(rows)} trading days with trades ({rows[0][0]} → {rows[-1][0]})")
+        nav = self.nav_list()
+        r = self.nav_row()
+        if nav and r is not None:
+            bits.append(f"Row {r + 1:,} of {nav[0].rowCount():,} on the {nav[3]} tab (Ctrl+↑ / Ctrl+↓: previous / next)")
         self.chart_info.setText("   ·   ".join(bits))
+
+    def nav_list(self):
+        """(table, ticker column, function opening a row's chart, tab name) of the last list tab
+        visited, or None."""
+        return {
+            self.zone_tab_index: (self.zone_table, ZONE_TICKER_COL, self.open_chart_from_zones, "Zones"),
+            self.atm_tab_index: (self.atm_table, ATM_TICKER_COL, self.open_chart_from_atm, "ATM"),
+            self.fav_tab_index: (self.fav_table, FAV_COLUMNS.index("Ticker"), self.open_chart_from_fav, "Favorites"),
+        }.get(self.nav_tab)
+
+    def nav_row(self):
+        """The row of the chart's ticker in that list: its current row if that's the ticker (Zones
+        can list a ticker more than once), else the first row with it, else None."""
+        nav = self.nav_list()
+        ticker = getattr(self.chart, "ticker", "")
+        if nav is None or not ticker:
+            return None
+        tbl, col = nav[0], nav[1]
+        r = tbl.currentRow()
+        if 0 <= r < tbl.rowCount() and tbl.item(r, col) and tbl.item(r, col).text() == ticker:
+            return r
+        return next((i for i in range(tbl.rowCount()) if tbl.item(i, col) and tbl.item(i, col).text() == ticker), None)
+
+    def chart_step(self, delta: int):
+        """Opens the chart of the next (delta 1) or previous (-1) row of the last list visited, in
+        its sorted order, and selects that row there. A ticker not in the list starts at its top."""
+        nav = self.nav_list()
+        if nav is None or self.tabs.currentIndex() != 1:
+            return
+        tbl, col, opener, _ = nav
+        if tbl.rowCount() == 0:
+            return
+        r = self.nav_row()
+        r = 0 if r is None else r + delta
+        if not 0 <= r < tbl.rowCount():
+            return
+        tbl.setCurrentCell(r, col)
+        opener(r)
 
     def reload_ticker(self):
         ticker = self.chart_ticker.text().strip().upper()
