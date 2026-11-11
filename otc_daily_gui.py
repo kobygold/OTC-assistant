@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.9"
+APP_VERSION = "0.4.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -673,7 +673,7 @@ class MainWindow(QMainWindow):
         row.addSpacing(16)
 
         self.zones_show = QCheckBox("Zones")
-        self.zones_show.setChecked(bool(self.settings.get("zones_show", True)))
+        self.zones_show.setChecked(bool(self.settings.get("zones_show", False)))
         self.zones_show.setToolTip(
             "Support and resistance zones. Green = below the price, red = above it, yellow = the "
             "price is in the zone. Stronger zones are more opaque, dashed zones haven't traded in "
