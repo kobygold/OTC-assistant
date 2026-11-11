@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1498,7 +1498,10 @@ class MainWindow(QMainWindow):
         r = 0 if r is None else r + delta
         if not 0 <= r < tbl.rowCount():
             return
-        tbl.setCurrentCell(r, col)
+        # Only this row: with Ctrl held, a plain setCurrentCell would add it to the selection
+        flags = QItemSelectionModel.SelectionFlag
+        tbl.setCurrentCell(r, col, flags.ClearAndSelect | flags.Rows)
+        tbl.scrollToItem(tbl.item(r, col))
         opener(r)
 
     def reload_ticker(self):
