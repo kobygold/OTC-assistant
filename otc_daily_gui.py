@@ -10,7 +10,7 @@ Keep these files in the SAME FOLDER:
   otc_zones.py       support and resistance zones, and the channel search
   app_icon.ico       the window, taskbar and shortcut icon
 
-Install once:   pip install PyQt6 numpy
+Install once:   pip install PyQt6 numpy schwab-py
                 (Windows only: also  pip install tzdata)
 Run:            python otc_daily_gui.py      (or double-click run_otc_gui.bat)
 
@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
     QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSpinBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
+    QPushButton, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
 
@@ -49,9 +49,10 @@ import otc_atm as atm
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
+from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.11"
+APP_VERSION = "0.5.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -694,6 +695,7 @@ class MainWindow(QMainWindow):
         self.chart_fav_btn.clicked.connect(lambda: self.choose_fav(
             self.chart_fav_ticker, self.chart_fav_btn.mapToGlobal(self.chart_fav_btn.rect().bottomLeft())))
         self.chart_fav_ticker = ""
+        self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
         show_btn = QPushButton("Show")
         show_btn.clicked.connect(lambda: self.show_chart(self.chart_ticker.text()))
@@ -749,6 +751,16 @@ class MainWindow(QMainWindow):
             "Thursday before it when the market is closed.")
         self.expirations_show.toggled.connect(self.on_expirations_toggled)
         row.addWidget(self.expirations_show)
+        row.addSpacing(16)
+
+        self.level2_show = QCheckBox("Level II")
+        self.level2_show.setChecked(bool(self.settings.get("level2_show", True)))
+        self.level2_show.setToolTip(
+            "Live market makers' bids and asks for the ticker on the chart, streamed from Schwab. "
+            "Rows of the same price share a color; a size turns green when it grew and red when it shrank. "
+            "Drag the line above it to change its height.")
+        self.level2_show.toggled.connect(self.on_level2_toggled)
+        row.addWidget(self.level2_show)
         row.addStretch()
 
         self.reload_btn = QPushButton("Reload history from Massive")
@@ -769,7 +781,15 @@ class MainWindow(QMainWindow):
         root.addWidget(self.zone_info)
         self.chart = CandleChart()
         self.chart.show_expirations = self.expirations_show.isChecked()
-        root.addWidget(self.chart, 1)
+        self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json")
+        self.level2.setVisible(self.level2_show.isChecked())
+        self.chart_split = QSplitter(Qt.Orientation.Vertical)
+        self.chart_split.setChildrenCollapsible(False)
+        self.chart_split.addWidget(self.chart)
+        self.chart_split.addWidget(self.level2)
+        self.chart_split.setStretchFactor(0, 1)
+        self.chart_split.setSizes(self.settings.get("level2_split", [600, 220]))
+        root.addWidget(self.chart_split, 1)
         return tab
 
     # ================================================== Screener tab ===
@@ -1380,6 +1400,16 @@ class MainWindow(QMainWindow):
         self.chart.show_expirations = checked
         self.chart.update()
 
+    def on_level2_toggled(self, checked):
+        self.settings["level2_show"] = checked
+        save_settings(self.settings)
+        self.level2.setVisible(checked)
+        # Hidden, it stops following the ticker, so nothing streams for nothing
+        if checked and self.chart_fav_ticker:
+            self.level2.follow(self.chart_fav_ticker, self.chart_name)
+        elif not checked:
+            self.level2.follow("")
+
     def on_zone_option_changed(self):
         self.settings["zones_show"] = self.zones_show.isChecked()
         self.settings["zones_min_strength"] = self.zones_min.value()
@@ -1496,7 +1526,10 @@ class MainWindow(QMainWindow):
         self.apply_chart_zones(channel)
         self.reload_btn.setEnabled(True)
         self.chart_fav_ticker = ticker
+        self.chart_name = name or ""
         self.update_chart_fav()
+        if self.level2_show.isChecked():
+            self.level2.follow(ticker, self.chart_name)
         bits = [f"<b>{ticker}</b>"]
         if name:
             bits.append(name)
@@ -2549,6 +2582,10 @@ class MainWindow(QMainWindow):
                 j.stop()
             for j in running:
                 j.join(timeout=5)
+        self.level2.stop()
+        if self.level2_show.isChecked():     # the chart / Level II split, for the next start
+            self.settings["level2_split"] = self.chart_split.sizes()
+            save_settings(self.settings)
         event.accept()
 
 

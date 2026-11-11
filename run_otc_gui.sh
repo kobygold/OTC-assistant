@@ -43,11 +43,11 @@ if ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
 fi
 
 # ---- Install the required packages on first run ----
-if ! "$VENV_PY" -c "import PyQt6.QtWidgets, numpy" >/dev/null 2>&1; then
+if ! "$VENV_PY" -c "import PyQt6.QtWidgets, numpy, schwab" >/dev/null 2>&1; then
     echo "Installing required packages, first run only. This takes a minute..."
     echo
     "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-    "$VENV_PY" -m pip install --upgrade PyQt6 numpy || fail "Package installation failed. See the messages above."
+    "$VENV_PY" -m pip install --upgrade PyQt6 numpy schwab-py || fail "Package installation failed. See the messages above."
 fi
 
 # ---- Start the app, detached so this Terminal window can be closed ----

@@ -27,11 +27,11 @@ if not defined PY (
 )
 
 rem ---- Install the required packages on first run ----
-%PY% -c "import PyQt6.QtWidgets, tzdata, numpy" >nul 2>nul
+%PY% -c "import PyQt6.QtWidgets, tzdata, numpy, schwab" >nul 2>nul
 if errorlevel 1 (
     echo Installing required packages, first run only. This takes a minute...
     echo.
-    %PY% -m pip install --upgrade PyQt6 tzdata numpy
+    %PY% -m pip install --upgrade PyQt6 tzdata numpy schwab-py
     if errorlevel 1 (
         echo.
         echo Package installation failed. See the messages above.

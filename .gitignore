@@ -3,6 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 settings.json
+schwab_token.json
+schwab/stream_test_*.jsonl
 settings.tmp
 favorites.json
 favorites.tmp
