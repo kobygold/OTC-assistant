@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -564,6 +564,9 @@ class MainWindow(QMainWindow):
 
         if self.auto_start.isChecked() and self.key_edit.text().strip():
             QTimer.singleShot(500, self.start_fetch)
+        # Open on the Chart tab; the Download tab only while the Massive API key is missing
+        if self.key_edit.text().strip():
+            self.tabs.setCurrentIndex(1)
         # The chart the app was closed with, once the window is up
         last = self.settings.get("chart_ticker", "")
         if last:
