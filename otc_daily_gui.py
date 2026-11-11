@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -715,6 +715,18 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         row.addSpacing(16)
 
+        # The view options (Zones, Bounces, tags...) live in a row under the toolbar that the
+        # Options button opens and closes
+        self.chart_opts_btn = QToolButton()
+        self.chart_opts_btn.setText("Options")
+        self.chart_opts_btn.setCheckable(True)
+        self.chart_opts_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.chart_opts_btn.setToolTip("Show or hide the chart's view options")
+        row.addWidget(self.chart_opts_btn)
+        self.chart_opts = QWidget()
+        main_row, row = row, QHBoxLayout(self.chart_opts)
+        row.setContentsMargins(0, 0, 0, 0)
+
         self.zones_show = QCheckBox("Zones")
         self.zones_show.setChecked(bool(self.settings.get("zones_show", False)))
         self.zones_show.setToolTip(
@@ -770,6 +782,17 @@ class MainWindow(QMainWindow):
             "streams the ticker, else the last day's close and volume. Colored like a candle.")
         self.last_tags_show.toggled.connect(self.on_last_tags_toggled)
         row.addWidget(self.last_tags_show)
+        row.addSpacing(16)
+
+        self.bid_ask_tags_show = QCheckBox("Bid/Ask tags")
+        self.bid_ask_tags_show.setChecked(bool(self.settings.get("bid_ask_tags_show", True)))
+        self.bid_ask_tags_show.setToolTip(
+            "The live bid (green) and ask (red) tags on the right price axis, "
+            "while Level II streams the ticker.")
+        self.bid_ask_tags_show.toggled.connect(self.on_bid_ask_tags_toggled)
+        row.addWidget(self.bid_ask_tags_show)
+        row.addStretch()
+        row = main_row
         row.addStretch()
 
         self.reload_btn = QPushButton("Reload History")
@@ -781,6 +804,10 @@ class MainWindow(QMainWindow):
         self.reload_btn.setEnabled(False)
         row.addWidget(self.reload_btn)
         root.addLayout(row)
+        root.addWidget(self.chart_opts)
+        self.chart_opts_btn.toggled.connect(self.on_chart_opts_toggled)
+        self.chart_opts_btn.setChecked(bool(self.settings.get("chart_options_open", False)))
+        self.on_chart_opts_toggled(self.chart_opts_btn.isChecked())
 
         self.chart_info = QLabel("Mouse wheel zooms, drag pans, double-click resets the view.")
         root.addWidget(self.chart_info)
@@ -791,6 +818,7 @@ class MainWindow(QMainWindow):
         self.chart = CandleChart()
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.chart.show_last_tags = self.last_tags_show.isChecked()
+        self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json",
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
@@ -1416,6 +1444,19 @@ class MainWindow(QMainWindow):
         self.settings["last_tags_show"] = checked
         save_settings(self.settings)
         self.chart.show_last_tags = checked
+        self.chart.update()
+
+    def on_chart_opts_toggled(self, checked):
+        self.chart_opts.setVisible(checked)
+        self.chart_opts_btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        if self.settings.get("chart_options_open") != checked:
+            self.settings["chart_options_open"] = checked
+            save_settings(self.settings)
+
+    def on_bid_ask_tags_toggled(self, checked):
+        self.settings["bid_ask_tags_show"] = checked
+        save_settings(self.settings)
+        self.chart.show_bid_ask_tags = checked
         self.chart.update()
 
     def on_level2_toggled(self, checked):

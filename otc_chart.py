@@ -25,6 +25,8 @@ INFO_BOX = QColor("#3c3c3c")
 UP = QColor("#1fc41f")
 DOWN = QColor("#ff4b14")
 NEUTRAL = QColor("#2ad4e6")
+BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis
+ASK_TAG = QColor("#9c2a35")
 VOL_AVG = QColor("#f0a020")
 VOL_MEDIAN = QColor("#e000e0")
 DAY_DOLLAR = QColor("#4a6cff")
@@ -48,6 +50,7 @@ PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
 RISK_SIZE = 16
 LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
+TAG_H = 16                   # the right axis tags' height
 INFO_X = RISK_SIZE + 8       # where the info bar's boxes start, after the risk sign
 SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
@@ -182,6 +185,7 @@ class CandleChart(QWidget):
         self.range_label = "1Y"
         self.show_expirations = True
         self.show_last_tags = True     # the last price and day volume tags on the right
+        self.show_bid_ask_tags = True  # the live bid and ask tags on the right
         self.risk_icon = None
         self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
@@ -226,7 +230,8 @@ class CandleChart(QWidget):
         on the quote's day, that day's candle and volume bar are drawn from it: added after the
         database's last day, or replacing that day if the database has it already."""
         q = q or {}
-        live = {k: q[f] for k, f in (("price", "LAST_PRICE"), ("volume", "TOTAL_VOLUME"), ("open", "OPEN_PRICE"))
+        live = {k: q[f] for k, f in (("price", "LAST_PRICE"), ("volume", "TOTAL_VOLUME"), ("open", "OPEN_PRICE"),
+                                     ("bid", "BID_PRICE"), ("ask", "ASK_PRICE"))
                 if q.get(f) is not None}
         bar = self._live_candle(q)
         changed = live != self.live or bar != self.live_bar
@@ -457,13 +462,24 @@ class CandleChart(QWidget):
 
         # Last price and day volume tags on the right axes: live from Schwab when the Level II
         # panel streams this ticker, else the last candle's. Colored like a candle: close vs open.
+        # The live bid and ask get arrow tags inside the chart, just left of the y-axis (ask above,
+        # bid below; pushed apart when they would overlap).
         last = len(self.dates) - 1
+        color = self._color(last)
+        if self.show_bid_ask_tags:
+            tags = [(py(self.live[k]), fmt_axis(self.live[k]), bg) for k, bg in (("ask", ASK_TAG), ("bid", BID_TAG))
+                    if self.live.get(k)]
+            tags = [t for t in tags if price.top() <= t[0] <= price.bottom()]
+            if len(tags) == 2 and tags[1][0] - tags[0][0] < TAG_H + 1:
+                mid = (tags[0][0] + tags[1][0]) / 2
+                mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
+                tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
+            for y, text, bg in tags:
+                self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow=True)
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
             if "price" in self.live and self.live.get("open"):
                 color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
-            else:
-                color = self._color(last)
             ly = py(now)
             if price.top() <= ly <= price.bottom():
                 self._axis_tag(p, price.right() + 2, ly, fmt_axis(now), color, QColor("#000000"), bold=True)
@@ -817,15 +833,27 @@ class CandleChart(QWidget):
         ]
         self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items, gap=0)
 
-    def _axis_tag(self, p, x, y, text, bg, fg, bold=False):
+    def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=False):
+        """A tag centered on y. Plain: starts at x, on the right axis. arrow: ends at x, with a
+        triangle point on its left side."""
         f = QFont(p.font())
         f.setBold(bold)
         p.setFont(f)
         tw = QFontMetrics(f).horizontalAdvance(text) + 10
-        r = QRectF(x, y - 8, max(tw, RIGHT_W - 6), 16)
+        h = TAG_H
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(r, 2, 2)
+        if arrow:     # x is the right edge: the tag sits left of it, pointing left
+            point = h / 2
+            r = QRectF(x - tw, y - h / 2, tw, h)
+            x = r.left() - point
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.drawPolygon(QPolygonF([QPointF(x, y), QPointF(r.left(), r.top()), QPointF(r.right(), r.top()),
+                                     QPointF(r.right(), r.bottom()), QPointF(r.left(), r.bottom())]))
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        else:
+            r = QRectF(x, y - h / 2, max(tw, RIGHT_W - 6), h)
+            p.drawRoundedRect(r, 2, 2)
         p.setPen(fg)
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
         f.setBold(False)
