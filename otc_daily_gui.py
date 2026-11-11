@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.10"
+APP_VERSION = "0.4.11"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -416,6 +416,22 @@ def on_enter(tbl: QTableWidget, handler):
         QShortcut(QKeySequence(key), tbl, go, context=Qt.ShortcutContext.WidgetShortcut)
 
 
+def fit_two_line_columns(tbl: QTableWidget):
+    """Columns with a two-line title: as wide as its longer line or the widest value. Auto-sizing
+    keeps room beside the title for the sort arrow, but the arrow is drawn above it, and the
+    header's minimum section width would also keep these columns wide."""
+    hdr = tbl.horizontalHeader()
+    hdr.setMinimumSectionSize(10)
+    fm = hdr.fontMetrics()
+    for col in range(tbl.columnCount()):
+        text = tbl.horizontalHeaderItem(col).text()
+        if "\n" in text:
+            # The 3px side padding from APP_STYLE and the border, as for Risk
+            title = max(fm.horizontalAdvance(line) for line in text.split("\n")) + 9
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            hdr.resizeSection(col, max(title, tbl.sizeHintForColumn(col)))
+
+
 def fix_fav_column(tbl: QTableWidget, col: int):
     """A fixed Fav column: as wide as the star and number, or the title if that's wider."""
     hdr = tbl.horizontalHeader()
@@ -423,6 +439,31 @@ def fix_fav_column(tbl: QTableWidget, col: int):
     # The title plus the 3px side padding from APP_STYLE and the border, as for Risk
     hdr.resizeSection(col, max(QFontMetrics(hdr.font()).horizontalAdvance("Fav") + 9,
                                FavDelegate.width(QFontMetrics(tbl.font()))))
+
+
+class SelectAllLineEdit(QLineEdit):
+    """Selects all its text when it gets the focus, so typing replaces it. Clicking into it places the
+    cursor after the focus arrives, so the selection waits until the click is handled. A click while
+    it already has the focus places the cursor as usual. Not when the focus comes back from the
+    completer's popup: the user may be in the middle of typing. Enter, or picking from the completer,
+    selects it all as well, so the next ticker can be typed straight over it. The selection waits
+    until the completer has put its text in."""
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.returnPressed.connect(self._select_all_later)
+
+    def setCompleter(self, completer):
+        super().setCompleter(completer)
+        if completer:
+            completer.activated.connect(self._select_all_later)
+
+    def _select_all_later(self, *_):
+        QTimer.singleShot(0, self.selectAll)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            QTimer.singleShot(0, self.selectAll)
 
 
 class UpperValidator(QValidator):
@@ -633,7 +674,7 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(tab)
         row = QHBoxLayout()
         row.addWidget(QLabel("Ticker:"))
-        self.chart_ticker = QLineEdit()
+        self.chart_ticker = SelectAllLineEdit()
         self.chart_ticker.setPlaceholderText("e.g. CVAT")
         self.chart_ticker.setValidator(UpperValidator(self.chart_ticker))
         self.chart_ticker.setFixedWidth(140)  # never shrinks when the window is narrow
@@ -952,7 +993,10 @@ class MainWindow(QMainWindow):
                              "Supp str", "Sell at", "Rsst str", "Gain %", "Close", "To buy %", "Last touch",
                              "$ Volume", "Days", "Note"]
         self.zone_table = QTableWidget(0, len(self.zone_columns))
-        self.zone_table.setHorizontalHeaderLabels(self.zone_columns)
+        # The long titles over short values go on two lines, so their columns stay narrow
+        two_line = {"Recent legs": "Recent\nlegs", "Reached Rsst": "Reached\nRsst", "Reached Supp": "Reached\nSupp",
+                    "Buy alert": "Buy\nalert", "Supp str": "Supp\nstr", "Sell at": "Sell\nat", "Rsst str": "Rsst\nstr"}
+        self.zone_table.setHorizontalHeaderLabels([two_line.get(name, name) for name in self.zone_columns])
         self.zone_table.setItemDelegateForColumn(ZONE_FAV_COL, FavDelegate(self.zone_table))
         header_tips = {
             "Risk": "From the last letter of a 5-letter ticker. Yellow can be risky and pay high commissions. "
@@ -1663,7 +1707,7 @@ class MainWindow(QMainWindow):
             return ""
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())])
+            w.writerow([tbl.horizontalHeaderItem(c).text().replace("\n", " ") for c in range(tbl.columnCount())])
             for r in range(tbl.rowCount()):
                 # A sign has no text, so its tooltip goes in the file, without the formatting
                 w.writerow([(tbl.item(r, c).text()
@@ -1779,6 +1823,7 @@ class MainWindow(QMainWindow):
                 fix_fav_column(self.zone_table, col)
             elif col != ZONE_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        fit_two_line_columns(self.zone_table)
 
     def apply_zone_filters(self):
         self.save_zone_filters()
@@ -1964,7 +2009,9 @@ class MainWindow(QMainWindow):
         self.atm_columns = ["Risk", "Fav", "Ticker", "Name", "Legs", "Low", "High", "Gap %", "Low touches",
                             "High touches", "Days in range", "Since", "Close", "To buy %", "Position", "$ Volume"]
         tbl = self.atm_table = QTableWidget(0, len(self.atm_columns))
-        tbl.setHorizontalHeaderLabels(self.atm_columns)
+        # The long titles over small numbers go on two lines, so their columns stay narrow
+        two_line = {"Low touches": "Low\ntouches", "High touches": "High\ntouches", "Days in range": "Days in\nrange"}
+        tbl.setHorizontalHeaderLabels([two_line.get(name, name) for name in self.atm_columns])
         tbl.setItemDelegateForColumn(ATM_FAV_COL, FavDelegate(tbl))
         tips = {
             "Risk": "From the last letter of a 5-letter ticker. Hover over a sign for the details.",
@@ -2162,6 +2209,7 @@ class MainWindow(QMainWindow):
                 fix_fav_column(tbl, col)
             elif col != ATM_NAME_COL:
                 hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        fit_two_line_columns(tbl)
         tbl.setSortingEnabled(True)
         shown = f"{matched:,} stocks match" if matched <= MAX_ZONE_ROWS else \
             f"Showing the best {MAX_ZONE_ROWS:,} of {matched:,} matching stocks"
@@ -2189,7 +2237,7 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(tab)
         row = QHBoxLayout()
         row.addWidget(QLabel("Add ticker:"))
-        self.fav_add_edit = QLineEdit()
+        self.fav_add_edit = SelectAllLineEdit()
         self.fav_add_edit.setPlaceholderText("e.g. CVAT")
         self.fav_add_edit.setValidator(UpperValidator(self.fav_add_edit))
         self.fav_add_edit.setMaximumWidth(140)
