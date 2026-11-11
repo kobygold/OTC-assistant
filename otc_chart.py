@@ -47,7 +47,8 @@ MAX_RIGHT_EMPTY_BARS = 10   # the most empty space zooming or panning can leave 
 PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
 RISK_SIZE = 16
-LEFT_W, RIGHT_W = 62, 74
+LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
+INFO_X = RISK_SIZE + 8       # where the info bar's boxes start, after the risk sign
 SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
 
@@ -201,6 +202,15 @@ class CandleChart(QWidget):
         self.channel = None
         self.bounce = None
         self.bounce_start = 0
+        self.live = {}              # live quote for the axis tags: price, volume, open
+
+    def set_live(self, price=None, volume=None, open_price=None):
+        """The live last price and day volume, for the tags on the right axis. Without them the
+        tags show the last candle's close and volume."""
+        live = {k: v for k, v in (("price", price), ("volume", volume), ("open", open_price)) if v is not None}
+        if live != self.live:
+            self.live = live
+            self.update()
 
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):
@@ -348,8 +358,6 @@ class CandleChart(QWidget):
                 text = fmt_axis(v)
                 p.drawText(QRectF(price.right() + 6, y - 8, RIGHT_W - 8, 16),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
-                p.drawText(QRectF(4, y - 8, LEFT_W - 10, 16),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
             v += step
 
         # Volume axis
@@ -360,9 +368,6 @@ class CandleChart(QWidget):
             if y > vtop + 4:
                 p.setPen(AXIS_TEXT)
                 p.drawText(QRectF(vol.right() + 6, y - 8, RIGHT_W - 8, 16),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           fmt_compact(vv))
-                p.drawText(QRectF(4, y - 8, LEFT_W - 10, 16),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                            fmt_compact(vv))
             vv += vstep
@@ -407,12 +412,20 @@ class CandleChart(QWidget):
             self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}", above=True, pane=price)
             self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}", above=False, pane=price)
 
-        # Last price tag on the right axis
+        # Last price and day volume tags on the right axes: live from Schwab when the Level II
+        # panel streams this ticker, else the last candle's. Colored like a candle: close vs open.
         last = len(self.dates) - 1
-        ly = py(self.c[last])
+        now = self.live.get("price", self.c[last])
+        if "price" in self.live and self.live.get("open"):
+            color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
+        else:
+            color = self._color(last)
+        ly = py(now)
         if price.top() <= ly <= price.bottom():
-            self._axis_tag(p, price.right() + 2, ly, fmt_axis(self.c[last]),
-                           self._color(last), QColor("#000000"), bold=True)
+            self._axis_tag(p, price.right() + 2, ly, fmt_axis(now), color, QColor("#000000"), bold=True)
+        day_vol = self.live.get("volume", self.v[last])
+        self._axis_tag(p, vol.right() + 2, min(max(vy(day_vol), vtop + 8), vbot - 8), fmt_volume(day_vol),
+                       color, QColor("#000000"), bold=True)
 
         self._draw_zone_labels(p, price, py)
         self._draw_bounce_labels(p, price, py)
@@ -737,13 +750,13 @@ class CandleChart(QWidget):
             items.append((f"{chg:+.2f}%", UP if chg > 0 else DOWN if chg < 0 else INFO_TEXT, False))
         if y_text:
             items.append((f"Y: {y_text}", INFO_TEXT, False))
-        self._boxes(p, LEFT_W, 3, INFO_H - 6, items)
+        self._boxes(p, INFO_X, 3, INFO_H - 6, items)
         if self.risk_icon is not None:
             self.risk_icon.paint(p, self._risk_rect())
 
     def _risk_rect(self) -> QRect:
-        """In the margin left of the ticker's box."""
-        return QRect(LEFT_W - RISK_SIZE - 4, 4, RISK_SIZE, RISK_SIZE)
+        """Left of the ticker's box."""
+        return QRect(INFO_X - RISK_SIZE - 4, 4, RISK_SIZE, RISK_SIZE)
 
     def _volume_header(self, p, vol, i):
         items = [
@@ -818,37 +831,45 @@ class CandleChart(QWidget):
             p.restore()
 
     def _draw_x_axis(self, p, price, vol):
+        """Dates under the volume pane. Zoomed in, as many days as fit without overlapping, as in
+        thinkorswim (a new year shows its year); zoomed out, months or quarters."""
         bw = self._bar_w(price)
         start, end = int(math.floor(self.first)), int(math.ceil(self.first + self.count))
-        if bw * 5 >= 42:
-            mode = "week"
-        elif bw * 21 >= 42:
+        gap = QFontMetrics(p.font()).horizontalAdvance("12/28") + 12     # a label's width plus room
+        if bw * 10 >= gap:
+            mode = "day"
+        elif bw * 21 >= gap:
             mode = "month"
         else:
             mode = "quarter"
-        p.setPen(AXIS_TEXT)
+        # Candidates left to right: (x, label, is a new year)
+        candidates = []
         prev = None
-        last_x = -1e9
-        y = vol.bottom() + 3
         for i in range(start, end + 1):
             d = self._date_at(i)
             if d is None:
                 continue
+            new_year = prev is not None and d.year != prev.year
             label = None
-            if prev is not None:
-                if mode == "week" and d.isocalendar()[1] != prev.isocalendar()[1]:
-                    label = f"{d.month}/{d.day}"
-                elif mode in ("month", "quarter") and d.month != prev.month:
-                    if mode == "month" or d.month in (1, 4, 7, 10):
-                        label = d.strftime("%b") if d.month != 1 else str(d.year)
+            if mode == "day":
+                label = str(d.year) if new_year else f"{d.month}/{d.day}"
+            elif prev is not None and d.month != prev.month:
+                if mode == "month" or d.month in (1, 4, 7, 10):
+                    label = d.strftime("%b") if d.month != 1 else str(d.year)
             prev = d
-            if not label:
-                continue
             x = self._x(i, price)
-            if x < price.left() + 10 or x > price.right() - 10 or x - last_x < 36:
-                continue
-            p.drawText(QRectF(x - 25, y, 50, 17), Qt.AlignmentFlag.AlignCenter, label)
-            last_x = x
+            if label and price.left() + 10 <= x <= price.right() - 10:
+                candidates.append((x, label, new_year))
+        # Years first, so a crowded day can't push one out; then the other dates in the room left
+        placed = []
+        for want_year in (True, False):
+            for x, label, new_year in candidates:
+                if new_year == want_year and all(abs(x - px) >= gap for px, _ in placed):
+                    placed.append((x, label))
+        p.setPen(AXIS_TEXT)
+        y = vol.bottom() + 3
+        for x, label in placed:
+            p.drawText(QRectF(x - gap / 2, y, gap, 17), Qt.AlignmentFlag.AlignCenter, label)
 
     # ---- interaction ----
     def event(self, e):

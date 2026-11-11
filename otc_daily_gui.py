@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -783,6 +783,7 @@ class MainWindow(QMainWindow):
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json")
         self.level2.setVisible(self.level2_show.isChecked())
+        self.level2.live_quote.connect(self.on_live_quote)
         self.chart_split = QSplitter(Qt.Orientation.Vertical)
         self.chart_split.setChildrenCollapsible(False)
         self.chart_split.addWidget(self.chart)
@@ -1409,6 +1410,12 @@ class MainWindow(QMainWindow):
             self.level2.follow(self.chart_fav_ticker, self.chart_name)
         elif not checked:
             self.level2.follow("")
+            self.chart.set_live()       # no more live quotes: back to the last candle's
+
+    def on_live_quote(self, ticker, q):
+        """The live last price and day volume, for the chart's right axis tags."""
+        if ticker == self.chart.ticker:
+            self.chart.set_live(q.get("LAST_PRICE"), q.get("TOTAL_VOLUME"), q.get("OPEN_PRICE"))
 
     def on_zone_option_changed(self):
         self.settings["zones_show"] = self.zones_show.isChecked()

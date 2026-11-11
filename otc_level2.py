@@ -46,7 +46,8 @@ PANEL_STYLE = f"""
 #level2 {{ background: #000000; }}
 #l2bar {{ background: #333333; }}
 #l2bar QLabel {{ color: {TEXT}; }}
-#l2bar QLabel[cell="true"] {{ padding: 2px 9px; border-right: 1px solid #222222; }}
+#l2bar QLabel#l2cell {{ padding: 2px 9px; }}
+#l2divider {{ background: #5c5c5c; margin: 3px 0; }}
 #l2status {{ color: #9a9a9a; padding: 2px 9px; }}
 QTableWidget {{ background: #000000; color: {GOLD}; border: none; gridline-color: #22303c; }}
 QHeaderView::section {{ background: #151a1f; color: #c8c8c8; font-weight: normal;
@@ -209,7 +210,8 @@ class Level2Feed(QObject):
                            ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
                            ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
                            ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
-                           ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME")):
+                           ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME"),
+                           ("openPrice", "OPEN_PRICE")):
             if q.get(rest) is not None:
                 self._l1[name] = q[rest]
         if self._l1:
@@ -262,6 +264,8 @@ class Level2Feed(QObject):
 
 
 class Level2Panel(QWidget):
+    live_quote = pyqtSignal(str, dict)     # ticker, Level 1 fields: for the chart's price and volume tags
+
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
 
@@ -273,6 +277,7 @@ class Level2Panel(QWidget):
         self.feed = None
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
+        self.prev_quote = {}                   # bid/ask price and size at the last quote update
         self.setObjectName("level2")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(PANEL_STYLE)
@@ -294,13 +299,22 @@ class Level2Panel(QWidget):
                     "outside them it can differ.",
             "mark_change": "Mark's change from yesterday's close.",
         }
-        for key in ("ticker", "name", "last", "last_change", "mark", "mark_change", "bid", "ask", "volume"):
+        self.dividers = {}
+        for key in ("ticker", "name", "last", "last_change", "mark", "mark_change", "bid", "ask"):
             lb = QLabel()
-            lb.setProperty("cell", True)
+            lb.setObjectName("l2cell")
             lb.setTextFormat(Qt.TextFormat.RichText)
             lb.setToolTip(tips.get(key, ""))
             self.cells[key] = lb
             head.addWidget(lb)
+            # A thin light gray line after each group, as in thinkorswim. A widget of its own: the
+            # Windows 11 style doesn't draw borders on labels.
+            line = QWidget()
+            line.setObjectName("l2divider")
+            line.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            line.setFixedWidth(1)
+            self.dividers[key] = line
+            head.addWidget(line)
         head.addStretch()
         self.login_btn = QPushButton("Log in to Schwab...")
         self.login_btn.clicked.connect(self.login)
@@ -352,6 +366,7 @@ class Level2Panel(QWidget):
         if ticker != self.ticker:
             self.prev = {"BID": {}, "ASK": {}}
             self.trend = {"BID": {}, "ASK": {}}
+            self.prev_quote = {}
             self.bid_table.setRowCount(0)
             self.ask_table.setRowCount(0)
             self.ticker, self.name = ticker, name
@@ -367,10 +382,15 @@ class Level2Panel(QWidget):
         if self.feed is None:
             self.feed = Level2Feed(key, secret, self.token_path)
             self.feed.book.connect(self.show_book)
-            self.feed.quote.connect(lambda t, q: t == self.ticker and self.show_quote(q))
+            self.feed.quote.connect(self.on_quote)
             self.feed.status.connect(self.set_status)
             self.feed.login_needed.connect(self.on_login_needed)
         self.feed.set_symbol(ticker)
+
+    def on_quote(self, ticker, q):
+        if ticker == self.ticker:
+            self.show_quote(q)
+            self.live_quote.emit(ticker, q)
 
     def stop(self):
         if self.feed:
@@ -431,15 +451,22 @@ class Level2Panel(QWidget):
             c[key].setText(f"<span style='color:{LAST}; font-size:13pt; font-weight:bold'>{tos_price(price)}</span>"
                            if price is not None else "")
             c[f"{key}_change"].setText(self._change_text(change, close))
-        for key, side, value_color in (("bid", "BID", GREEN), ("ask", "ASK", GOLD)):
+        # Bid and ask price and size, each on its own: green when it went up at this update, red when
+        # it went down, yellow when it stayed
+        def tone(field):
+            now, before = q.get(field), self.prev_quote.get(field)
+            if now is None or before is None or now == before:
+                return LAST
+            return GREEN if now > before else RED
+        for key, side in (("bid", "BID"), ("ask", "ASK")):
             price = q.get(f"{side}_PRICE")
             size = q.get(f"{side}_SIZE") or 0
-            c[key].setText(f"{side.title()}: <span style='color:{value_color}'>{tos_price(price)}</span> x "
-                           f"<span style='color:{value_color}'>{size:,}</span>" if price is not None else "")
-        vol = q.get("TOTAL_VOLUME")
-        c["volume"].setText(f"Vol: <span style='color:{GOLD}'>{vol:,}</span>" if vol is not None else "")
-        for lb in c.values():
+            c[key].setText(f"{side.title()}: <span style='color:{tone(side + '_PRICE')}'>{tos_price(price)}</span> x "
+                           f"<span style='color:{tone(side + '_SIZE')}'>{size:,}</span>" if price is not None else "")
+        self.prev_quote = {f: q[f] for f in ("BID_PRICE", "BID_SIZE", "ASK_PRICE", "ASK_SIZE") if f in q}
+        for key, lb in c.items():
             lb.setVisible(bool(lb.text()))
+            self.dividers[key].setVisible(bool(lb.text()))
 
     @staticmethod
     def _change_text(change, close):
