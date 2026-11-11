@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -512,6 +512,10 @@ class MainWindow(QMainWindow):
 
         if self.auto_start.isChecked() and self.key_edit.text().strip():
             QTimer.singleShot(500, self.start_fetch)
+        # The chart the app was closed with, once the window is up
+        last = self.settings.get("chart_ticker", "")
+        if last:
+            QTimer.singleShot(0, lambda: self.show_chart(last))
 
     # ================================================== Download tab ===
     def _build_download_tab(self):
@@ -1417,6 +1421,9 @@ class MainWindow(QMainWindow):
         self.chart.subtitle = " · ".join(x for x in [(name or "")[:40], tier_text] if x)
         self.chart.set_data(ticker, rows, months, label,
                             message="" if rows else f"No data for {ticker} in your database.")
+        if rows and self.settings.get("chart_ticker") != ticker:
+            self.settings["chart_ticker"] = ticker      # opened again at the next start
+            save_settings(self.settings)
         risk = ticker_risk(ticker)
         if risk:
             self.chart.set_risk(self.risk_icons[risk[0]], risk[1])
