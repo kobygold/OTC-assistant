@@ -7,7 +7,7 @@ zooms, dragging pans, double-click resets the view.
 
 import math
 from bisect import bisect_left
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from statistics import median
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
@@ -65,6 +65,16 @@ def fmt_price(v) -> str:
     if abs(v) < 0.01 and abs(v - round(v, 4)) > 1e-9:
         return f"{v:.6f}".rstrip("0")
     return f"{v:.4f}"
+
+
+def eastern_date(millis: float) -> date:
+    """The US Eastern (market) date of a time in milliseconds since 1970."""
+    when = datetime.fromtimestamp(millis / 1000, timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return when.astimezone(ZoneInfo("America/New_York")).date()
+    except Exception:
+        return (when - timedelta(hours=5)).date()     # no time zone data: close enough
 
 
 def fmt_chart_price(v: float) -> str:
@@ -185,8 +195,19 @@ class CandleChart(QWidget):
 
     # ---- data ----
     def _set_rows(self, rows):
-        self.dates = [date.fromisoformat(r[0]) for r in rows]
+        self.base_rows = list(rows)     # the database's candles; a live day goes on top of them
+        self.live_bar = None
+        self._load(self.base_rows)
         self.measure = None
+        self.first, self.count = 0.0, 100.0
+        self.zones = []
+        self.channel = None
+        self.bounce = None
+        self.bounce_start = 0
+        self.live = {}              # live quote for the axis tags: price, volume, open
+
+    def _load(self, rows):
+        self.dates = [date.fromisoformat(r[0]) for r in rows]
         self.o = [r[1] for r in rows]
         self.h = [r[2] for r in rows]
         self.l = [r[3] for r in rows]
@@ -198,20 +219,41 @@ class CandleChart(QWidget):
         self.day_dollar = [dollar_price(r[3], r[2], r[4], r[6] if len(r) > 6 else None) * v
                            for r, v in zip(rows, self.v)]
         self.dollar_avg = sma(self.day_dollar, AVG_PERIOD)
-        self.first, self.count = 0.0, 100.0
-        self.zones = []
-        self.channel = None
-        self.bounce = None
-        self.bounce_start = 0
-        self.live = {}              # live quote for the axis tags: price, volume, open
 
-    def set_live(self, price=None, volume=None, open_price=None):
-        """The live last price and day volume, for the tags on the right axis. Without them the
-        tags show the last candle's close and volume."""
-        live = {k: v for k, v in (("price", price), ("volume", volume), ("open", open_price)) if v is not None}
-        if live != self.live:
-            self.live = live
+    def set_live(self, q=None):
+        """A live Level 1 quote from Schwab (stream field names), or None to drop it.
+        Its last price and day volume go in the tags on the right axes. When the stock has traded
+        on the quote's day, that day's candle and volume bar are drawn from it: added after the
+        database's last day, or replacing that day if the database has it already."""
+        q = q or {}
+        live = {k: q[f] for k, f in (("price", "LAST_PRICE"), ("volume", "TOTAL_VOLUME"), ("open", "OPEN_PRICE"))
+                if q.get(f) is not None}
+        bar = self._live_candle(q)
+        changed = live != self.live or bar != self.live_bar
+        if bar != self.live_bar:
+            self.live_bar = bar
+            rows = self.base_rows
+            if bar:
+                rows = (rows[:-1] if rows and rows[-1][0] == bar[0] else rows) + [bar]
+            self._load(rows)
+        self.live = live
+        if changed:
             self.update()
+
+    def _live_candle(self, q):
+        """(date, open, high, low, close, volume, None) for the quote's trading day, or None if
+        the quote is missing a part, nothing traded that day, or the database has a later day."""
+        try:
+            o, h, l, c, v = (q[f] for f in ("OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE", "LAST_PRICE", "TOTAL_VOLUME"))
+            traded = q["TRADE_TIME_MILLIS"]
+        except KeyError:
+            return None
+        if not v or not all(x and x > 0 for x in (o, h, l, c)) or not traded:
+            return None
+        day = eastern_date(traded).isoformat()
+        if self.base_rows and day < self.base_rows[-1][0]:
+            return None
+        return (day, o, max(h, o, c), min(l, o, c), c, float(v), None)
 
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):

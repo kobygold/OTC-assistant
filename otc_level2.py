@@ -219,7 +219,8 @@ class Level2Feed(QObject):
                            ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
                            ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
                            ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME"),
-                           ("openPrice", "OPEN_PRICE")):
+                           ("openPrice", "OPEN_PRICE"), ("highPrice", "HIGH_PRICE"), ("lowPrice", "LOW_PRICE"),
+                           ("tradeTime", "TRADE_TIME_MILLIS")):
             if q.get(rest) is not None:
                 self._l1[name] = q[rest]
         if self._l1:

@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.5.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1430,9 +1430,9 @@ class MainWindow(QMainWindow):
             self.chart.set_live()       # no more live quotes: back to the last candle's
 
     def on_live_quote(self, ticker, q):
-        """The live last price and day volume, for the chart's right axis tags."""
+        """The live quote: today's candle and volume bar, and the right axis tags."""
         if ticker == self.chart.ticker:
-            self.chart.set_live(q.get("LAST_PRICE"), q.get("TOTAL_VOLUME"), q.get("OPEN_PRICE"))
+            self.chart.set_live(q)
 
     def on_zone_option_changed(self):
         self.settings["zones_show"] = self.zones_show.isChecked()
