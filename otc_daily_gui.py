@@ -51,7 +51,7 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.4.7"
+APP_VERSION = "0.4.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -496,10 +496,14 @@ class MainWindow(QMainWindow):
         for n, i in enumerate(visible[:9], 1):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, lambda i=i: self.tabs.setCurrentIndex(i))
             self.tabs.setTabToolTip(i, f"Ctrl+{n}")
-        # On the Chart tab, Ctrl+Down / Ctrl+Up open the next / previous ticker of the last list visited
+        # On the Chart tab, Ctrl+Down / Ctrl+Up open the next / previous ticker of the last list visited.
+        # On the Mac, Qt's "Ctrl" is the Cmd key, and Cmd+Up/Down is eaten by the focused table / text box
+        # (jump to top / bottom), so there it is Cmd+Option+Up/Down.
         self.nav_tab = None
-        self.nav_shortcuts = [QShortcut(QKeySequence(key), self, lambda d=d: self.chart_step(d))
-                              for key, d in (("Ctrl+Down", 1), ("Ctrl+Up", -1))]
+        mod = "Ctrl+Alt" if sys.platform == "darwin" else "Ctrl"
+        self.nav_keys = ("⌘⌥↑ / ⌘⌥↓" if sys.platform == "darwin" else "Ctrl+↑ / Ctrl+↓")
+        self.nav_shortcuts = [QShortcut(QKeySequence(f"{mod}+{key}"), self, lambda d=d: self.chart_step(d))
+                              for key, d in (("Down", 1), ("Up", -1))]
         for sc in self.nav_shortcuts:
             sc.setEnabled(False)
 
@@ -1460,7 +1464,7 @@ class MainWindow(QMainWindow):
         nav = self.nav_list()
         r = self.nav_row()
         if nav and r is not None:
-            bits.append(f"Row {r + 1:,} of {nav[0].rowCount():,} on the {nav[3]} tab (Ctrl+↑ / Ctrl+↓: previous / next)")
+            bits.append(f"Row {r + 1:,} of {nav[0].rowCount():,} on the {nav[3]} tab ({self.nav_keys}: previous / next)")
         self.chart_info.setText("   ·   ".join(bits))
 
     def nav_list(self):
