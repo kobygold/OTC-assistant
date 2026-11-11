@@ -55,16 +55,15 @@ PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labe
 # ------------------------------------------------------------- formatting ---
 
 def fmt_price(v) -> str:
+    """Under $1 always 4 decimals (0.0120), from $1 always 2 (12.50). A sub-penny price that
+    isn't on the 0.0001 grid, like a trade at .00035, keeps the digits it needs."""
     if v is None:
         return "-"
-    if abs(v) >= 1000:
-        s = f"{v:,.2f}"
-    elif abs(v) >= 1:
-        s = f"{v:.4f}"
-    else:
-        s = f"{v:.6f}"
-    s = s.rstrip("0").rstrip(".") if "." in s else s
-    return s or "0"
+    if abs(v) >= 1:
+        return f"{v:,.2f}"
+    if abs(v) < 0.01 and abs(v - round(v, 4)) > 1e-9:
+        return f"{v:.6f}".rstrip("0")
+    return f"{v:.4f}"
 
 
 def fmt_chart_price(v: float) -> str:
@@ -72,7 +71,10 @@ def fmt_chart_price(v: float) -> str:
 
 
 def fmt_axis(v: float) -> str:
-    """Prices on the price axis: always PRICE_DECIMALS decimals, so 0.02 shows as 0.0200."""
+    """Prices on the price axis: under $1 always PRICE_DECIMALS decimals, so 0.02 shows as 0.0200;
+    from $1 two decimals, unless the axis steps are finer than a cent."""
+    if abs(v) >= 1 and abs(v * 100 - round(v * 100)) < 1e-6:
+        return f"{v:,.2f}"
     return f"{v:,.{PRICE_DECIMALS}f}"
 
 

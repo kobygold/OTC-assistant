@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"

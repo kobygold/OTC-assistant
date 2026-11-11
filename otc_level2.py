@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QFont
+from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -34,10 +34,33 @@ BOOK_SERVICES = ("NASDAQ_BOOK", "NYSE_BOOK")
 RECONNECT_SECONDS = 15
 POLL_SECONDS = 0.3              # how often the stream loop checks for a new ticker
 
-# One color per price level, best first, as in thinkorswim; the same on both sides
-LEVEL_COLORS = ["#fff1a8", "#cfe6ff", "#d6f2d0", "#ffd9d2", "#e6dcff", "#d4f0ef", "#f6e0f0", "#ececec"]
-UP_COLOR = QColor("#0a8a2a")
-DOWN_COLOR = QColor("#c62020")
+# thinkorswim's Level II colors: one blue per price level, best first and darker further out,
+# the same on both sides
+LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
+GOLD = "#e3b23c"        # market makers, prices and sizes
+GREEN = "#1db31d"       # a size that grew, a rise, the bid in the quote bar
+RED = "#e0404f"         # a size that shrank, a fall
+LAST = "#f3c400"        # the last price
+TEXT = "#d8d8d8"
+PANEL_STYLE = f"""
+#level2 {{ background: #000000; }}
+#l2bar {{ background: #333333; }}
+#l2bar QLabel {{ color: {TEXT}; }}
+#l2bar QLabel[cell="true"] {{ padding: 2px 9px; border-right: 1px solid #222222; }}
+#l2status {{ color: #9a9a9a; padding: 2px 9px; }}
+QTableWidget {{ background: #000000; color: {GOLD}; border: none; gridline-color: #22303c; }}
+QHeaderView::section {{ background: #151a1f; color: #c8c8c8; font-weight: normal;
+    border: none; border-right: 1px solid #2a3540; border-bottom: 1px solid #2a3540; padding: 2px 4px; }}
+QTableCornerButton::section {{ background: #151a1f; border: none; }}
+"""
+
+
+def tos_price(v, sign=False) -> str:
+    """Prices as in the rest of the app: under $1 with 4 decimals (0.0415), from $1 with 2.
+    With sign, a rise gets a + in front."""
+    if v is None:
+        return "-"
+    return ("+" if sign and v > 0 else "") + fmt_price(v)
 
 
 def token_age_days(token_path: Path):
@@ -185,7 +208,8 @@ class Level2Feed(QObject):
         for rest, name in (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
                            ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
                            ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
-                           ("totalVolume", "TOTAL_VOLUME")):
+                           ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
+                           ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME")):
             if q.get(rest) is not None:
                 self._l1[name] = q[rest]
         if self._l1:
@@ -208,8 +232,9 @@ class Level2Feed(QObject):
             if c.get("key") != self._current:
                 continue            # still arriving for the ticker just left
             self._books[service] = (self._side(c.get("BIDS", []), "BID"), self._side(c.get("ASKS", []), "ASK"))
-            bids = sorted((r for b, _ in self._books.values() for r in b), key=lambda r: (-r[1], -r[2]))
-            asks = sorted((r for _, a in self._books.values() for r in a), key=lambda r: (r[1], -r[2]))
+            # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
+            bids = sorted((r for b, _ in self._books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
+            asks = sorted((r for _, a in self._books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
             self.book.emit(self._current, self._levels(bids), self._levels(asks))
             n = len(bids) + len(asks)
             self.status.emit(f"Live · {time.strftime('%H:%M:%S')}" if n else
@@ -237,7 +262,8 @@ class Level2Feed(QObject):
 
 
 class Level2Panel(QWidget):
-    """The Level II box under the chart: a quote line, then bids and asks side by side."""
+    """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
+    side by side on black, one row per market maker, darker blue for each price level further out."""
 
     def __init__(self, settings: dict, token_path: Path, parent=None):
         super().__init__(parent)
@@ -247,28 +273,49 @@ class Level2Panel(QWidget):
         self.feed = None
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
+        self.setObjectName("level2")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(PANEL_STYLE)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(2)
-        head = QHBoxLayout()
-        self.head_label = QLabel()
-        self.head_label.setTextFormat(Qt.TextFormat.RichText)
-        head.addWidget(self.head_label)
+        root.setSpacing(0)
+        bar = QWidget()
+        bar.setObjectName("l2bar")
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        head = QHBoxLayout(bar)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(0)
+        self.cells = {}
+        tips = {
+            "last": "Last: the price of the last trade.",
+            "last_change": "Last price's change from yesterday's close.",
+            "mark": "Mark: the price the position is valued at. During regular hours it's the last price; "
+                    "outside them it can differ.",
+            "mark_change": "Mark's change from yesterday's close.",
+        }
+        for key in ("ticker", "name", "last", "last_change", "mark", "mark_change", "bid", "ask", "volume"):
+            lb = QLabel()
+            lb.setProperty("cell", True)
+            lb.setTextFormat(Qt.TextFormat.RichText)
+            lb.setToolTip(tips.get(key, ""))
+            self.cells[key] = lb
+            head.addWidget(lb)
         head.addStretch()
-        self.status_label = QLabel()
-        self.status_label.setStyleSheet("color: #666;")
-        head.addWidget(self.status_label)
         self.login_btn = QPushButton("Log in to Schwab...")
         self.login_btn.clicked.connect(self.login)
         self.login_btn.hide()
         head.addWidget(self.login_btn)
-        root.addLayout(head)
+        self.status_label = QLabel()
+        self.status_label.setObjectName("l2status")
+        head.addWidget(self.status_label)
+        root.addWidget(bar)
 
         sides = QHBoxLayout()
+        sides.setContentsMargins(0, 0, 0, 0)
         sides.setSpacing(6)
-        self.bid_table = self._table(["MM", "Bid", "Size"])
-        self.ask_table = self._table(["MM", "Ask", "Size"])
+        self.bid_table = self._table(["Ex", "Bid", "BS"])
+        self.ask_table = self._table(["Ex", "Ask", "AS"])
         sides.addWidget(self.bid_table)
         sides.addWidget(self.ask_table)
         root.addLayout(sides, 1)
@@ -281,11 +328,15 @@ class Level2Panel(QWidget):
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         t.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        t.verticalHeader().setVisible(False)
-        t.verticalHeader().setDefaultSectionSize(t.fontMetrics().height() + 4)
-        t.setShowGrid(False)
+        # Compact rows, as in thinkorswim; the style's minimum row height would make them half again as tall
+        rows = t.verticalHeader()
+        rows.setVisible(False)
+        rows.setMinimumSectionSize(1)
+        rows.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        rows.setDefaultSectionSize(t.fontMetrics().height() + 4)
         hdr = t.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        hdr.setHighlightSections(False)
         t.horizontalHeaderItem(0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in (1, 2):
             t.horizontalHeaderItem(col).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -326,7 +377,7 @@ class Level2Panel(QWidget):
             self.feed.stop()
 
     def set_status(self, text):
-        self.status_label.setText(text)
+        self.status_label.setText(f"Level II · {text}")
 
     def on_login_needed(self, why):
         self.set_status(why)
@@ -367,27 +418,39 @@ class Level2Panel(QWidget):
 
     # ------------------------------------------------------------ display ---
     def show_quote(self, q: dict):
-        last, close = q.get("LAST_PRICE"), q.get("CLOSE_PRICE")
-        change = q.get("NET_CHANGE")
-        if change is None and last is not None and close:
-            change = last - close
-        pct = change / close * 100 if change is not None and close else None
-        color = "#0a8a2a" if (change or 0) > 0 else "#c62020" if (change or 0) < 0 else "#444"
-        parts = [f"<b>{self.ticker or 'Level II'}</b>"]
-        if self.name:
-            parts.append(self.name[:40])
-        if last is not None:
-            parts.append(f"<b style='font-size:13pt'>{fmt_price(last)}</b>")
-        if change is not None:
-            parts.append(f"<span style='color:{color}'>{change:+.6f}".rstrip("0").rstrip(".")
-                         + (f" ({pct:+.2f}%)" if pct is not None else "") + "</span>")
-        if q.get("BID_PRICE") is not None:
-            parts.append(f"Bid: <b>{fmt_price(q['BID_PRICE'])}</b> x {q.get('BID_SIZE', 0):,}")
-        if q.get("ASK_PRICE") is not None:
-            parts.append(f"Ask: <b>{fmt_price(q['ASK_PRICE'])}</b> x {q.get('ASK_SIZE', 0):,}")
-        if q.get("TOTAL_VOLUME") is not None:
-            parts.append(f"Volume: {q['TOTAL_VOLUME']:,}")
-        self.head_label.setText("&nbsp;&nbsp;&nbsp;".join(parts))
+        c = self.cells
+        c["ticker"].setText(self.ticker or "Level II")
+        c["name"].setText(self.name[:24])
+        # Last and Mark, each with its change from yesterday's close, as in thinkorswim
+        close = q.get("CLOSE_PRICE")
+        for key, price_key, change_key in (("last", "LAST_PRICE", "NET_CHANGE"), ("mark", "MARK", "MARK_CHANGE")):
+            price = q.get(price_key)
+            change = q.get(change_key)
+            if change is None and price is not None and close:
+                change = price - close
+            c[key].setText(f"<span style='color:{LAST}; font-size:13pt; font-weight:bold'>{tos_price(price)}</span>"
+                           if price is not None else "")
+            c[f"{key}_change"].setText(self._change_text(change, close))
+        for key, side, value_color in (("bid", "BID", GREEN), ("ask", "ASK", GOLD)):
+            price = q.get(f"{side}_PRICE")
+            size = q.get(f"{side}_SIZE") or 0
+            c[key].setText(f"{side.title()}: <span style='color:{value_color}'>{tos_price(price)}</span> x "
+                           f"<span style='color:{value_color}'>{size:,}</span>" if price is not None else "")
+        vol = q.get("TOTAL_VOLUME")
+        c["volume"].setText(f"Vol: <span style='color:{GOLD}'>{vol:,}</span>" if vol is not None else "")
+        for lb in c.values():
+            lb.setVisible(bool(lb.text()))
+
+    @staticmethod
+    def _change_text(change, close):
+        """The change and its %, on two small lines as in thinkorswim."""
+        if change is None:
+            return ""
+        color = GREEN if change > 0 else RED if change < 0 else TEXT
+        if not close:
+            return f"<span style='color:{color}'>{tos_price(change, sign=True)}</span>"
+        return (f"<div style='color:{color}; font-size:7pt'>{tos_price(change, sign=True)}</div>"
+                f"<div style='color:{color}; font-size:7pt'>{change / close * 100:+.2f}%</div>")
 
     def show_book(self, ticker, bids, asks):
         if ticker != self.ticker:
@@ -398,21 +461,18 @@ class Level2Panel(QWidget):
     def _fill(self, table, rows, side):
         prev, trend = self.prev[side], self.trend[side]
         table.setRowCount(len(rows))
-        bold = QFont(table.font())
-        bold.setBold(True)
         for r, (mm, price, size, level) in enumerate(rows):
             # Size colored by its last change, as in thinkorswim: green up, red down
             if mm in prev and size != prev[mm]:
                 trend[mm] = 1 if size > prev[mm] else -1
             prev[mm] = size
             bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
-            cells = [QTableWidgetItem(mm), QTableWidgetItem(fmt_price(price)), QTableWidgetItem(f"{size:,}")]
-            for c, item in enumerate(cells):
+            cells = [QTableWidgetItem(mm), QTableWidgetItem(tos_price(price)), QTableWidgetItem(f"{size:,}")]
+            for col, item in enumerate(cells):
                 item.setBackground(bg)
-                if c:
+                item.setForeground(QColor(GOLD))
+                if col:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if level == 0:
-                    item.setFont(bold)
-                table.setItem(r, c, item)
+                table.setItem(r, col, item)
             if trend.get(mm):
-                cells[2].setForeground(UP_COLOR if trend[mm] > 0 else DOWN_COLOR)
+                cells[2].setForeground(QColor(GREEN if trend[mm] > 0 else RED))
