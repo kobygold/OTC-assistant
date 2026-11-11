@@ -184,7 +184,7 @@ class CandleChart(QWidget):
         self.subtitle = ""
         self.range_label = "1Y"
         self.show_expirations = True
-        self.show_last_tags = True     # the last price and day volume tags on the right
+        self.show_last_tags = True     # the last price tag on the right axis
         self.show_bid_ask_tags = True  # the live bid and ask tags on the right
         self.risk_icon = None
         self.risk_tip = ""
@@ -226,7 +226,7 @@ class CandleChart(QWidget):
 
     def set_live(self, q=None):
         """A live Level 1 quote from Schwab (stream field names), or None to drop it.
-        Its last price and day volume go in the tags on the right axes. When the stock has traded
+        Its last price, bid and ask go in the tags on the right. When the stock has traded
         on the quote's day, that day's candle and volume bar are drawn from it: added after the
         database's last day, or replacing that day if the database has it already."""
         q = q or {}
@@ -460,32 +460,30 @@ class CandleChart(QWidget):
             self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}", above=True, pane=price)
             self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}", above=False, pane=price)
 
-        # Last price and day volume tags on the right axes: live from Schwab when the Level II
-        # panel streams this ticker, else the last candle's. Colored like a candle: close vs open.
+        # The last price tag on the right axis: live from Schwab when the Level II panel streams
+        # this ticker, else the last candle's close. Colored like a candle: close vs open.
         # The live bid and ask get arrow tags inside the chart, just left of the y-axis (ask above,
         # bid below; pushed apart when they would overlap).
         last = len(self.dates) - 1
-        color = self._color(last)
         if self.show_bid_ask_tags:
-            tags = [(py(self.live[k]), fmt_axis(self.live[k]), bg) for k, bg in (("ask", ASK_TAG), ("bid", BID_TAG))
-                    if self.live.get(k)]
+            tags = [(py(self.live[k]), f"{label}: {fmt_axis(self.live[k])}", bg)
+                    for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)) if self.live.get(k)]
             tags = [t for t in tags if price.top() <= t[0] <= price.bottom()]
             if len(tags) == 2 and tags[1][0] - tags[0][0] < TAG_H + 1:
                 mid = (tags[0][0] + tags[1][0]) / 2
                 mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
             for y, text, bg in tags:
-                self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow=True)
+                self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow="inside")
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
+            color = self._color(last)
             if "price" in self.live and self.live.get("open"):
                 color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
             ly = py(now)
             if price.top() <= ly <= price.bottom():
-                self._axis_tag(p, price.right() + 2, ly, fmt_axis(now), color, QColor("#000000"), bold=True)
-            day_vol = self.live.get("volume", self.v[last])
-            self._axis_tag(p, vol.right() + 2, min(max(vy(day_vol), vtop + 8), vbot - 8), fmt_volume(day_vol),
-                           color, QColor("#000000"), bold=True)
+                self._axis_tag(p, price.right() + 1, ly, fmt_axis(now), color, QColor("#000000"), bold=True,
+                               arrow="axis")
 
         self._draw_zone_labels(p, price, py)
         self._draw_bounce_labels(p, price, py)
@@ -833,9 +831,9 @@ class CandleChart(QWidget):
         ]
         self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items, gap=0)
 
-    def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=False):
-        """A tag centered on y. Plain: starts at x, on the right axis. arrow: ends at x, with a
-        triangle point on its left side."""
+    def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=None):
+        """A tag centered on y. Plain: starts at x, on the right axis. arrow: with a triangle point
+        on its left side; "inside" ends at x (inside the chart), "axis" has its point at x."""
         f = QFont(p.font())
         f.setBold(bold)
         p.setFont(f)
@@ -843,10 +841,13 @@ class CandleChart(QWidget):
         h = TAG_H
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
-        if arrow:     # x is the right edge: the tag sits left of it, pointing left
+        if arrow:
             point = h / 2
-            r = QRectF(x - tw, y - h / 2, tw, h)
-            x = r.left() - point
+            if arrow == "inside":
+                r = QRectF(x - tw, y - h / 2, tw, h)
+                x = r.left() - point
+            else:
+                r = QRectF(x + point, y - h / 2, max(tw, RIGHT_W - 4 - point), h)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.drawPolygon(QPolygonF([QPointF(x, y), QPointF(r.left(), r.top()), QPointF(r.right(), r.top()),
                                      QPointF(r.right(), r.bottom()), QPointF(r.left(), r.bottom())]))

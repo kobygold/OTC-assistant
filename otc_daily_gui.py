@@ -52,7 +52,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.7"
+APP_VERSION = "0.5.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -775,11 +775,11 @@ class MainWindow(QMainWindow):
         row.addWidget(self.level2_show)
         row.addSpacing(16)
 
-        self.last_tags_show = QCheckBox("Price/Vol tags")
+        self.last_tags_show = QCheckBox("Price tag")
         self.last_tags_show.setChecked(bool(self.settings.get("last_tags_show", True)))
         self.last_tags_show.setToolTip(
-            "The current price and day volume tags on the right axes: live from Schwab while Level II "
-            "streams the ticker, else the last day's close and volume. Colored like a candle.")
+            "The current price tag on the right axis: live from Schwab while Level II "
+            "streams the ticker, else the last day's close. Colored like a candle.")
         self.last_tags_show.toggled.connect(self.on_last_tags_toggled)
         row.addWidget(self.last_tags_show)
         row.addSpacing(16)
