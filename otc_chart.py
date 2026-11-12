@@ -208,6 +208,7 @@ class CandleChart(QWidget):
         self.v_zoom = None          # the top of the volume axis zoomed by its ruler; None = fit the bars
         self._scale = (0.0, 1.0)    # the price axis's (low, high) and the volume axis's top as last drawn
         self._vmax = 1.0
+        self._tag_points = []       # the Bid and Ask tags' triangle points as last drawn: (x, y, price)
         # Shift is caught for the whole app: the chart rarely has the keyboard focus
         QApplication.instance().installEventFilter(self)
 
@@ -550,16 +551,18 @@ class CandleChart(QWidget):
         # The live bid and ask get arrow tags inside the chart, just left of the y-axis (ask above,
         # bid below; pushed apart when they would overlap).
         last = len(self.dates) - 1
+        self._tag_points = []
         if self.show_bid_ask_tags:
-            tags = [(py(self.live[k]), f"{label}: {fmt_axis(self.live[k])}", bg)
+            tags = [(py(self.live[k]), f"{label}: {fmt_axis(self.live[k])}", bg, self.live[k])
                     for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)) if self.live.get(k)]
             tags = [t for t in tags if price.top() <= t[0] <= price.bottom()]
             if len(tags) == 2 and tags[1][0] - tags[0][0] < TAG_H + 1:
                 mid = (tags[0][0] + tags[1][0]) / 2
                 mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
-            for y, text, bg in tags:
-                self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow="inside")
+            for y, text, bg, value in tags:
+                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow="inside")
+                self._tag_points.append((tip.x(), tip.y(), value))
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
             color = self._color(last)
@@ -590,7 +593,7 @@ class CandleChart(QWidget):
                 p.drawLine(QPointF(cx, price.top() + 1), QPointF(cx, price.bottom() - 1))
                 p.drawLine(QPointF(cx, vol.top() + 1), QPointF(cx, vol.bottom() - 1))
                 pane = price if in_price else vol
-                snapped = self._snap(idx, my, py) if in_price else None
+                snapped = self._snap(idx, mx, my, py) if in_price else None
                 if snapped is not None:
                     my = py(snapped)
                 p.drawLine(QPointF(pane.left() + 1, my), QPointF(pane.right() - 1, my))
@@ -623,16 +626,17 @@ class CandleChart(QWidget):
         self._volume_header(p, vol, i)
         p.end()
 
-    def _snap(self, i: int, y: float, py):
-        """The price nearest to y within SNAP_PX, else None: the hovered candle's high, low, open or
-        close, and anywhere along the chart the live Bid and Ask (when their tags are shown), so the
-        crosshair and the measuring line can start or end at a tag's point."""
-        points = [self.h[i], self.l[i], self.o[i], self.c[i]] if 0 <= i < len(self.dates) else []
-        if self.show_bid_ask_tags:
-            points += [self.live[k] for k in ("bid", "ask") if self.live.get(k)]
-        if not points:
+    def _snap(self, i: int, x: float, y: float, py):
+        """The price to snap the crosshair to, else None: the live Bid or Ask when the mouse is within
+        SNAP_PX of its tag's triangle point (so the measuring line can start or end there), else the
+        hovered candle's high, low, open or close nearest to y within SNAP_PX."""
+        near = [(math.hypot(tx - x, ty - y), value) for tx, ty, value in self._tag_points]
+        near = [n for n in near if n[0] <= SNAP_PX]
+        if near:
+            return min(near)[1]
+        if not 0 <= i < len(self.dates):
             return None
-        best = min(points, key=lambda v: abs(py(v) - y))
+        best = min((self.h[i], self.l[i], self.o[i], self.c[i]), key=lambda v: abs(py(v) - y))
         return best if abs(py(best) - y) <= SNAP_PX else None
 
     # ---- measuring line (hold Shift) ----
@@ -961,6 +965,7 @@ class CandleChart(QWidget):
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
         f.setBold(False)
         p.setFont(f)
+        return QPointF(x, y)    # with an arrow: its point
 
     def _marker(self, p, x, y, text, above, pane):
         fm = QFontMetrics(p.font())

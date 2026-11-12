@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QByteArray, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.7.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -545,8 +545,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setStyleSheet(APP_STYLE)
-        self.resize(1300, 860)
+        self.resize(1590, 1030)
         self.settings = load_settings()
+        # The size and place the window was closed with (and whether it was maximized)
+        if self.settings.get("window_geometry"):
+            self.restoreGeometry(QByteArray.fromBase64(self.settings["window_geometry"].encode("ascii")))
         self.download_job = None
         self.names_job = None
         self.reload_job = None
@@ -2831,6 +2834,8 @@ class MainWindow(QMainWindow):
             for j in running:
                 j.join(timeout=5)
         self.level2.stop()
+        self.settings["window_geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        save_settings(self.settings)
         if self.level2_show.isChecked():     # the chart / Level II split, for the next start
             self.settings["level2_split"] = self.chart_split.sizes()
             save_settings(self.settings)
