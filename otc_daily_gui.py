@@ -54,7 +54,7 @@ from otc_checklist import ChecklistPanel
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.6.3"
+APP_VERSION = "0.6.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"

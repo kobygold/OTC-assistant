@@ -4,7 +4,9 @@ How to edit this file:
   "## "      starts a section (its title as shown in the panel)
   "- "       is an item, shown in Hebrew as written
   "  auto(key):"  the rule the app uses to show a green check or a red X by itself
-  "  info(key):"  a value only, no check or X
+  "  info(key):"  a value only, no check or X. The entry, size, exit and stop values can be typed over
+                  in the panel (in amber): the size for all tickers, the prices per ticker; clear a field to
+                  go back to the automatic value (in white)
   "  manual"      you tick the item yourself in the panel (saved per ticker)
 The key in brackets ties the item to its rule in the app: keep it when you change the Hebrew text.
 Items can be moved, removed or repeated. The rest of the line, and lines under it, are notes.
@@ -15,22 +17,26 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - הטיקר
   info(ticker): the chart's ticker
 - גודל פוזיציה
-  info(size): $150 (for now)
+  info(size): $150 by default (editable)
 - מחיר כניסה
-  info(entry): Trips: the Bid. Dubs and up: the Bid + 0.0001
+  info(entry): Trips: the Bid. Dubs and up: the Bid + 0.0001 (editable)
 - מחיר יציאה (יעד)
-  info(exit): Trips: the Ask. Dubs and up: the Ask - 0.0001
+  info(exit): Trips: the Ask. Dubs and up: the Ask - 0.0001 (editable)
 - כמות מניות
   info(shares): round(150 / entry price)
 - כרית ביטחון (סטופ)
   info(stop): going down the Level II bids from the highest, the price of the first bid where the bids so far
-        add up to at least twice our amount of stocks
+        add up to at least twice our amount of stocks (editable)
 - רווח פוטנציאלי
   info(profit): (exit - entry) / entry, in %
 - הפסד פוטנציאלי
   info(loss): (entry - stop) / entry, in %
-- יחס רווח/הפסד
-  info(ratio): profit % / loss %  ("—" when the loss is 0)
+- רווח פוטנציאלי בדולרים בניכוי עמלות
+  info(profit_usd): amount of stocks x (exit - entry) - 2 x $6.95 (the buy and sell fees)
+- הפסד פוטנציאלי בדולרים בתוספת עמלות
+  info(loss_usd): -(amount of stocks x (entry - stop)) - 2 x $6.95 (the buy and sell fees)
+- יחס רווח/הפסד (בהתעלם מעמלות)
+  info(ratio): shown as 1:X, where X = profit % / loss %, without the fees ("—" when the loss is 0)
 
 
 ## 1 חיפוש המנייה
