@@ -2,7 +2,9 @@
 otc_chart.py - Dark candlestick chart widget (PyQt6) in a thinkorswim-like style:
 candles, volume pane with a 50-day volume average, info bar, crosshair with axis
 labels, Hi/Lo markers, monthly expiration lines and a last-price tag. Mouse wheel
-zooms, dragging pans, double-click resets the view.
+zooms, dragging pans, double-click resets the view. As in thinkorswim, dragging a ruler zooms
+that axis around the point grabbed: the price or volume ruler up = in, down = out; the time
+ruler left = in, right = out (and the prices fit themselves again). Double-click a ruler for auto.
 The 1D view shows 1-minute candles instead (set_intraday): only minutes with trades, side by
 side, in Israel time, with a dashed line where a trading day starts.
 """
@@ -57,6 +59,7 @@ TAG_H = 16                   # the right axis tags' height
 INFO_X = RISK_SIZE + 8       # where the info bar's boxes start, after the risk sign
 SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
+RULER_ZOOM_PX = 150         # dragging a ruler this far zooms that axis e (2.7) times
 
 
 # ------------------------------------------------------------- formatting ---
@@ -200,6 +203,11 @@ class CandleChart(QWidget):
         self.drag = None
         self.cursor_point = None    # (bar index, price) under the crosshair, as last drawn
         self.measure = None         # (bar index, price) where Shift was pressed, while it's held
+        self.ruler = None           # a ruler being dragged: (axis, mouse at the press, axis state then)
+        self.y_zoom = None          # (low, high) of the price axis zoomed by its ruler; None = fit the candles
+        self.v_zoom = None          # the top of the volume axis zoomed by its ruler; None = fit the bars
+        self._scale = (0.0, 1.0)    # the price axis's (low, high) and the volume axis's top as last drawn
+        self._vmax = 1.0
         # Shift is caught for the whole app: the chart rarely has the keyboard focus
         QApplication.instance().installEventFilter(self)
 
@@ -215,6 +223,7 @@ class CandleChart(QWidget):
         self.bounce = None
         self.bounce_start = 0
         self.live = {}              # live quote for the axis tags: price, volume, open
+        self.y_zoom = self.v_zoom = None
 
     def _load(self, rows):
         self.rows = rows
@@ -294,12 +303,13 @@ class CandleChart(QWidget):
         zoom, and the view follows the newest candle when it was showing it."""
         same = keep_view and self.intraday and ticker == self.ticker and bool(self.dates)
         view = (self.first, self.count, len(self.dates)) if same else None
-        live = self.live
+        live, zoom = self.live, (self.y_zoom, self.v_zoom)
         self.ticker = ticker
         self.intraday = True
         self._set_rows(rows)
         if same:
             self.live = live
+            self.y_zoom, self.v_zoom = zoom
         self.message = message or ("" if rows else f"No 1-minute candles for {ticker} in the last days.")
         if view and rows:
             first, count, n_old = view
@@ -332,6 +342,7 @@ class CandleChart(QWidget):
     def set_range(self, months, label: str):
         """Show the last `months` months (None = everything)."""
         self.range_label = label
+        self.y_zoom = self.v_zoom = None
         n = len(self.dates)
         if not n:
             self.update()
@@ -424,11 +435,15 @@ class CandleChart(QWidget):
                 hover = idx
 
         # Price scale for the visible candles
-        lo = min(self.l[i0:i1 + 1]) if i1 >= i0 else 0
-        hi = max(self.h[i0:i1 + 1]) if i1 >= i0 else 1
-        if hi <= lo:
-            pad = abs(hi) * 0.02 or 0.0001
-            lo, hi = lo - pad, hi + pad
+        if self.y_zoom:
+            lo, hi = self.y_zoom
+        else:
+            lo = min(self.l[i0:i1 + 1]) if i1 >= i0 else 0
+            hi = max(self.h[i0:i1 + 1]) if i1 >= i0 else 1
+            if hi <= lo:
+                pad = abs(hi) * 0.02 or 0.0001
+                lo, hi = lo - pad, hi + pad
+        self._scale = (lo, hi)
         top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
         scale = (bot - top) / (hi - lo)
 
@@ -440,7 +455,8 @@ class CandleChart(QWidget):
 
         # Volume scale
         vmax = max(self.v[i0:i1 + 1] + self.vol_avg[i0:i1 + 1] + self.vol_median[i0:i1 + 1]) if i1 >= i0 else 1
-        vmax = (vmax or 1) * 1.08
+        vmax = self.v_zoom or (vmax or 1) * 1.08
+        self._vmax = vmax
         vtop, vbot = vol.top() + VOL_HEADER_H, vol.bottom() - 1
 
         def vy(v):
@@ -521,8 +537,13 @@ class CandleChart(QWidget):
         if i1 >= i0:
             ih = max(range(i0, i1 + 1), key=lambda i: self.h[i])
             il = min(range(i0, i1 + 1), key=lambda i: self.l[i])
-            self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}", above=True, pane=price)
-            self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}", above=False, pane=price)
+            # Only when the price is on screen (a zoomed price axis can leave it out)
+            if price.top() <= py(self.h[ih]) <= price.bottom():
+                self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}",
+                             above=True, pane=price)
+            if price.top() <= py(self.l[il]) <= price.bottom():
+                self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}",
+                             above=False, pane=price)
 
         # The last price tag on the right axis: live from Schwab when the Level II panel streams
         # this ticker, else the last candle's close. Colored like a candle: close vs open.
@@ -1057,8 +1078,52 @@ class CandleChart(QWidget):
             return True
         return super().event(e)
 
+    def _ruler_at(self, pos):
+        """"price", "volume" or "time" for a point on one of the rulers, else None."""
+        price, vol = self._layout()
+        x, y = pos.x(), pos.y()
+        if x > price.right() and price.top() <= y <= price.bottom():
+            return "price"
+        if x > vol.right() and vol.top() <= y <= vol.bottom():
+            return "volume"
+        if y > vol.bottom() and price.left() <= x <= price.right():
+            return "time"
+        return None
+
+    @staticmethod
+    def _ruler_cursor(axis):
+        return {"price": Qt.CursorShape.SizeVerCursor, "volume": Qt.CursorShape.SizeVerCursor,
+                "time": Qt.CursorShape.SizeHorCursor}.get(axis, Qt.CursorShape.CrossCursor)
+
+    def _drag_ruler(self, pos):
+        """Zooms the dragged ruler's axis around the point where it was grabbed."""
+        axis, start, state = self.ruler
+        price, vol = self._layout()
+        if axis == "price":
+            lo0, hi0 = state
+            top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
+            grabbed = hi0 - (start.y() - top) / (bot - top) * (hi0 - lo0)     # the price under the press
+            span = (hi0 - lo0) / math.exp((start.y() - pos.y()) / RULER_ZOOM_PX)  # up: smaller span, zoomed in
+            lo = grabbed - (grabbed - lo0) / (hi0 - lo0) * span
+            self.y_zoom = (lo, lo + span)
+        elif axis == "volume":
+            self.v_zoom = state / math.exp((start.y() - pos.y()) / RULER_ZOOM_PX)    # the bars stand on zero
+        else:
+            first0, count0 = state
+            slot = first0 + (start.x() - price.left()) / (price.width() / count0)  # the time under the press
+            count = count0 * math.exp((pos.x() - start.x()) / RULER_ZOOM_PX)      # right: more bars, zoomed out
+            self.count = min(max(count, 12), len(self.dates) + MAX_RIGHT_EMPTY_BARS)
+            self.first = self._clamp_first(slot - (start.x() - price.left()) / price.width() * self.count)
+            self.y_zoom = None      # the prices fit the candles shown
+
     def mouseMoveEvent(self, e):
         self.mouse = e.position()
+        if self.ruler is not None:
+            self._drag_ruler(e.position())
+            self.update()
+            return
+        if self.drag is None:
+            self.setCursor(self._ruler_cursor(self._ruler_at(e.position())))
         if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.measure = None
         if self.drag is not None:
@@ -1073,17 +1138,32 @@ class CandleChart(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and self.dates:
-            self.drag = (e.position().x(), self.first)
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        if e.button() != Qt.MouseButton.LeftButton or not self.dates:
+            return
+        axis = self._ruler_at(e.position())
+        if axis:
+            state = {"price": self._scale, "volume": self._vmax, "time": (self.first, self.count)}[axis]
+            self.ruler = (axis, e.position(), state)
+            self.setCursor(self._ruler_cursor(axis))
+            return
+        self.drag = (e.position().x(), self.first)
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseReleaseEvent(self, e):
-        self.drag = None
-        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.drag = self.ruler = None
+        self.setCursor(self._ruler_cursor(self._ruler_at(e.position())))
         self.update()
 
     def mouseDoubleClickEvent(self, e):
-        self.reset_view()
+        """On the price or volume ruler: that axis fits itself again; elsewhere the whole view resets."""
+        axis = self._ruler_at(e.position())
+        if axis == "price":
+            self.y_zoom = None
+        elif axis == "volume":
+            self.v_zoom = None
+        else:
+            self.reset_view()
+        self.update()
 
     def wheelEvent(self, e):
         if not self.dates:
@@ -1095,6 +1175,7 @@ class CandleChart(QWidget):
         new_count = min(max(self.count * factor, 12), len(self.dates) + MAX_RIGHT_EMPTY_BARS)
         self.count = new_count
         self.first = self._clamp_first(anchor - (x - price.left()) / price.width() * new_count)
+        self.y_zoom = None          # a time zoom: the prices fit the candles shown
         self.update()
 
     def _clamp_first(self, first):
