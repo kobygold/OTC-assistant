@@ -7,6 +7,7 @@ The position size and the entry, exit and stop prices can be typed over: the pos
 for all tickers, the prices per ticker, and clearing a field brings back the automatic value."""
 
 import json
+import math
 import threading
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -14,8 +15,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
 
-from PyQt6.QtCore import QObject, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap,
+from PyQt6.QtCore import QObject, QPointF, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QToolTip,
                              QVBoxLayout, QWidget)
@@ -188,6 +189,35 @@ def copy_icon():
     p.drawRoundedRect(QRectF(4.5, 0.5, 8.5, 9.5), 1.5, 1.5)
     p.setBrush(QColor("#101214"))
     p.drawRoundedRect(QRectF(0.5, 3.5, 8.5, 9.5), 1.5, 1.5)
+    p.end()
+    return QIcon(pix)
+
+
+def reset_icon(color="#c8c8c8"):
+    """A smooth round arrow (clockwise, open at the top right), drawn at 4x and anti-aliased,
+    so it stays sharp on any screen scaling."""
+    scale, size = 4, 14
+    pix = QPixmap(size * scale, size * scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(scale)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color), 1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    ring = QRectF(2.5, 2.5, 9, 9)
+    p.drawArc(ring, 60 * 16, 290 * 16)         # from 60° (top right) round to 350°
+    # the arrowhead at the arc's start (60°), pointing along the clockwise turn
+    cx, cy, r = 7, 7, 4.5
+    a = math.radians(60)
+    tip = QPointF(cx + r * math.cos(a), cy - r * math.sin(a))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    d = QPointF(math.sin(a), math.cos(a))          # clockwise tangent at the tip (screen y down)
+    n = QPointF(math.cos(a), -math.sin(a))         # outward
+    head = 3.2
+    base = tip - d * head * 0.5
+    p.drawPolygon(QPolygonF([tip + d * head * 0.6, base + n * head * 0.6, base - n * head * 0.6]))
     p.end()
     return QIcon(pix)
 
@@ -482,7 +512,7 @@ class ChecklistPanel(QWidget):
         """A round arrow that drops the typed price, back to the automatic one."""
         b = QToolButton()
         b.setObjectName("cl_reset")
-        b.setText("↻")
+        b.setIcon(reset_icon())
         b.setFixedSize(18, 25)
         b.setToolTip("Reset to the automatic value")
         b.setCursor(Qt.CursorShape.PointingHandCursor)
