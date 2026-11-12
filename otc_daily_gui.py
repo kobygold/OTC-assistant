@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import QByteArray, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF,
+    QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.8.6"
+APP_VERSION = "0.8.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -71,18 +71,45 @@ NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
 APP_STYLE = """
 QHeaderView::section {
-    background: #f0f0f0; border: none; border-right: 1px solid #d6d6d6; border-bottom: 1px solid #d6d6d6;
-    padding: 4px 3px;
+    background: #1d2125; color: #c8c8c8; border: none;
+    border-right: 1px solid #2c3136; border-bottom: 1px solid #2c3136; padding: 4px 3px;
 }
+QTableCornerButton::section { background: #1d2125; border: none; }
 QPushButton {
-    background: #e4e4e4; border: 1px solid #c2c2c2; border-radius: 4px; padding: 4px 12px;
+    background: #2a2f34; color: #e0e0e0; border: 1px solid #3a4046; border-radius: 4px; padding: 4px 12px;
 }
-QPushButton:hover { background: #d9d9d9; }
-QPushButton:pressed { background: #cccccc; }
+QPushButton:hover { background: #343a40; }
+QPushButton:pressed { background: #3e454c; }
 QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
-QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
+QPushButton:disabled { background: #1f2326; color: #666b70; border-color: #2a2f34; }
 QPushButton#range_1d, QPushButton#range_1d:checked { border: 2px solid #f2b200; }
+QToolTip { background: #2a2f34; color: #e8e8e8; border: 1px solid #3a4046; }
 """
+
+
+def dark_palette() -> QPalette:
+    """The app's own dark colours, the same whether Windows is set to light or dark."""
+    pal = QPalette()
+    roles = QPalette.ColorRole
+    for role, color in [
+        (roles.Window, "#1b1e21"), (roles.WindowText, "#d8d8d8"),
+        (roles.Base, "#101214"), (roles.AlternateBase, "#171a1d"),
+        (roles.Text, "#d8d8d8"), (roles.PlaceholderText, "#7a7f84"),
+        (roles.Button, "#2a2f34"), (roles.ButtonText, "#e0e0e0"), (roles.BrightText, "#ffffff"),
+        (roles.Light, "#3e454c"), (roles.Midlight, "#343a40"), (roles.Mid, "#2a2f34"),
+        (roles.Dark, "#121416"), (roles.Shadow, "#000000"),
+        (roles.Highlight, "#2f6fb0"), (roles.HighlightedText, "#ffffff"),
+        (roles.ToolTipBase, "#2a2f34"), (roles.ToolTipText, "#e8e8e8"),
+        (roles.Link, "#4aa3ff"), (roles.LinkVisited, "#b07cff"),
+    ]:
+        pal.setColor(role, QColor(color))
+    off = QPalette.ColorGroup.Disabled
+    for role in (roles.WindowText, roles.Text, roles.ButtonText):
+        pal.setColor(off, role, QColor("#666b70"))
+    pal.setColor(off, roles.Base, QColor("#16191b"))
+    pal.setColor(off, roles.Highlight, QColor("#3a4046"))
+    return pal
+
 ZONE_RISK_COL, ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 0, 1, 2, 3
 ATM_RISK_COL, ATM_FAV_COL, ATM_TICKER_COL, ATM_NAME_COL = 0, 1, 2, 3
 ZONE_NAME_WIDTH = 170
@@ -2872,6 +2899,13 @@ def main():
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OTCScanner.DailyDownloader")
     app = QApplication(sys.argv)
+    # One dark look on every PC: the Fusion style with our own colours, not the Windows theme
+    try:
+        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)      # dark title bar too (Qt 6.8+)
+    except AttributeError:
+        pass
+    app.setStyle("Fusion")
+    app.setPalette(dark_palette())
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(QIcon(str(ICON_PATH)))
