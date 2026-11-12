@@ -46,13 +46,15 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_atm as atm
+import otc_checklist as checklist
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
+from otc_checklist import ChecklistPanel
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.5.11"
+APP_VERSION = "0.6.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -763,6 +765,13 @@ class MainWindow(QMainWindow):
         self.chart_opts_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.chart_opts_btn.setToolTip("Show or hide the chart's view options")
         row.addWidget(self.chart_opts_btn)
+        self.checklist_btn = QToolButton()
+        self.checklist_btn.setText("Checklist")
+        self.checklist_btn.setCheckable(True)
+        self.checklist_btn.setChecked(bool(self.settings.get("checklist_show", True)))
+        self.checklist_btn.setToolTip("Show or hide the trade checklist on the right of the chart "
+                                      "(its items are in checklist.txt)")
+        row.addWidget(self.checklist_btn)
         self.chart_opts = QWidget()
         main_row, row = row, QHBoxLayout(self.chart_opts)
         row.setContentsMargins(0, 0, 0, 0)
@@ -878,11 +887,23 @@ class MainWindow(QMainWindow):
         self.level2.live_quote.connect(self.on_live_quote)
         self.chart_split = QSplitter(Qt.Orientation.Vertical)
         self.chart_split.setChildrenCollapsible(False)
+        self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings)
+        self.checklist.setVisible(self.checklist_btn.isChecked())
+        self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
+        self.checklist_split.setChildrenCollapsible(False)
+        # The chart over Level II on the left, the checklist on the right at full height
         self.chart_split.addWidget(self.chart)
         self.chart_split.addWidget(self.level2)
         self.chart_split.setStretchFactor(0, 1)
         self.chart_split.setSizes(self.settings.get("level2_split", [600, 220]))
-        root.addWidget(self.chart_split, 1)
+        self.checklist_split.addWidget(self.chart_split)
+        self.checklist_split.addWidget(self.checklist)
+        self.checklist_split.setStretchFactor(0, 1)
+        self.checklist_split.setSizes(self.settings.get("checklist_split", [1000, 320]))
+        self.checklist_btn.toggled.connect(self.on_checklist_toggled)
+        self.level2.live_quote.connect(self.checklist.set_quote)
+        self.level2.book_changed.connect(self.checklist.set_book)
+        root.addWidget(self.checklist_split, 1)
         return tab
 
     # ================================================== Screener tab ===
@@ -1527,6 +1548,35 @@ class MainWindow(QMainWindow):
         elif not checked:
             self.level2.follow("")
             self.chart.set_live()       # no more live quotes: back to the last candle's
+            self.checklist.clear_live()
+
+    def on_checklist_toggled(self, checked):
+        self.settings["checklist_show"] = checked
+        save_settings(self.settings)
+        self.checklist.setVisible(checked)
+        if checked:
+            self.update_checklist()
+
+    def update_checklist(self):
+        """The checklist's candle part: the last market days' volume and the bounce range, looking
+        back further than the ATM tab so a range of over a month can be seen."""
+        if not self.checklist.isVisible() or not self.chart.ticker:
+            return
+        con = db()
+        try:
+            days = [r[0] for r in con.execute("SELECT DISTINCT date FROM candles ORDER BY date DESC LIMIT ?",
+                                              (checklist.VOL_DAYS,)).fetchall()][::-1]
+            first_day = atm.first_market_day(con, atm.MAX_LOOKBACK)
+        finally:
+            con.close()
+        rng = None
+        rows = [r for r in self.chart_rows if None not in r[1:5]]
+        if rows and first_day:
+            dates, data = atm.clean([r[0] for r in rows],
+                                    np.array([[*r[1:5], r[5] or 0.0] for r in rows], dtype=float))
+            if dates:
+                rng = atm.recent_range(dates, data, first_day, self.af_tol.value() / 100, self.af_gap.value() / 100)
+        self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng)
 
     def on_live_quote(self, ticker, q):
         """The live quote: today's candle and volume bar, and the right axis tags."""
@@ -1667,6 +1717,7 @@ class MainWindow(QMainWindow):
         self.chart_fav_ticker = ticker
         self.chart_name = name or ""
         self.update_chart_fav()
+        self.update_checklist()
         if self.level2_show.isChecked():
             self.level2.follow(ticker, self.chart_name)
         bits = [f"<b>{ticker}</b>"]
@@ -2726,6 +2777,9 @@ class MainWindow(QMainWindow):
         self.level2.stop()
         if self.level2_show.isChecked():     # the chart / Level II split, for the next start
             self.settings["level2_split"] = self.chart_split.sizes()
+            save_settings(self.settings)
+        if self.checklist_btn.isChecked():   # the chart / checklist split
+            self.settings["checklist_split"] = self.checklist_split.sizes()
             save_settings(self.settings)
         event.accept()
 

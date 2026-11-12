@@ -273,7 +273,8 @@ class Level2Feed(QObject):
 
 
 class Level2Panel(QWidget):
-    live_quote = pyqtSignal(str, dict)     # ticker, Level 1 fields: for the chart's price and volume tags
+    live_quote = pyqtSignal(str, dict)
+    book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown     # ticker, Level 1 fields: for the chart's price and volume tags
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -503,6 +504,7 @@ class Level2Panel(QWidget):
             return
         self._fill(self.bid_table, bids, "BID")
         self._fill(self.ask_table, asks, "ASK")
+        self.book_changed.emit(ticker, bids, asks)
 
     def _fill(self, table, rows, side):
         prev, trend = self.prev[side], self.trend[side]
