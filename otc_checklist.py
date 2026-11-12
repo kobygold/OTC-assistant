@@ -14,8 +14,9 @@ from pathlib import Path
 from statistics import median
 
 from PyQt6.QtCore import QObject, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette, QRegularExpressionValidator
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtGui import QColor, QCursor, QKeySequence, QPalette, QRegularExpressionValidator
+from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QToolTip,
+                             QVBoxLayout, QWidget)
 
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW
@@ -147,6 +148,54 @@ def volume_stats(rows, market_days, period):
     spikes = [d for d, v in zip(market_days, vols) if med and v >= SPIKE_X * med]
     dead = sum(1 for v in vols if not v)
     return med, spikes, dead
+
+
+# ---------------------------------------------------------------- copying ---
+def copy_value(text, widget):
+    """Puts a shown value on the clipboard, as a plain number where it is one ($150 -> 150,
+    3,055 -> 3055, +$32.23 -> +32.23), and says so in a tooltip. Nothing for an empty or unknown value."""
+    text = text.strip()
+    if not text or text == NA:
+        return
+    text = text.replace("$", "").replace(",", "")
+    QApplication.clipboard().setText(text)
+    QToolTip.showText(QCursor.pos(), f"Copied: {text}", widget)
+
+
+class CopyLabel(QLabel):
+    """A value that a click copies."""
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            copy_value(self.text(), self)
+        super().mousePressEvent(e)
+
+
+class CopyLineEdit(QLineEdit):
+    """A typed-over value. Double-click, Ctrl+C with nothing selected, or "Copy value" in the
+    right-click menu copy the value shown: the one typed, or else the automatic one."""
+    def shown(self):
+        return self.text() or self.placeholderText()
+
+    def mouseDoubleClickEvent(self, e):
+        copy_value(self.shown(), self)
+        super().mouseDoubleClickEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.matches(QKeySequence.StandardKey.Copy) and not self.hasSelectedText():
+            copy_value(self.shown(), self)
+            return
+        super().keyPressEvent(e)
+
+    def contextMenuEvent(self, e):
+        menu = self.createStandardContextMenu()
+        first = menu.actions()[0] if menu.actions() else None
+        action = menu.addAction("Copy value")
+        if first:
+            menu.insertAction(first, action)
+            menu.insertSeparator(first)
+        action.setEnabled(bool(self.shown()) and self.shown() != NA)
+        action.triggered.connect(lambda: copy_value(self.shown(), self))
+        menu.exec(e.globalPos())
 
 
 # ---------------------------------------------------------------- the fee ---
@@ -298,10 +347,10 @@ class ChecklistPanel(QWidget):
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
                 elif item.kind != "manual":
-                    value = QLabel()
+                    value = CopyLabel()
                     value.setObjectName("cl_value")
                     value.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-                    value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                    value.setCursor(Qt.CursorShape.PointingHandCursor)
                 row.addWidget(mark)
                 row.addWidget(text, 1)
                 if value is not None:
@@ -313,7 +362,7 @@ class ChecklistPanel(QWidget):
         self.refresh()
 
     def make_edit(self, key):
-        edit = QLineEdit()
+        edit = CopyLineEdit()
         edit.setFixedWidth(84)
         edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(
@@ -575,7 +624,7 @@ class ChecklistPanel(QWidget):
                     tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
-                value.setToolTip(tip)
+                value.setToolTip(tip + " · Double-click or Ctrl+C to copy the value")
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 own = self.override_text(item.key)
                 if not value.hasFocus() and value.text() != own:
@@ -583,7 +632,7 @@ class ChecklistPanel(QWidget):
                 continue
             if item.kind == "info":
                 value.setText(val)
-                value.setToolTip(tip)
+                value.setToolTip((tip + " · " if tip else "") + "Click to copy")
                 if item.key in ("profit", "loss", "profit_usd", "loss_usd"):
                     value.setStyleSheet("" if val in ("", NA) else
                                         f"color: {MARKS[OK if val.startswith('+') else BAD][1]};")
