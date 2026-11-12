@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.8.7"
+APP_VERSION = "0.8.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -84,6 +84,11 @@ QPushButton:checked { background: palette(highlight); color: palette(highlighted
 QPushButton:disabled { background: #1f2326; color: #666b70; border-color: #2a2f34; }
 QPushButton#range_1d, QPushButton#range_1d:checked { border: 2px solid #f2b200; }
 QToolTip { background: #2a2f34; color: #e8e8e8; border: 1px solid #3a4046; }
+QTabWidget::pane { background: #0e1012; border: 1px solid #22262a; top: -1px; }
+QTabBar::tab { background: #16191c; color: #b8b8b8; border: 1px solid #22262a; border-bottom: none;
+               padding: 4px 10px; margin-right: 1px; border-top-left-radius: 3px; border-top-right-radius: 3px; }
+QTabBar::tab:selected { background: #0e1012; color: #ffffff; }
+QTabBar::tab:hover:!selected { background: #22262a; }
 """
 
 
@@ -92,8 +97,8 @@ def dark_palette() -> QPalette:
     pal = QPalette()
     roles = QPalette.ColorRole
     for role, color in [
-        (roles.Window, "#1b1e21"), (roles.WindowText, "#d8d8d8"),
-        (roles.Base, "#101214"), (roles.AlternateBase, "#171a1d"),
+        (roles.Window, "#0e1012"), (roles.WindowText, "#d8d8d8"),
+        (roles.Base, "#08090a"), (roles.AlternateBase, "#111315"),
         (roles.Text, "#d8d8d8"), (roles.PlaceholderText, "#7a7f84"),
         (roles.Button, "#2a2f34"), (roles.ButtonText, "#e0e0e0"), (roles.BrightText, "#ffffff"),
         (roles.Light, "#3e454c"), (roles.Midlight, "#343a40"), (roles.Mid, "#2a2f34"),
@@ -106,7 +111,7 @@ def dark_palette() -> QPalette:
     off = QPalette.ColorGroup.Disabled
     for role in (roles.WindowText, roles.Text, roles.ButtonText):
         pal.setColor(off, role, QColor("#666b70"))
-    pal.setColor(off, roles.Base, QColor("#16191b"))
+    pal.setColor(off, roles.Base, QColor("#0e1012"))
     pal.setColor(off, roles.Highlight, QColor("#3a4046"))
     return pal
 
