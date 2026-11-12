@@ -18,7 +18,7 @@ fail() {
 }
 
 # ---- Make sure the app files are here ----
-for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py otc_level2.py otc_checklist.py checklist.txt requirements.txt; do
+for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py otc_level2.py otc_checklist.py otc_intraday.py checklist.txt requirements.txt; do
     [ -f "$f" ] || fail "$f is missing: all the app files must be in the same folder as this script."
 done
 

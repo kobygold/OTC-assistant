@@ -3,6 +3,8 @@ otc_chart.py - Dark candlestick chart widget (PyQt6) in a thinkorswim-like style
 candles, volume pane with a 50-day volume average, info bar, crosshair with axis
 labels, Hi/Lo markers, monthly expiration lines and a last-price tag. Mouse wheel
 zooms, dragging pans, double-click resets the view.
+The 1D view shows 1-minute candles instead (set_intraday): only minutes with trades, side by
+side, in Israel time, with a dashed line where a trading day starts.
 """
 
 import math
@@ -42,6 +44,7 @@ BOUNCE = QColor("#b36bff")
 MEASURE = QColor("#1e88e5")
 MEASURE_BOX = QColor(8, 22, 38, 225)
 MEASURE_TEXT = QColor("#c8d8e8")
+DAY_LINE = QColor("#7a7a7a")    # 1D view: where a trading day starts
 
 AVG_PERIOD = 50
 RIGHT_PAD_BARS = 8          # empty space after the last candle, like the screenshot
@@ -187,6 +190,8 @@ class CandleChart(QWidget):
         self.show_last_tags = True     # the last price tag on the right axis
         self.show_bid_ask_tags = True  # the live bid and ask tags on the right
         self.avg_period = AVG_PERIOD   # days in the volume average and median
+        self.intraday = False          # 1-minute candles (the 1D view) instead of days
+        self.times = []                # 1D view: each candle's Israel time
         self.risk_icon = None
         self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
@@ -213,7 +218,12 @@ class CandleChart(QWidget):
 
     def _load(self, rows):
         self.rows = rows
-        self.dates = [date.fromisoformat(r[0]) for r in rows]
+        if self.intraday:       # (Israel time, open, high, low, close, volume, None, market date)
+            self.times = [r[0] for r in rows]
+            self.dates = [r[7] for r in rows]
+        else:
+            self.times = []
+            self.dates = [date.fromisoformat(r[0]) for r in rows]
         self.o = [r[1] for r in rows]
         self.h = [r[2] for r in rows]
         self.l = [r[3] for r in rows]
@@ -242,7 +252,7 @@ class CandleChart(QWidget):
         live = {k: q[f] for k, f in (("price", "LAST_PRICE"), ("volume", "TOTAL_VOLUME"), ("open", "OPEN_PRICE"),
                                      ("bid", "BID_PRICE"), ("ask", "ASK_PRICE"))
                 if q.get(f) is not None}
-        bar = self._live_candle(q)
+        bar = None if self.intraday else self._live_candle(q)     # 1D: the minute candles come from Schwab
         changed = live != self.live or bar != self.live_bar
         if bar != self.live_bar:
             self.live_bar = bar
@@ -273,9 +283,32 @@ class CandleChart(QWidget):
                  message: str = ""):
         """rows: list of (YYYY-MM-DD, open, high, low, close, volume[, vwap]), oldest first."""
         self.ticker = ticker
+        self.intraday = False
         self._set_rows(rows)
         self.message = message or ("" if rows else f"No data for {ticker}.")
         self.set_range(months, label)
+
+    def set_intraday(self, ticker: str, rows, keep_view=False, message: str = ""):
+        """The 1D view: rows of 1-minute candles (Israel time, open, high, low, close, volume, None,
+        market date), oldest first. keep_view: new candles of the same ticker (a refresh) keep the
+        zoom, and the view follows the newest candle when it was showing it."""
+        same = keep_view and self.intraday and ticker == self.ticker and bool(self.dates)
+        view = (self.first, self.count, len(self.dates)) if same else None
+        live = self.live
+        self.ticker = ticker
+        self.intraday = True
+        self._set_rows(rows)
+        if same:
+            self.live = live
+        self.message = message or ("" if rows else f"No 1-minute candles for {ticker} in the last days.")
+        if view and rows:
+            first, count, n_old = view
+            self.count = count
+            at_end = first + count >= n_old
+            self.first = self._clamp_first(first + (len(rows) - n_old) if at_end else first)
+            self.update()
+        else:
+            self.set_range(None, "1D")
 
     def set_risk(self, icon=None, tip: str = ""):
         """The sign to show left of the ticker, and its tooltip. No icon means no sign."""
@@ -303,7 +336,10 @@ class CandleChart(QWidget):
         if not n:
             self.update()
             return
-        if months is None:
+        if self.intraday:       # the last two trading days, as thinkorswim's 1D
+            days = sorted(set(self.dates))
+            start = bisect_left(self.dates, days[-2]) if len(days) > 1 else 0
+        elif months is None:
             start = 0
         else:
             cutoff = self.dates[-1] - timedelta(days=int(months * 30.44))
@@ -351,6 +387,19 @@ class CandleChart(QWidget):
                     k -= 1
             return d
         return None
+
+    def _time_at(self, i: int):
+        """1D view: the Israel time of slot i; after the last candle, a minute a slot."""
+        n = len(self.times)
+        if 0 <= i < n:
+            return self.times[i]
+        if i >= n and n:
+            return self.times[-1] + timedelta(minutes=i - n + 1)
+        return None
+
+    def _day_starts(self, i0, i1):
+        """1D view: the candles in i0..i1 that start a trading day (not the very first candle)."""
+        return [i for i in range(max(i0, 1), i1 + 1) if self.dates[i] != self.dates[i - 1]]
 
     # ---- painting ----
     def paintEvent(self, event):
@@ -429,8 +478,9 @@ class CandleChart(QWidget):
                            fmt_compact(vv))
             vv += vstep
 
-        self._draw_zones(p, price, py)
-        self._draw_bounce(p, price, py)
+        if not self.intraday:       # the zones and the bounce range are for days
+            self._draw_zones(p, price, py)
+            self._draw_bounce(p, price, py)
 
         # Candles and volume bars
         bw = self._bar_w(price)
@@ -443,11 +493,16 @@ class CandleChart(QWidget):
             p.drawLine(QPointF(x, py(self.h[i])), QPointF(x, py(self.l[i])))
             if bw >= 3:
                 y1, y2 = py(self.o[i]), py(self.c[i])
-                ytop, height = min(y1, y2), max(abs(y2 - y1), 1.0)
-                p.fillRect(QRectF(x - body_w / 2, ytop, body_w, height), color)
-        if self.show_expirations:
-            self._draw_expirations(p, price)
-        self._draw_zone_touches(p, price, py, i0, i1)
+                # A minute with one price (open = high = low = close) is a short dash, as in thinkorswim
+                flat = self.h[i] == self.l[i]
+                ytop, height = min(y1, y2), max(abs(y2 - y1), 2.0 if flat else 1.0)
+                p.fillRect(QRectF(x - body_w / 2, ytop - (1 if flat else 0), body_w, height), color)
+        if self.intraday:
+            self._draw_day_lines(p, (price, vol), i0, i1)
+        else:
+            if self.show_expirations:
+                self._draw_expirations(p, price)
+            self._draw_zone_touches(p, price, py, i0, i1)
         p.setClipRect(vol.adjusted(1, 1, -1, -1))
         for i in range(i0, i1 + 1):
             x = self._x(i, vol)
@@ -494,8 +549,9 @@ class CandleChart(QWidget):
                 self._axis_tag(p, price.right() + 1, ly, fmt_axis(now), color, QColor("#000000"), bold=True,
                                arrow="axis")
 
-        self._draw_zone_labels(p, price, py)
-        self._draw_bounce_labels(p, price, py)
+        if not self.intraday:
+            self._draw_zone_labels(p, price, py)
+            self._draw_bounce_labels(p, price, py)
 
         # X axis labels
         self._draw_x_axis(p, price, vol)
@@ -529,9 +585,9 @@ class CandleChart(QWidget):
                     self.cursor_point = None
                     tag = fmt_volume(max(0.0, (vbot - my) / (vbot - vtop) * vmax))
                 self._axis_tag(p, pane.right() + 2, my, tag, LABEL_BG, LABEL_TEXT)
-                d = self._date_at(idx)
+                d = self._time_at(idx) if self.intraday else self._date_at(idx)
                 if d:
-                    text = fmt_date(d, with_year=False)
+                    text = f"{d:%a %H:%M}" if self.intraday else fmt_date(d, with_year=False)
                     tw = fm.horizontalAdvance(text) + 12
                     r = QRectF(cx - tw / 2, vol.bottom() + 3, tw, 17)
                     p.setPen(Qt.PenStyle.NoPen)
@@ -567,10 +623,16 @@ class CandleChart(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         p.fillRect(QRectF(x0 - 4, y0 - 4, 8, 8), MEASURE)
 
-        d0, d1 = self._date_at(i0), self._date_at(i1)
         lines = []
-        if d0 and d1:
-            lines.append(f"{abs((d1 - d0).days)} Days")
+        if self.intraday:
+            t0, t1 = self._time_at(i0), self._time_at(i1)
+            if t0 and t1:
+                minutes = round(abs((t1 - t0).total_seconds()) / 60)
+                lines.append(f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes} Min")
+        else:
+            d0, d1 = self._date_at(i0), self._date_at(i1)
+            if d0 and d1:
+                lines.append(f"{abs((d1 - d0).days)} Days")
         lines.append(f"{abs(i1 - i0)} Bars")
         if v0 > 0:
             lines.append(f"{(v1 / v0 - 1) * 100:+.2f}%")
@@ -800,12 +862,17 @@ class CandleChart(QWidget):
 
     def _info_bar(self, p, i, y_text):
         d = self.dates[i]
-        title = f"{self.ticker}  {self.range_label}  1D  [OTC]"
+        if self.intraday:
+            title = f"{self.ticker}  1D  1m  [OTC]"
+            when = f"D: {fmt_date(d)} {self.times[i]:%H:%M}"
+        else:
+            title = f"{self.ticker}  {self.range_label}  1D  [OTC]"
+            when = f"D: {fmt_date(d)}"
         items = [(title, QColor("#ffffff"), True)]
         if self.subtitle:
             items.append((self.subtitle, INFO_TEXT, False))
         items += [
-            (f"D: {fmt_date(d)}", INFO_TEXT, False),
+            (when, INFO_TEXT, False),
             (f"O: {fmt_chart_price(self.o[i])}", INFO_TEXT, False),
             (f"H: {fmt_chart_price(self.h[i])}", INFO_TEXT, False),
             (f"L: {fmt_chart_price(self.l[i])}", INFO_TEXT, False),
@@ -912,11 +979,34 @@ class CandleChart(QWidget):
             p.drawText(QPointF(0, 0), fmt_date(d))
             p.restore()
 
+    def _draw_day_lines(self, p, panes, i0, i1):
+        """1D view: a dashed line between the last candle of a trading day and the first of the next."""
+        pen = QPen(DAY_LINE, 1, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        for i in self._day_starts(i0, i1):
+            for pane in panes:
+                p.setClipRect(pane.adjusted(1, 1, -1, -1))
+                x = (self._x(i - 1, pane) + self._x(i, pane)) / 2
+                p.drawLine(QPointF(x, pane.top()), QPointF(x, pane.bottom()))
+
     def _draw_x_axis(self, p, price, vol):
         """Dates under the volume pane. Zoomed in, as many days as fit without overlapping, as in
-        thinkorswim (a new year shows its year); zoomed out, months or quarters."""
+        thinkorswim (a new year shows its year); zoomed out, months or quarters. In the 1D view,
+        the candles' times (Israel time), and the weekday where a trading day starts."""
         bw = self._bar_w(price)
         start, end = int(math.floor(self.first)), int(math.ceil(self.first + self.count))
+        if self.intraday:
+            gap = QFontMetrics(p.font()).horizontalAdvance("88:88") + 14
+            starts = set(self._day_starts(max(start, 0), min(end, len(self.dates) - 1)))
+            candidates = []
+            for i in range(start, end + 1):
+                when = self._time_at(i)
+                x = self._x(i, price)
+                if when is not None and price.left() + 10 <= x <= price.right() - 10:
+                    candidates.append((x, f"{when:%a}" if i in starts else f"{when:%H:%M}", i in starts))
+            self._place_axis_labels(p, vol, candidates, gap)
+            return
         gap = QFontMetrics(p.font()).horizontalAdvance("12/28") + 12     # a label's width plus room
         if bw * 10 >= gap:
             mode = "day"
@@ -942,7 +1032,11 @@ class CandleChart(QWidget):
             x = self._x(i, price)
             if label and price.left() + 10 <= x <= price.right() - 10:
                 candidates.append((x, label, new_year))
-        # Years first, so a crowded day can't push one out; then the other dates in the room left
+        self._place_axis_labels(p, vol, candidates, gap)
+
+    def _place_axis_labels(self, p, vol, candidates, gap):
+        """candidates: (x, label, first). The first ones (years, or a 1D view's weekdays) are placed
+        before the others, so a crowded label can't push one out; then the rest in the room left."""
         placed = []
         for want_year in (True, False):
             for x, label, new_year in candidates:
@@ -1008,5 +1102,8 @@ class CandleChart(QWidget):
         return min(max(first, -self.count * 0.5), n - 5, n + MAX_RIGHT_EMPTY_BARS - self.count)
 
     def reset_view(self):
+        if self.intraday:
+            self.set_range(None, "1D")
+            return
         months = {"1M": 1, "2M": 2, "3M": 3, "6M": 6, "1Y": 12, "2Y": 24}.get(self.range_label)
         self.set_range(months, self.range_label)

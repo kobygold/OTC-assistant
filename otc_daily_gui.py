@@ -51,10 +51,11 @@ import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel
+from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.7.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -111,7 +112,7 @@ ATM_DEFAULTS = {
     "lookback": 20, "gap": 25, "tol": 5.0, "legs": 4, "pmin": 0.0005, "pmax": 0.05, "dollar": 500, "days": 5,
     "skip_types": True, "tiers": core.TIER_GROUPS,
 }
-RANGES = [("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
+RANGES = [("1D", None), ("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
 TYPE_NAMES = {"CS": "Common stock", "ADRC": "ADR", "PFD": "Preferred", "WARRANT": "Warrant",
               "RIGHT": "Right", "UNIT": "Unit", "FUND": "Fund", "ETF": "ETF",
               "OS": "Ordinary shares", "SP": "Structured product", "BOND": "Bond",
@@ -445,6 +446,7 @@ def fix_fav_column(tbl: QTableWidget, col: int):
 
 
 TICKER_HISTORY = 20     # tickers kept in the ticker boxes' Down-arrow history
+MINUTES_REFRESH = 30    # seconds between readings of the 1D view's 1-minute candles
 
 
 class SelectAllLineEdit(QLineEdit):
@@ -885,6 +887,12 @@ class MainWindow(QMainWindow):
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
         self.level2.live_quote.connect(self.on_live_quote)
+        self.minute_loader = MinuteLoader(self.settings, APP_DIR / "schwab_token.json")
+        self.minute_loader.done.connect(self.on_minutes)
+        self.minute_timer = QTimer(self)
+        self.minute_timer.setInterval(MINUTES_REFRESH * 1000)
+        self.minute_timer.timeout.connect(self.refresh_intraday)
+        self.minute_timer.start()
         self.chart_split = QSplitter(Qt.Orientation.Vertical)
         self.chart_split.setChildrenCollapsible(False)
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
@@ -1507,7 +1515,34 @@ class MainWindow(QMainWindow):
     def on_range(self, label, months):
         self.settings["chart_range"] = label
         save_settings(self.settings)
-        self.chart.set_range(months, label)
+        if label == "1D":
+            self.show_intraday()
+        elif self.chart.intraday:
+            self.show_chart(self.chart.ticker)      # back to the daily candles
+        else:
+            self.chart.set_range(months, label)
+
+    # ---- the 1D view: 1-minute candles from Schwab, read again every MINUTES_REFRESH seconds ----
+    def show_intraday(self):
+        ticker = self.chart_fav_ticker or self.chart.ticker
+        if ticker:
+            self.chart.set_intraday(ticker, [], message=f"Reading {ticker}'s 1-minute candles from Schwab...")
+            self.apply_chart_zones()
+            self.apply_live_quote()
+            self.minute_loader.request(ticker)
+
+    def refresh_intraday(self):
+        if self.chart.intraday and self.chart.ticker and self.isVisible():
+            self.minute_loader.request(self.chart.ticker)
+
+    def on_minutes(self, ticker, rows, error):
+        if not self.chart.intraday or ticker != self.chart.ticker:
+            return          # another ticker or view by now
+        if error and self.chart.dates:
+            return          # a refresh that failed: keep the candles shown
+        self.chart.set_intraday(ticker, rows, keep_view=True,
+                                message=f"No 1-minute candles for {ticker}: {error}" if error else "")
+        self.apply_live_quote()
 
     def on_expirations_toggled(self, checked):
         self.settings["expirations_show"] = checked
@@ -1549,6 +1584,7 @@ class MainWindow(QMainWindow):
             self.level2.follow(self.chart_fav_ticker, self.chart_name)
         elif not checked:
             self.level2.follow("")
+            self.last_quote = ("", None)
             self.chart.set_live()       # no more live quotes: back to the last candle's
             self.checklist.clear_live()
 
@@ -1581,8 +1617,17 @@ class MainWindow(QMainWindow):
         self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
 
     def on_live_quote(self, ticker, q):
-        """The live quote: today's candle and volume bar, and the right axis tags."""
+        """The live quote: today's candle and volume bar, and the right axis tags. It's kept, so
+        the chart gets it back after it loads its candles again (another range, the 1D view's
+        refresh, the daily update): a thin stock's quote can go a long time without changing."""
+        self.last_quote = (ticker, q)
         if ticker == self.chart.ticker:
+            self.chart.set_live(q)
+
+    def apply_live_quote(self):
+        """After the chart loaded its candles: the last live quote of its ticker, if there is one."""
+        ticker, q = getattr(self, "last_quote", ("", None))
+        if q and ticker == self.chart.ticker and self.level2_show.isChecked():
             self.chart.set_live(q)
 
     def on_zone_option_changed(self):
@@ -1698,8 +1743,13 @@ class MainWindow(QMainWindow):
         label, months = self.current_range()
         tier_text = tier or (group if group and group != "Unknown" else "")
         self.chart.subtitle = " · ".join(x for x in [(name or "")[:40], tier_text] if x)
-        self.chart.set_data(ticker, rows, months, label,
-                            message="" if rows else f"No data for {ticker} in your database.")
+        if label == "1D":
+            self.chart.set_intraday(ticker, [], message=f"Reading {ticker}'s 1-minute candles from Schwab...")
+            self.minute_loader.request(ticker)
+        else:
+            self.chart.set_data(ticker, rows, months, label,
+                                message="" if rows else f"No data for {ticker} in your database.")
+        self.apply_live_quote()
         if rows and self.settings.get("chart_ticker") != ticker:
             self.settings["chart_ticker"] = ticker      # opened again at the next start
             save_settings(self.settings)

@@ -48,6 +48,7 @@ if not exist "otc_zones.py" goto missing
 if not exist "otc_atm.py" goto missing
 if not exist "otc_level2.py" goto missing
 if not exist "otc_checklist.py" goto missing
+if not exist "otc_intraday.py" goto missing
 if not exist "checklist.txt" goto missing
 
 rem ---- First run only: put a shortcut with the app icon on the desktop ----
@@ -63,6 +64,6 @@ start "" %PYW% "%~dp0otc_daily_gui.py"
 exit /b 0
 
 :missing
-echo otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py, otc_atm.py, otc_level2.py, otc_checklist.py and checklist.txt must be in the same folder as this .bat file.
+echo otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py, otc_atm.py, otc_level2.py, otc_checklist.py, otc_intraday.py and checklist.txt must be in the same folder as this .bat file.
 pause
 exit /b 1
