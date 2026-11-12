@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.3"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -81,7 +81,7 @@ QPushButton:hover { background: #d9d9d9; }
 QPushButton:pressed { background: #cccccc; }
 QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
 QPushButton:disabled { background: #efefef; color: #a0a0a0; border-color: #dddddd; }
-QPushButton#range_1d:checked { background: #f2b200; color: #111111; border-color: #c99300; }
+QPushButton#range_1d, QPushButton#range_1d:checked { border: 2px solid #f2b200; }
 """
 ZONE_RISK_COL, ZONE_FAV_COL, ZONE_TICKER_COL, ZONE_NAME_COL = 0, 1, 2, 3
 ATM_RISK_COL, ATM_FAV_COL, ATM_TICKER_COL, ATM_NAME_COL = 0, 1, 2, 3
@@ -754,7 +754,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setFixedWidth(44)
-            if label == "1D":       # a different kind of chart: dark yellow when on, as the checklist's titles
+            if label == "1D":       # a different kind of chart: an amber outline, on and off
                 b.setObjectName("range_1d")
                 b.setToolTip("1-minute candles of the last trading days, from Schwab (Israel time)")
             b.setChecked(label == default_range)
