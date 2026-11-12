@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
 
-from PyQt6.QtCore import QObject, QRectF, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap,
                          QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QToolTip,
@@ -30,6 +30,7 @@ VOL_DAYS = 30           # market days in the volume checks
 SPIKE_X = 2.0           # a day with this many times the average volume is unusual
 MAX_DEAD = 5            # most days without trades in VOL_DAYS for a steady volume
 VOL_PART = 0.5          # the median volume must be at least this part of our amount of stocks
+COPIED_MS = 1000        # how long the "Copied" note stays, in ms
 RANGE_DAYS = 30         # calendar days the bounce range must have lasted
 NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
@@ -164,7 +165,8 @@ def copy_value(text, widget, as_is=False):
     if not as_is:
         text = text.replace("$", "").replace(",", "")
     QApplication.clipboard().setText(text)
-    QToolTip.showText(QCursor.pos(), f"Copied:\n{text}" if as_is else f"Copied: {text}", widget)
+    QToolTip.showText(QCursor.pos(), f"Copied:\n{text}" if as_is else f"Copied: {text}", widget,
+                      QRect(), COPIED_MS)
 
 
 def copy_icon():
