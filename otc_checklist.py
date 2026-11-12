@@ -10,6 +10,7 @@ import json
 import threading
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
 
@@ -34,6 +35,7 @@ COPIED_MS = 1000        # how long the "Copied" note stays, in ms
 RANGE_DAYS = 30         # calendar days the bounce range must have lasted
 NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
+PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 
 OK, BAD, WARN, UNKNOWN, INFO, EMPTY = "ok", "bad", "warn", "unknown", "info", "empty"
 MAYBE = "maybe"         # could be good or bad: a yellow ?
@@ -52,6 +54,10 @@ PANEL_STYLE = """
 #checklist QToolButton { color: #c8c8c8; border: none; }
 #checklist QToolButton#cl_copy { border-radius: 3px; padding: 1px; }
 #checklist QToolButton#cl_copy:hover { background: #2c3136; }
+#checklist QToolButton#cl_step { background: #1d2125; border: 1px solid #3a4046; border-radius: 2px;
+                                  padding: 0px; font-size: 11px; font-weight: bold; }
+#checklist QToolButton#cl_step:hover { background: #2c3136; }
+#checklist QToolButton#cl_step:pressed { background: #3a4046; }
 #checklist QLineEdit { background: #1b1e21; border: 1px solid #2c3136; border-radius: 3px;
                        padding: 1px 4px; font-weight: bold; }
 #checklist QLineEdit:focus { border-color: #5a6670; }
@@ -418,6 +424,8 @@ class ChecklistPanel(QWidget):
                         value.mousePressEvent = lambda e, b=box: b.copy() if e.button() == Qt.MouseButton.LeftButton else None
                     else:
                         box = CopyBox(value, shown)
+                    if item.key in EDITABLE and item.key != "size":
+                        row.addWidget(self.make_stepper(item.key, value))     # right of the box
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
@@ -436,8 +444,43 @@ class ChecklistPanel(QWidget):
         pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))    # the automatic value
         edit.setPalette(pal)
         edit.textEdited.connect(lambda text, k=key: self.typed(k, text))
-        edit.editingFinished.connect(self.edit_done)
+        edit.editingFinished.connect(lambda k=key, e=edit: self.edit_done(k, e))
         return edit
+
+    def make_stepper(self, key, edit):
+        """+ above - beside a price box: one 0.0001 step up or down (held: repeats)."""
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(1)
+        for sign, step in (("+", 1), ("−", -1)):
+            b = QToolButton()
+            b.setObjectName("cl_step")
+            b.setText(sign)
+            b.setFixedSize(18, 12)
+            b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setAutoRepeat(True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(lambda _c=False, s=step: self.step(key, edit, s))
+            lay.addWidget(b)
+        return box
+
+    def step(self, key, edit, direction):
+        """Moves the price shown (typed, or else the automatic one) one 0.0001 step."""
+        if not edit.isEnabled():
+            return
+        try:
+            base = Decimal(edit.shown().replace(",", "").replace("$", "").strip())
+        except InvalidOperation:
+            return
+        new = base + direction * PRICE_STEP
+        if new <= 0:
+            return
+        text = format(new, "f")
+        edit.setText(text)
+        self.typed(key, text)
+        self.save_settings(self.settings)
 
     # ---- typed-over values: the size for all tickers, the prices per ticker ----
     def overrides(self):
@@ -482,7 +525,18 @@ class ChecklistPanel(QWidget):
                 prices.pop(self.ticker, None)
         self.refresh()
 
-    def edit_done(self):
+    def edit_done(self, key=None, edit=None):
+        """Enter or leaving the box. A price typed as 1 or more is a count of 0.0001 steps:
+        12 -> 0.0012, 1 -> 0.0001 (these stocks trade under $1)."""
+        if edit is not None and key != "size":
+            try:
+                typed = Decimal(edit.text().strip())
+            except InvalidOperation:
+                typed = None
+            if typed is not None and typed >= 1:
+                text = format(typed * PRICE_STEP, "f")
+                edit.setText(text)
+                self.typed(key, text)
         self.save_settings(self.settings)
         self.refresh()
 
