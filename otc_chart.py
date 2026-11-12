@@ -624,10 +624,15 @@ class CandleChart(QWidget):
         p.end()
 
     def _snap(self, i: int, y: float, py):
-        """The hovered candle's high, low, open or close nearest to y, if it's within SNAP_PX, else None."""
-        if not 0 <= i < len(self.dates):
+        """The price nearest to y within SNAP_PX, else None: the hovered candle's high, low, open or
+        close, and anywhere along the chart the live Bid and Ask (when their tags are shown), so the
+        crosshair and the measuring line can start or end at a tag's point."""
+        points = [self.h[i], self.l[i], self.o[i], self.c[i]] if 0 <= i < len(self.dates) else []
+        if self.show_bid_ask_tags:
+            points += [self.live[k] for k in ("bid", "ask") if self.live.get(k)]
+        if not points:
             return None
-        best = min((self.h[i], self.l[i], self.o[i], self.c[i]), key=lambda v: abs(py(v) - y))
+        best = min(points, key=lambda v: abs(py(v) - y))
         return best if abs(py(best) - y) <= SNAP_PX else None
 
     # ---- measuring line (hold Shift) ----
