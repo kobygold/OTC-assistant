@@ -354,6 +354,8 @@ class ChecklistPanel(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # No scroll bar (it took room on the left and was hard to see); the mouse wheel still scrolls
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         root.addWidget(self.scroll, 1)
         self.load()
 
@@ -372,7 +374,7 @@ class ChecklistPanel(QWidget):
         body = QWidget()
         body.setObjectName("cl_body")
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 0, 4, 0)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
         self.widgets = []
         for name, items in sections:
