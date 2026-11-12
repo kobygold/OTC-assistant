@@ -1,6 +1,6 @@
 @echo off
 rem Double-click to start OTC Assistant.
-rem Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py.
+rem Keep this file in the same folder as the app's .py files and requirements.txt.
 setlocal
 cd /d "%~dp0"
 
@@ -31,7 +31,7 @@ rem ---- Install the required packages on first run ----
 if errorlevel 1 (
     echo Installing required packages, first run only. This takes a minute...
     echo.
-    %PY% -m pip install --upgrade PyQt6 tzdata numpy schwab-py
+    %PY% -m pip install --upgrade -r requirements.txt
     if errorlevel 1 (
         echo.
         echo Package installation failed. See the messages above.
@@ -46,6 +46,9 @@ if not exist "otc_daily.py" goto missing
 if not exist "otc_chart.py" goto missing
 if not exist "otc_zones.py" goto missing
 if not exist "otc_atm.py" goto missing
+if not exist "otc_level2.py" goto missing
+if not exist "otc_checklist.py" goto missing
+if not exist "checklist.txt" goto missing
 
 rem ---- First run only: put a shortcut with the app icon on the desktop ----
 rem (Delete shortcut_created.txt to have it created again.)
@@ -60,6 +63,6 @@ start "" %PYW% "%~dp0otc_daily_gui.py"
 exit /b 0
 
 :missing
-echo otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py must be in the same folder as this .bat file.
+echo otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py, otc_atm.py, otc_level2.py, otc_checklist.py and checklist.txt must be in the same folder as this .bat file.
 pause
 exit /b 1

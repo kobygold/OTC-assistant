@@ -1,0 +1,6 @@
+# OTC Assistant packages: install with  python -m pip install -r requirements.txt
+# (run_otc_gui.bat does this by itself on the first run)
+PyQt6>=6.11        # the window, chart and panels
+numpy>=2.2         # zone and range calculations
+tzdata             # New York time zone data (Windows has none built in)
+schwab-py>=1.5     # Schwab login and the Level II stream
