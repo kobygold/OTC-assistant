@@ -54,7 +54,7 @@ from otc_checklist import ChecklistPanel
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.6.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -887,7 +887,8 @@ class MainWindow(QMainWindow):
         self.level2.live_quote.connect(self.on_live_quote)
         self.chart_split = QSplitter(Qt.Orientation.Vertical)
         self.chart_split.setChildrenCollapsible(False)
-        self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings)
+        self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
+                                        APP_DIR / "schwab_token.json")
         self.checklist.setVisible(self.checklist_btn.isChecked())
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)

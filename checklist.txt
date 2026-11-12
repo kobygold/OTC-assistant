@@ -31,12 +31,16 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
   info(profit): (exit - entry) / entry, in %
 - הפסד פוטנציאלי
   info(loss): (entry - stop) / entry, in %
+- עמלת קניה/מכירה
+  auto(fee): the buy fee read from Schwab (the order preview of a $150 buy, nothing is placed), commission plus
+        fees; the sell is taken to cost the same. An X when it's more than $6.95, in yellow (like the section titles) when more than $7.
+        Until it's read it shows N/A, and $6.95 is used
 - רווח פוטנציאלי בדולרים בניכוי עמלות
-  info(profit_usd): amount of stocks x (exit - entry) - 2 x $6.95 (the buy and sell fees)
+  info(profit_usd): amount of stocks x (exit - entry) - 2 x the fee above (the buy and the sell)
 - הפסד פוטנציאלי בדולרים בתוספת עמלות
-  info(loss_usd): -(amount of stocks x (entry - stop)) - 2 x $6.95 (the buy and sell fees)
+  info(loss_usd): -(amount of stocks x (entry - stop)) - 2 x the fee above (the buy and the sell)
 - יחס רווח/הפסד (בהתעלם מעמלות)
-  info(ratio): shown as 1:X, where X = profit % / loss %, without the fees ("—" when the loss is 0)
+  info(ratio): shown as 1:X, where X = profit % / loss %, without the fees (N/A when the loss is 0)
 
 
 ## 1 חיפוש המנייה
@@ -59,23 +63,15 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 
 
 ## 3 ניתוח ווליום
-- ווליום ממוצע של 30 הימים האחרונים
-  auto(avg_volume): shows the chart's MedianVolume (its Averaging days); a check when there is one
+- ווליום ממוצע של 30 הימים האחרונים צריך להיות לפחות חצי מכמות המניות
+  auto(avg_volume): shows the chart's MedianVolume (its Averaging days); a check when it's at least half
+        our amount of stocks
 - אין ווליום חריג בחודש האחרון (פי 1.5 עד 2 מהממוצע)
   auto(no_spike): no day in the last 30 trading days had 2x or more that median volume (warning: check for dilution)
 - אם היה חריג — בדקתי חדשות/עדכון חברה / שזו קנייה מהאסק (לא דילול)
   manual
 - יש ווליום יומי קבוע ולא יותר מדי ימים מתים
   auto(steady): 5 or fewer days without trades in the last 30 trading days
-
-
-## ✓ תנאי כניסה — חייב לעמוד בכל השלושה
-- גרף בטווח קבוע
-  auto(range): same as "נסחרת בטווח מחירים קבוע"
-- בלי ווליום חריג / דילול
-  auto(no_dilution): no unusual volume, and no red market maker on the Ask
-- יחס קונים/מוכרים טוב
-  auto(buyers): same as "יש יותר קונים ממוכרים"
 
 
 ## $ פקודת קנייה
@@ -95,4 +91,4 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - זריקות כבדות מדי או שינוי ביחס → שוקל לצאת
   manual
 - אין דילול — אם יש, לא נכנסים
-  auto(no_dilution): same as "בלי ווליום חריג / דילול"
+  auto(no_dilution): no unusual volume (2x the median), and no red market maker on the Ask
