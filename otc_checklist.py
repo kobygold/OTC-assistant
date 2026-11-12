@@ -215,7 +215,7 @@ def reset_icon(color="#c8c8c8"):
     p.setBrush(QColor(color))
     d = QPointF(math.sin(a), math.cos(a))          # clockwise tangent at the tip (screen y down)
     n = QPointF(math.cos(a), -math.sin(a))         # outward
-    head = 3.2
+    head = 4.2
     base = tip - d * head * 0.5
     p.drawPolygon(QPolygonF([tip + d * head * 0.6, base + n * head * 0.6, base - n * head * 0.6]))
     p.end()
