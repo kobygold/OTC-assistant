@@ -154,15 +154,17 @@ def volume_stats(rows, market_days, period):
 
 
 # ---------------------------------------------------------------- copying ---
-def copy_value(text, widget):
+def copy_value(text, widget, as_is=False):
     """Puts a shown value on the clipboard, as a plain number where it is one ($150 -> 150,
-    3,055 -> 3055, +$32.23 -> +32.23), and says so in a tooltip. Nothing for an empty or unknown value."""
+    3,055 -> 3055, +$32.23 -> +32.23), and says so in a tooltip. Nothing for an empty or unknown value.
+    as_is: the text exactly as given (the trade plan)."""
     text = text.strip()
     if not text or text == NA:
         return
-    text = text.replace("$", "").replace(",", "")
+    if not as_is:
+        text = text.replace("$", "").replace(",", "")
     QApplication.clipboard().setText(text)
-    QToolTip.showText(QCursor.pos(), f"Copied: {text}", widget)
+    QToolTip.showText(QCursor.pos(), f"Copied:\n{text}" if as_is else f"Copied: {text}", widget)
 
 
 def copy_icon():
@@ -180,26 +182,35 @@ def copy_icon():
 
 
 class CopyBox(QWidget):
-    """A value with a small copy button on its right, shown while the mouse is over them."""
-    def __init__(self, value, shown_text, parent=None):
+    """A value with a small copy button on its left (the line's left end), shown while the mouse is over them."""
+    def __init__(self, value, shown_text, parent=None, copy_text=None):
+        """shown_text: the value shown (the button shows only when there is one). copy_text: what
+        to copy instead of it, exactly as given."""
         super().__init__(parent)
         self.shown_text = shown_text
+        self.copy_text = copy_text
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
         self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        lay.addWidget(value)
         self.button = QToolButton()
         self.button.setObjectName("cl_copy")
         self.button.setIcon(copy_icon())
         self.button.setToolTip("Copy")
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.clicked.connect(lambda: copy_value(self.shown_text(), self.button))
+        self.button.clicked.connect(self.copy)
         policy = self.button.sizePolicy()
         policy.setRetainSizeWhenHidden(True)        # no jumping when it shows
         self.button.setSizePolicy(policy)
         self.button.hide()
         lay.addWidget(self.button)
+        lay.addWidget(value)
+
+    def copy(self):
+        if self.copy_text:
+            copy_value(self.copy_text(), self.button, as_is=True)
+        else:
+            copy_value(self.shown_text(), self.button)
 
     def enterEvent(self, e):
         text = self.shown_text().strip()
@@ -396,7 +407,14 @@ class ChecklistPanel(QWidget):
                 row.addWidget(text, 1)
                 if value is not None:
                     shown = value.shown if isinstance(value, CopyLineEdit) else value.text
-                    row.addWidget(CopyBox(value, shown))
+                    if item.key == "ticker":        # the ticker copies the whole trade plan
+                        box = CopyBox(value, shown, copy_text=self.plan_text)
+                        value.setCursor(Qt.CursorShape.PointingHandCursor)
+                        value.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+                        value.mousePressEvent = lambda e, b=box: b.copy() if e.button() == Qt.MouseButton.LeftButton else None
+                    else:
+                        box = CopyBox(value, shown)
+                    row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
         lay.addStretch()
@@ -538,6 +556,7 @@ class ChecklistPanel(QWidget):
         fee, fee_details = self.fees.get(self.ticker, (None, "No ticker"))
         fee_used = FEE_USD if fee is None else fee
         p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used)
+        self.last_plan = (p, usd)       # for the trade plan the ticker copies
         auto = p["auto"]
         pct = lambda v: NA if v is None else f"{v:+.1f}%"
         price = lambda v: NA if v is None else fmt_price(v)
@@ -644,6 +663,30 @@ class ChecklistPanel(QWidget):
         else:
             r["no_dilution"] = (OK, "", "")
         return r
+
+    def plan_text(self):
+        """The trade plan, as text to paste: the values the checklist shows now."""
+        if not self.ticker:
+            return ""
+        self.evaluate()
+        p, usd = self.last_plan
+        def num(v, fmt):
+            return NA if v is None else fmt(v)
+        plain = lambda v: f"{v:,.2f}".replace(",", "").rstrip("0").rstrip(".")     # 150.00 -> 150, 23.50 -> 23.5
+        lines = [
+            "תכנית פעולה",
+            f"טיקר : {self.ticker}",
+            f"פוזיציה: ${plain(usd)}",
+            f"כניסה: {num(p['entry'], fmt_price)}",
+            f"יציאה: {num(p['exit'], fmt_price)}",
+            f"כמות מניות: {num(p['shares'], str)}",
+            f"כרית בטחון: {num(p['stop'], fmt_price)}",
+            f"רווח פוטנציאלי: {num(p['profit'], lambda v: f'{v:.1f}%')}",
+            f"הפסד פוטנציאלי: {num(p['loss'], lambda v: f'{v:.1f}%')}",
+            f"יחס רווח להפסד: {num(p['ratio'], lambda v: f'1:{v:.2f}')}",
+            f"רווח דולרי אחרי עמלות : {num(p['profit_usd'], lambda v: plain(v) + '$')}",
+        ]
+        return chr(10).join(lines)      # one line each
 
     def refresh(self):
         if not self.widgets:
