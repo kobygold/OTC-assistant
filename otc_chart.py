@@ -201,8 +201,9 @@ class CandleChart(QWidget):
         self._set_rows([])
         self.mouse = None
         self.drag = None
-        self.cursor_point = None    # (bar index, price) under the crosshair, as last drawn
-        self.measure = None         # (bar index, price) where Shift was pressed, while it's held
+        self.cursor_point = None    # (bar index, price, now) under the crosshair, as last drawn; now: at a
+                                    # Bid/Ask tag's point, whose index is a fraction and whose time is now
+        self.measure = None         # the cursor_point where Shift was pressed, while it's held
         self.ruler = None           # a ruler being dragged: (axis, mouse at the press, axis state then)
         self.y_zoom = None          # (low, high) of the price axis zoomed by its ruler; None = fit the candles
         self.v_zoom = None          # the top of the volume axis zoomed by its ruler; None = fit the bars
@@ -587,13 +588,16 @@ class CandleChart(QWidget):
             in_price, in_vol = price.contains(self.mouse), vol.contains(self.mouse)
             if in_price or in_vol:
                 idx = self._index_at(mx, price)
-                cx = self._x(idx, price)
+                pane = price if in_price else vol
+                snapped, slot = self._snap(idx, mx, my, py, price) if in_price else (None, None)
+                # A Bid/Ask tag's point isn't on a candle: the crosshair goes to the point itself
+                at = slot if slot is not None else idx
+                idx = last if slot is not None else round(at)      # the tag's time is now: the last candle
+                cx = self._x(at, price)
                 pen = QPen(CROSS, 1, Qt.PenStyle.SolidLine)
                 p.setPen(pen)
                 p.drawLine(QPointF(cx, price.top() + 1), QPointF(cx, price.bottom() - 1))
                 p.drawLine(QPointF(cx, vol.top() + 1), QPointF(cx, vol.bottom() - 1))
-                pane = price if in_price else vol
-                snapped = self._snap(idx, mx, my, py) if in_price else None
                 if snapped is not None:
                     my = py(snapped)
                 p.drawLine(QPointF(pane.left() + 1, my), QPointF(pane.right() - 1, my))
@@ -602,9 +606,9 @@ class CandleChart(QWidget):
                     tag = fmt_axis(value)
                     y_value_text = tag
                     self._zone_details(p, price, value)
-                    self.cursor_point = (idx, value)
+                    self.cursor_point = (at, value, slot is not None)
                     if self.measure is not None:
-                        self._draw_measure(p, price, py, idx, value)
+                        self._draw_measure(p, price, py, self.cursor_point)
                 else:
                     self.cursor_point = None
                     tag = fmt_volume(max(0.0, (vbot - my) / (vbot - vtop) * vmax))
@@ -626,24 +630,29 @@ class CandleChart(QWidget):
         self._volume_header(p, vol, i)
         p.end()
 
-    def _snap(self, i: int, x: float, y: float, py):
-        """The price to snap the crosshair to, else None: the live Bid or Ask when the mouse is within
-        SNAP_PX of its tag's triangle point (so the measuring line can start or end there), else the
-        hovered candle's high, low, open or close nearest to y within SNAP_PX."""
-        near = [(math.hypot(tx - x, ty - y), value) for tx, ty, value in self._tag_points]
+    def _snap(self, i: int, x: float, y: float, py, price):
+        """(price, slot) to snap the crosshair to, else (None, None). The live Bid or Ask when the mouse
+        is within SNAP_PX of its tag's triangle point, with the point's own slot (a fraction: it isn't on
+        a candle), so the measuring line can start or end right there. Else the hovered candle's high,
+        low, open or close nearest to y within SNAP_PX, with slot None (the candle's own)."""
+        near = [(math.hypot(tx - x, ty - y), value, tx) for tx, ty, value in self._tag_points]
         near = [n for n in near if n[0] <= SNAP_PX]
         if near:
-            return min(near)[1]
+            _, value, tx = min(near)
+            return value, self.first + (tx - price.left()) / self._bar_w(price) - 0.5
         if not 0 <= i < len(self.dates):
-            return None
+            return None, None
         best = min((self.h[i], self.l[i], self.o[i], self.c[i]), key=lambda v: abs(py(v) - y))
-        return best if abs(py(best) - y) <= SNAP_PX else None
+        return (best, None) if abs(py(best) - y) <= SNAP_PX else (None, None)
 
     # ---- measuring line (hold Shift) ----
-    def _draw_measure(self, p, price, py, i1, v1):
+    def _draw_measure(self, p, price, py, end):
         """A line from where Shift was pressed to the crosshair, and a box with the days, bars,
-        % and price change, and the line's angle on screen."""
-        i0, v0 = self.measure
+        % and price change, and the line's angle on screen. A Bid/Ask tag's point counts as the
+        last candle for the days and bars: its price is the live one."""
+        (i0, v0, now0), (i1, v1, now1) = self.measure, end
+        last = len(self.dates) - 1
+        k0, k1 = (last if now0 else round(i0)), (last if now1 else round(i1))     # the slots counted
         x0, y0 = self._x(i0, price), py(v0)
         x1, y1 = self._x(i1, price), py(v1)
         p.setClipRect(price.adjusted(1, 1, -1, -1))
@@ -655,15 +664,15 @@ class CandleChart(QWidget):
 
         lines = []
         if self.intraday:
-            t0, t1 = self._time_at(i0), self._time_at(i1)
+            t0, t1 = self._time_at(k0), self._time_at(k1)
             if t0 and t1:
                 minutes = round(abs((t1 - t0).total_seconds()) / 60)
                 lines.append(f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes} Min")
         else:
-            d0, d1 = self._date_at(i0), self._date_at(i1)
+            d0, d1 = self._date_at(k0), self._date_at(k1)
             if d0 and d1:
                 lines.append(f"{abs((d1 - d0).days)} Days")
-        lines.append(f"{abs(i1 - i0)} Bars")
+        lines.append(f"{abs(k1 - k0)} Bars")
         if v0 > 0:
             lines.append(f"{(v1 / v0 - 1) * 100:+.2f}%")
         lines.append(f"{v1 - v0:+.{PRICE_DECIMALS}f}")
