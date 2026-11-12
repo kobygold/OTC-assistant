@@ -22,21 +22,21 @@ for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py; do
     [ -f "$f" ] || fail "otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py must be in the same folder as this script."
 done
 
-# ---- Find Python 3.9 or newer: Homebrew, python.org, then whatever is on PATH ----
+# ---- Find Python 3.10 or newer (schwab-py needs it): Homebrew, python.org, then whatever is on PATH ----
 PY=""
-for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 "$HOME"/.pyenv/versions/3.1[0-9]*/bin/python3 python3 python3.13 python3.12 python3.10; do
     if command -v "$candidate" >/dev/null 2>&1 &&
-       "$candidate" -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+       "$candidate" -c "import sys; sys.exit(sys.version_info < (3, 10))" >/dev/null 2>&1; then
         PY="$candidate"
         break
     fi
 done
-[ -n "$PY" ] || fail "Python 3.9 or newer was not found.
+[ -n "$PY" ] || fail "Python 3.10 or newer was not found.
 Install it from https://www.python.org/downloads/ (or: brew install python), then try again."
 
 # ---- Create the private environment on first run (or if it stopped working) ----
 VENV_PY=".venv/bin/python"
-if ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
+if ! "$VENV_PY" -c "import sys; sys.exit(sys.version_info < (3, 10))" >/dev/null 2>&1; then
     echo "Setting up the Python environment, first run only..."
     rm -rf .venv
     "$PY" -m venv .venv || fail "Could not create the Python environment. See the messages above."
