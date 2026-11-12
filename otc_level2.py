@@ -416,6 +416,21 @@ class Level2Panel(QWidget):
         if self.feed:
             self.feed.stop()
 
+    def disconnect_feed(self):
+        """Logs out of Schwab's stream and drops the connection, so another PC with the same
+        login can stream (Schwab allows one stream per login). follow() connects again."""
+        self.follow("")
+        if self.feed:
+            feed, self.feed = self.feed, None
+            for signal in (feed.book, feed.quote, feed.status, feed.login_needed):
+                try:
+                    signal.disconnect()
+                except TypeError:
+                    pass
+            feed.stop()         # its thread logs out and ends by itself
+        self.login_btn.hide()
+        self.set_status("Off · not connected to Schwab")
+
     def set_status(self, text):
         self.status_label.setText(f"Level II · {text}")
 

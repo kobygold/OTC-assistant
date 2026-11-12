@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.8.9"
+APP_VERSION = "0.8.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -860,7 +860,8 @@ class MainWindow(QMainWindow):
         self.level2_show.setToolTip(
             "Live market makers' bids and asks for the ticker on the chart, streamed from Schwab. "
             "Rows of the same price share a color; a size turns green when it grew and red when it shrank. "
-            "Drag the line above it to change its height.")
+            "Drag the line above it to change its height. Off: no connection to Schwab's stream at all, "
+            "so another PC with the same login can have it (Schwab allows one stream per login).")
         self.level2_show.toggled.connect(self.on_level2_toggled)
         row.addWidget(self.level2_show)
         row.addSpacing(16)
@@ -1622,7 +1623,7 @@ class MainWindow(QMainWindow):
         if checked and self.chart_fav_ticker:
             self.level2.follow(self.chart_fav_ticker, self.chart_name)
         elif not checked:
-            self.level2.follow("")
+            self.level2.disconnect_feed()     # off: no Schwab stream at all, so another PC can have it
             self.last_quote = ("", None)
             self.chart.set_live()       # no more live quotes: back to the last candle's
             self.checklist.clear_live()
