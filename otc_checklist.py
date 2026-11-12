@@ -13,8 +13,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
 
-from PyQt6.QtCore import QObject, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QKeySequence, QPalette, QRegularExpressionValidator
+from PyQt6.QtCore import QObject, QRectF, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap,
+                         QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QToolTip,
                              QVBoxLayout, QWidget)
 
@@ -48,6 +49,8 @@ PANEL_STYLE = """
 #checklist QLabel#cl_value { font-weight: bold; color: #ffffff; }
 #checklist QLabel#cl_summary { color: #a8a8a8; }
 #checklist QToolButton { color: #c8c8c8; border: none; }
+#checklist QToolButton#cl_copy { border-radius: 3px; padding: 1px; }
+#checklist QToolButton#cl_copy:hover { background: #2c3136; }
 #checklist QLineEdit { background: #1b1e21; border: 1px solid #2c3136; border-radius: 3px;
                        padding: 1px 4px; font-weight: bold; }
 #checklist QLineEdit:focus { border-color: #5a6670; }
@@ -162,12 +165,50 @@ def copy_value(text, widget):
     QToolTip.showText(QCursor.pos(), f"Copied: {text}", widget)
 
 
-class CopyLabel(QLabel):
-    """A value that a click copies."""
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            copy_value(self.text(), self)
-        super().mousePressEvent(e)
+def copy_icon():
+    """Two overlapping pages, as copy icons usually are."""
+    pix = QPixmap(14, 14)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(QPen(QColor("#c8c8c8"), 1.2))
+    p.drawRoundedRect(QRectF(4.5, 0.5, 8.5, 9.5), 1.5, 1.5)
+    p.setBrush(QColor("#101214"))
+    p.drawRoundedRect(QRectF(0.5, 3.5, 8.5, 9.5), 1.5, 1.5)
+    p.end()
+    return QIcon(pix)
+
+
+class CopyBox(QWidget):
+    """A value with a small copy button on its right, shown while the mouse is over them."""
+    def __init__(self, value, shown_text, parent=None):
+        super().__init__(parent)
+        self.shown_text = shown_text
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        lay.addWidget(value)
+        self.button = QToolButton()
+        self.button.setObjectName("cl_copy")
+        self.button.setIcon(copy_icon())
+        self.button.setToolTip("Copy")
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.clicked.connect(lambda: copy_value(self.shown_text(), self.button))
+        policy = self.button.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)        # no jumping when it shows
+        self.button.setSizePolicy(policy)
+        self.button.hide()
+        lay.addWidget(self.button)
+
+    def enterEvent(self, e):
+        text = self.shown_text().strip()
+        self.button.setVisible(bool(text) and text != NA)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.button.hide()
+        super().leaveEvent(e)
 
 
 class CopyLineEdit(QLineEdit):
@@ -347,14 +388,15 @@ class ChecklistPanel(QWidget):
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
                 elif item.kind != "manual":
-                    value = CopyLabel()
+                    value = QLabel()
                     value.setObjectName("cl_value")
                     value.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-                    value.setCursor(Qt.CursorShape.PointingHandCursor)
+                    value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 row.addWidget(mark)
                 row.addWidget(text, 1)
                 if value is not None:
-                    row.addWidget(value)
+                    shown = value.shown if isinstance(value, CopyLineEdit) else value.text
+                    row.addWidget(CopyBox(value, shown))
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
         lay.addStretch()
@@ -624,7 +666,7 @@ class ChecklistPanel(QWidget):
                     tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
-                value.setToolTip(tip + " · Double-click or Ctrl+C to copy the value")
+                value.setToolTip(tip)
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 own = self.override_text(item.key)
                 if not value.hasFocus() and value.text() != own:
@@ -632,7 +674,7 @@ class ChecklistPanel(QWidget):
                 continue
             if item.kind == "info":
                 value.setText(val)
-                value.setToolTip((tip + " · " if tip else "") + "Click to copy")
+                value.setToolTip(tip)
                 if item.key in ("profit", "loss", "profit_usd", "loss_usd"):
                     value.setStyleSheet("" if val in ("", NA) else
                                         f"color: {MARKS[OK if val.startswith('+') else BAD][1]};")
