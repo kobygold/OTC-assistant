@@ -18,7 +18,7 @@ from PyQt6.QtGui import QColor, QPalette, QRegularExpressionValidator
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QScrollArea, QToolButton, QVBoxLayout, QWidget
 
 from otc_chart import fmt_price, fmt_volume
-from otc_level2 import MM_RED
+from otc_level2 import MM_RED, MM_YELLOW
 
 POSITION_USD = 150      # the position size, in $
 FEE_USD = 6.95          # the fee for each buy and each sell, in $, until Schwab's is read
@@ -33,9 +33,10 @@ NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
 
 OK, BAD, WARN, UNKNOWN, INFO, EMPTY = "ok", "bad", "warn", "unknown", "info", "empty"
+MAYBE = "maybe"         # could be good or bad: a yellow ?
 SOLVED = "solved"       # an X that a checked manual item solved: a green X, counted as passed
 MARKS = {OK: ("✔", "#1db31d"), BAD: ("✘", "#e0404f"), WARN: ("!", "#f0a020"), UNKNOWN: ("?", "#6c6c6c"),
-         EMPTY: ("☐", "#8a8a8a"), SOLVED: ("✘", "#1db31d")}
+         EMPTY: ("☐", "#8a8a8a"), SOLVED: ("✘", "#1db31d"), MAYBE: ("?", "#f3c400")}
 NEXT_MARK = {EMPTY: OK, OK: BAD, BAD: EMPTY}     # a click on a manual item
 
 PANEL_STYLE = """
@@ -492,8 +493,21 @@ class ChecklistPanel(QWidget):
             r["l2_live"] = (BAD, "", "No Level II for this ticker yet")
         else:
             r["l2_live"] = (OK, "", "")
-            red = sorted({mm for mm, *_ in self.asks if mm in MM_RED})
-            r["no_diluter"] = (BAD, "", "On the Ask: " + ", ".join(red)) if red else (OK, "", "")
+            # Who is first on the Ask: the market makers at the best (lowest) ask price
+            best = min((price for _, price, *_ in self.asks), default=None)
+            first = sorted({mm for mm, price, *_ in self.asks if price == best})
+            red = [mm for mm in first if mm in MM_RED]
+            yellow = [mm for mm in first if mm in MM_YELLOW]
+            at = f" first on the Ask ({fmt_price(best)})" if best is not None else ""
+            if red:
+                r["no_diluter"] = (BAD, "", "A diluter" + at + ": " + ", ".join(red))
+            elif yellow:
+                r["no_diluter"] = (MAYBE, "", "A so-so market maker" + at + ": " + ", ".join(yellow)
+                                   + ". Could be good or bad")
+            elif first:
+                r["no_diluter"] = (OK, "", "First on the Ask: " + ", ".join(first))
+            else:
+                r["no_diluter"] = (UNKNOWN, "", "Nobody on the Ask")
             bid_total = sum(s for _, _, s, _ in self.bids)
             ask_total = sum(s for _, _, s, _ in self.asks)
             trips = is_trips(bid or ask or 1)

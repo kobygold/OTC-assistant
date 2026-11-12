@@ -56,8 +56,11 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - בדקתי את הלבל 2 הנוכחי של המנייה
   auto(l2_live): Level II is live for this ticker
 - אין מדלל באסק בלבל 2
-  auto(no_diluter): none of the red market makers (MAXM, GLED, CFGN, PAUL, JANE, BBAR, BLAS, ALPS, STXG, AEXG) is on the Ask
-  note: "אם המדלל ממש בסוף הלבל 2 — זה לא בהכרח פוסל" - for now any red one gives an X
+  auto(no_diluter): who is first on the Ask (every market maker at the best ask price):
+        a red X when one of them is red (MAXM, GLED, CFGN, PAUL, JANE, BBAR, BLAS, ALPS, STXG, AEXG),
+        else a yellow ? when one is yellow (OTCN, OTCX, CDEL, INTL, VIRT): could be good or bad,
+        else a green check
+  note: "אם המדלל ממש בסוף הלבל 2 — זה לא בהכרח פוסל" - so only the ones first on the Ask count
 - יש יותר קונים ממוכרים (ביד עמוק, אסק דק)
   auto(buyers): Trips: total Bid shares >= total Ask shares.
         Dubs and up: total Ask shares <= 2 x total Bid shares (up to 1:2 for the Ask is fine)
