@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start OTC Assistant on macOS.
-# Keep this file in the same folder as otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py.
+# Keep this file in the same folder as the app's .py files, checklist.txt and requirements.txt.
 # Run it from Terminal with:  ./run_otc_gui.sh   (once: chmod +x run_otc_gui.sh)
 # To start it with a double-click in Finder, make a copy named "OTC Assistant.command".
 #
@@ -18,8 +18,8 @@ fail() {
 }
 
 # ---- Make sure the app files are here ----
-for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py; do
-    [ -f "$f" ] || fail "otc_daily_gui.py, otc_daily.py, otc_chart.py, otc_zones.py and otc_atm.py must be in the same folder as this script."
+for f in otc_daily_gui.py otc_daily.py otc_chart.py otc_zones.py otc_atm.py otc_level2.py otc_checklist.py checklist.txt requirements.txt; do
+    [ -f "$f" ] || fail "$f is missing: all the app files must be in the same folder as this script."
 done
 
 # ---- Find Python 3.10 or newer (schwab-py needs it): Homebrew, python.org, then whatever is on PATH ----
@@ -47,7 +47,7 @@ if ! "$VENV_PY" -c "import PyQt6.QtWidgets, numpy, schwab" >/dev/null 2>&1; then
     echo "Installing required packages, first run only. This takes a minute..."
     echo
     "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-    "$VENV_PY" -m pip install --upgrade PyQt6 numpy schwab-py || fail "Package installation failed. See the messages above."
+    "$VENV_PY" -m pip install --upgrade -r requirements.txt || fail "Package installation failed. See the messages above."
 fi
 
 # ---- Start the app, detached so this Terminal window can be closed ----
