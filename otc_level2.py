@@ -480,9 +480,10 @@ class Level2Panel(QWidget):
             return GREEN if now > before else RED
         for key, side in (("bid", "BID"), ("ask", "ASK")):
             price = q.get(f"{side}_PRICE")
-            size = q.get(f"{side}_SIZE") or 0
+            size = q.get(f"{side}_SIZE")    # not known yet (or 0) while waiting for the book: N/A
+            size = f"{size:,}" if size else "N/A"
             c[key].setText(f"{side.title()}: <span style='color:{tone(side + '_PRICE')}'>{tos_price(price)}</span> x "
-                           f"<span style='color:{tone(side + '_SIZE')}'>{size:,}</span>" if price is not None else "")
+                           f"<span style='color:{tone(side + '_SIZE')}'>{size}</span>" if price is not None else "")
         self.prev_quote = {f: q[f] for f in ("BID_PRICE", "BID_SIZE", "ASK_PRICE", "ASK_SIZE") if f in q}
         for key, lb in c.items():
             lb.setVisible(bool(lb.text()))

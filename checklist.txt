@@ -7,7 +7,10 @@ How to edit this file:
   "  info(key):"  a value only, no check or X. The entry, size, exit and stop values can be typed over
                   in the panel (in amber): the size for all tickers, the prices per ticker; clear a field to
                   go back to the automatic value (in white)
-  "  manual"      you tick the item yourself in the panel (saved per ticker)
+  "  manual" or "  manual(key)"   you click the item yourself in the panel: empty, then a check, then an X, then empty again
+                  (saved per ticker). With a key, other items can refer to it
+  "solved_by(key)"  after auto(...): when that auto item has a red X but the manual item with this key
+                  is checked, the X turns green (the condition wasn't met, but it was checked and is fine)
 The key in brackets ties the item to its rule in the app: keep it when you change the Hebrew text.
 Items can be moved, removed or repeated. The rest of the line, and lines under it, are notes.
 Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Pennies = 0.01 and up.
@@ -67,9 +70,10 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
   auto(avg_volume): shows the chart's MedianVolume (its Averaging days); a check when it's at least half
         our amount of stocks
 - אין ווליום חריג בחודש האחרון (פי 1.5 עד 2 מהממוצע)
-  auto(no_spike): no day in the last 30 trading days had 2x or more that median volume (warning: check for dilution)
+  auto(no_spike) solved_by(news_checked): no day in the last 30 trading days had 2x or more that median volume
+        (warning: check for dilution). When there was one but the next item is checked, the X turns green
 - אם היה חריג — בדקתי חדשות/עדכון חברה / שזו קנייה מהאסק (לא דילול)
-  manual
+  manual(news_checked)
 - יש ווליום יומי קבוע ולא יותר מדי ימים מתים
   auto(steady): 5 or fewer days without trades in the last 30 trading days
 
@@ -91,4 +95,5 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - זריקות כבדות מדי או שינוי ביחס → שוקל לצאת
   manual
 - אין דילול — אם יש, לא נכנסים
-  auto(no_dilution): no unusual volume (2x the median), and no red market maker on the Ask
+  manual
+  note: was auto(no_dilution) - no unusual volume (2x the median), and no red market maker on the Ask

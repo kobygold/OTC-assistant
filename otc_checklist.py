@@ -1,6 +1,7 @@
 """The trade checklist next to the chart: the items of checklist.txt in Hebrew, each with a green
 check when its condition is met and a red X when it isn't. "auto" items are worked out from the
-chart's candles and the live Level II, "manual" ones are ticked by hand (saved per ticker), and
+chart's candles and the live Level II, "manual" ones are clicked by hand (saved per ticker): empty,
+then a check, then an X, then empty again, and
 "info" ones show a value: the entry, exit and stop prices, the amount of stocks and so on.
 The position size and the entry, exit and stop prices can be typed over: the position size is kept
 for all tickers, the prices per ticker, and clearing a field brings back the automatic value."""
@@ -31,8 +32,11 @@ RANGE_DAYS = 30         # calendar days the bounce range must have lasted
 NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
 
-OK, BAD, WARN, UNKNOWN, INFO = "ok", "bad", "warn", "unknown", "info"
-MARKS = {OK: ("✔", "#1db31d"), BAD: ("✘", "#e0404f"), WARN: ("!", "#f0a020"), UNKNOWN: ("?", "#6c6c6c")}
+OK, BAD, WARN, UNKNOWN, INFO, EMPTY = "ok", "bad", "warn", "unknown", "info", "empty"
+SOLVED = "solved"       # an X that a checked manual item solved: a green X, counted as passed
+MARKS = {OK: ("✔", "#1db31d"), BAD: ("✘", "#e0404f"), WARN: ("!", "#f0a020"), UNKNOWN: ("?", "#6c6c6c"),
+         EMPTY: ("☐", "#8a8a8a"), SOLVED: ("✘", "#1db31d")}
+NEXT_MARK = {EMPTY: OK, OK: BAD, BAD: EMPTY}     # a click on a manual item
 
 PANEL_STYLE = """
 #checklist, #checklist QScrollArea, #checklist #cl_body { background: #101214; }
@@ -53,7 +57,8 @@ PANEL_STYLE = """
 class Item:
     text: str
     kind: str       # "auto", "info" or "manual"
-    key: str        # the rule's key; for a manual item, its text
+    key: str        # the rule's key; for a manual item, its own key or else its text
+    solved_by: str = ""     # a manual item's key: when it's checked, this item's X turns green
 
 
 def parse(path: Path):
@@ -72,9 +77,12 @@ def parse(path: Path):
             sections[-1][1].append(item)
         elif item is not None and line.startswith("  ") and not line.startswith("   "):
             word = line.strip()
-            for kind in ("auto", "info"):
+            for kind in ("auto", "info", "manual"):
                 if word.startswith(kind + "(") and ")" in word:
                     item.kind, item.key = kind, word[len(kind) + 1:word.index(")")].strip()
+            if "solved_by(" in word:
+                rest = word[word.index("solved_by(") + len("solved_by("):]
+                item.solved_by = rest[:rest.index(")")].strip() if ")" in rest else ""
             item = None     # only the first line under an item says its kind
     return title, sections
 
@@ -280,7 +288,7 @@ class ChecklistPanel(QWidget):
                 value = None
                 if item.kind == "manual":
                     mark.setCursor(Qt.CursorShape.PointingHandCursor)
-                    mark.setToolTip("Click to tick or untick")
+                    mark.setToolTip("Click: empty → ✔ → ✘ → empty")
                     mark.mousePressEvent = lambda _e, it=item: self.toggle(it)
                     text.setCursor(Qt.CursorShape.PointingHandCursor)
                     text.mousePressEvent = lambda _e, it=item: self.toggle(it)
@@ -403,17 +411,26 @@ class ChecklistPanel(QWidget):
         self.bids, self.asks, self.l2_live = [], [], False
         self.refresh()
 
-    # ---- manual ticks, per ticker ----
+    # ---- manual marks, per ticker: {item: "ok" or "bad"}, an empty one isn't kept ----
     def ticked(self):
-        return set(self.settings.get("checklist_ticks", {}).get(self.ticker, []))
+        saved = self.settings.get("checklist_ticks", {}).get(self.ticker, {})
+        if isinstance(saved, list):         # before v0.6.6: a list of the checked items
+            saved = dict.fromkeys(saved, OK)
+        return dict(saved)
 
     def toggle(self, item):
         if not self.ticker:
             return
-        ticks = self.ticked() ^ {item.key}
+        ticks = self.ticked()
+        old = ticks.pop(item.text, EMPTY) if item.text != item.key else EMPTY    # saved by its text before
+        state = NEXT_MARK[ticks.get(item.key, old)]
+        if state == EMPTY:
+            ticks.pop(item.key, None)
+        else:
+            ticks[item.key] = state
         all_ticks = self.settings.setdefault("checklist_ticks", {})
         if ticks:
-            all_ticks[self.ticker] = sorted(ticks)
+            all_ticks[self.ticker] = ticks
         else:
             all_ticks.pop(self.ticker, None)
         self.save_settings(self.settings)
@@ -528,12 +545,20 @@ class ChecklistPanel(QWidget):
             return
         results = self.evaluate()
         ticks = self.ticked()
+        manual, solvers = {}, {}      # the manual items' marks and texts, by their keys
+        for item, *_ in self.widgets:
+            if item.kind == "manual":
+                manual[item.key] = ticks.get(item.key, ticks.get(item.text, EMPTY))
+                solvers[item.key] = item.text
         passed = total = 0
         for item, mark, text, value in self.widgets:
             if item.kind == "manual":
-                state, val, tip = (OK if item.key in ticks else BAD), "", "Click to tick or untick"
+                state, val, tip = ticks.get(item.key, ticks.get(item.text, EMPTY)), "", "Click: empty → ✔ → ✘ → empty"
             else:
                 state, val, tip = results.get(item.key, (UNKNOWN, "", f"No rule called \"{item.key}\""))
+                if state == BAD and item.solved_by and manual.get(item.solved_by) == OK:
+                    state = SOLVED
+                    tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
                 value.setToolTip(tip)
@@ -559,5 +584,5 @@ class ChecklistPanel(QWidget):
             for w in (mark, text):
                 w.setToolTip(tip)
             total += 1
-            passed += state == OK
+            passed += state in (OK, SOLVED)
         self.summary.setText(f"{self.ticker} · {passed}/{total} ✔" if self.ticker else "")
