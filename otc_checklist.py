@@ -58,6 +58,9 @@ PANEL_STYLE = """
                                   padding: 0px; font-size: 11px; font-weight: bold; }
 #checklist QToolButton#cl_step:hover { background: #2c3136; }
 #checklist QToolButton#cl_step:pressed { background: #3a4046; }
+#checklist QToolButton#cl_reset { border-radius: 3px; padding: 0px; font-size: 15px; }
+#checklist QToolButton#cl_reset:hover { background: #2c3136; }
+#checklist QToolButton#cl_reset:pressed { background: #3a4046; }
 #checklist QLineEdit { background: #1b1e21; border: 1px solid #2c3136; border-radius: 3px;
                        padding: 1px 4px; font-weight: bold; }
 #checklist QLineEdit:focus { border-color: #5a6670; }
@@ -425,7 +428,16 @@ class ChecklistPanel(QWidget):
                     else:
                         box = CopyBox(value, shown)
                     if item.key in EDITABLE and item.key != "size":
-                        row.addWidget(self.make_stepper(item.key, value))     # right of the box
+                        # box, +/- and reset close together, left to right
+                        group = QWidget()
+                        group.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+                        glay = QHBoxLayout(group)
+                        glay.setContentsMargins(0, 0, 0, 0)
+                        glay.setSpacing(2)
+                        glay.addWidget(box)
+                        glay.addWidget(self.make_stepper(item.key, value))
+                        glay.addWidget(self.make_reset(item.key, value))
+                        box = group
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
@@ -465,6 +477,25 @@ class ChecklistPanel(QWidget):
             b.clicked.connect(lambda _c=False, s=step: self.step(key, edit, s))
             lay.addWidget(b)
         return box
+
+    def make_reset(self, key, edit):
+        """A round arrow that drops the typed price, back to the automatic one."""
+        b = QToolButton()
+        b.setObjectName("cl_reset")
+        b.setText("↻")
+        b.setFixedSize(18, 25)
+        b.setToolTip("Reset to the automatic value")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        b.clicked.connect(lambda: self.reset_value(key, edit))
+        return b
+
+    def reset_value(self, key, edit):
+        if not edit.isEnabled():
+            return
+        edit.clear()
+        self.typed(key, "")
+        self.save_settings(self.settings)
 
     def step(self, key, edit, direction):
         """Moves the price shown (typed, or else the automatic one) one 0.0001 step."""
