@@ -54,7 +54,7 @@ from otc_checklist import ChecklistPanel
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1531,6 +1531,7 @@ class MainWindow(QMainWindow):
         self.settings["vol_avg_period"] = days
         save_settings(self.settings)
         self.chart.set_avg_period(days)
+        self.update_checklist()
 
     def on_bid_ask_tags_toggled(self, checked):
         self.settings["bid_ask_tags_show"] = checked
@@ -1576,7 +1577,7 @@ class MainWindow(QMainWindow):
                                     np.array([[*r[1:5], r[5] or 0.0] for r in rows], dtype=float))
             if dates:
                 rng = atm.recent_range(dates, data, first_day, self.af_tol.value() / 100, self.af_gap.value() / 100)
-        self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng)
+        self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
 
     def on_live_quote(self, ticker, q):
         """The live quote: today's candle and volume bar, and the right axis tags."""

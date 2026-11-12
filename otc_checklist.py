@@ -6,6 +6,7 @@ chart's candles and the live Level II, "manual" ones are ticked by hand (saved p
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from statistics import median
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QScrollArea, QToolButton, QVBoxLayout, QWidget
@@ -98,17 +99,19 @@ def plan(bid, ask, bids, usd=POSITION_USD):
     return out
 
 
-def volume_stats(rows, market_days):
-    """(average, [unusual days], days without trades) over the given market days, from the
-    candles (date, open, high, low, close, volume, ...). None if there are no market days."""
-    if not market_days:
+def volume_stats(rows, market_days, period):
+    """(median, [unusual days], days without trades) from the candles (date, open, high, low,
+    close, volume, ...). The median is the chart's MedianVolume: the last `period` days with
+    trades. Unusual days and days without trades are counted over the given market days.
+    None if there are no market days."""
+    if not market_days or not rows:
         return None
+    med = median([r[5] or 0.0 for r in rows[-period:]])
     by_day = {r[0]: r[5] or 0.0 for r in rows}
     vols = [by_day.get(d, 0.0) for d in market_days]
-    avg = sum(vols) / len(vols)
-    spikes = [d for d, v in zip(market_days, vols) if avg and v >= SPIKE_X * avg]
+    spikes = [d for d, v in zip(market_days, vols) if med and v >= SPIKE_X * med]
     dead = sum(1 for v in vols if not v)
-    return avg, spikes, dead
+    return med, spikes, dead
 
 
 # ---------------------------------------------------------------- the panel ---
@@ -123,7 +126,7 @@ class ChecklistPanel(QWidget):
         self.setStyleSheet(PANEL_STYLE)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.ticker = ""
-        self.rows, self.market_days, self.range = [], [], None
+        self.rows, self.market_days, self.range, self.period = [], [], None, 50
         self.bid = self.ask = None
         self.bids, self.asks, self.l2_live = [], [], False
         self.widgets = []       # (item, mark label, value label or None)
@@ -200,13 +203,14 @@ class ChecklistPanel(QWidget):
         self.refresh()
 
     # ---- data in ----
-    def set_chart(self, ticker, rows, market_days, rng):
-        """The chart's candles, the last VOL_DAYS market days and the bounce range (or None)."""
+    def set_chart(self, ticker, rows, market_days, rng, period):
+        """The chart's candles, the last VOL_DAYS market days, the bounce range (or None) and
+        the chart's Averaging days."""
         if ticker != self.ticker:
             self.ticker = ticker
             self.bid = self.ask = None
             self.bids, self.asks, self.l2_live = [], [], False
-        self.rows, self.market_days, self.range = rows, market_days, rng
+        self.rows, self.market_days, self.range, self.period = rows, market_days, rng, period
         self.refresh()
 
     def set_quote(self, ticker, q):
@@ -300,15 +304,15 @@ class ChecklistPanel(QWidget):
                 r["cushion"] = (OK, "", f"Stop at {fmt_price(p['stop'])}")
 
         # Volume
-        stats = volume_stats(self.rows, self.market_days) if self.rows else None
+        stats = volume_stats(self.rows, self.market_days, self.period)
         if stats is None:
             for key in ("avg_volume", "no_spike", "steady"):
                 r[key] = (UNKNOWN, "", "No candles")
         else:
-            avg, spikes, dead = stats
-            r["avg_volume"] = (OK if avg else BAD, fmt_volume(avg), f"Average over the last {len(self.market_days)} "
-                                                                    "market days, days without trades count as 0")
-            r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the average or more on " + ", ".join(spikes)
+            med, spikes, dead = stats
+            r["avg_volume"] = (OK if med else BAD, fmt_volume(med),
+                               f"MedianVolume ({self.period}), as on the chart (its Averaging days)")
+            r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the median volume or more on " + ", ".join(spikes)
                               + ". Check it's not dilution.") if spikes else (OK, "", ""))
             r["steady"] = (OK if dead <= MAX_DEAD else BAD, "",
                            f"{dead} of {len(self.market_days)} market days without trades (up to {MAX_DEAD} is fine)")

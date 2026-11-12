@@ -22,8 +22,6 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
   info(shares): round(150 / entry price)
 - מחיר יציאה (יעד)
   info(exit): Trips: the Ask. Dubs and up: the Ask - 0.0001
-- סוג פקודה
-  info(order): always GTC
 - כרית ביטחון (סטופ)
   info(stop): going down the Level II bids from the highest, the price of the first bid where the bids so far
         add up to at least twice our amount of stocks
@@ -56,9 +54,9 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 
 ## 3 ניתוח ווליום
 - ווליום ממוצע של 30 הימים האחרונים
-  auto(avg_volume): shows the 30-day average volume; a check when there is one
+  auto(avg_volume): shows the chart's MedianVolume (its Averaging days); a check when there is one
 - אין ווליום חריג בחודש האחרון (פי 1.5 עד 2 מהממוצע)
-  auto(no_spike): no day in the last 30 trading days had 2x or more the 30-day average volume (warning: check for dilution)
+  auto(no_spike): no day in the last 30 trading days had 2x or more that median volume (warning: check for dilution)
 - אם היה חריג — בדקתי חדשות/עדכון חברה / שזו קנייה מהאסק (לא דילול)
   manual
 - יש ווליום יומי קבוע ולא יותר מדי ימים מתים
