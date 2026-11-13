@@ -8,6 +8,8 @@ schwab/stream_test_*.jsonl
 settings.tmp
 favorites.json
 favorites.tmp
+atm.json
+atm.tmp
 otc_daily.db
 otc_daily.db-wal
 otc_daily.db-shm

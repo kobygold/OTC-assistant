@@ -8,6 +8,7 @@ for all tickers, the prices per ticker, and clearing a field brings back the aut
 
 import json
 import math
+import re
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -521,6 +522,7 @@ class ChecklistPanel(QWidget):
     def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None):
         super().__init__(parent)
         self.path, self.settings, self.save_settings = path, settings, save_settings
+        self.atm_path = path.parent / "atm.json"     # what the market looked like at each Buy ATM
         self.fees = {}          # ticker -> (fee or None, details), read from Schwab once a session
         self.fee_reader = FeeReader(settings, token_path) if token_path else None
         self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
@@ -539,6 +541,7 @@ class ChecklistPanel(QWidget):
         self.ticker = ""
         self.rows, self.market_days, self.range, self.period = [], [], None, 50
         self.bid = self.ask = None
+        self.bid_size = self.ask_size = None
         self.bids, self.asks, self.l2_live = [], [], False
         self.widgets = []       # (item, mark label, text label, value label / line edit or None)
 
@@ -913,10 +916,51 @@ class ChecklistPanel(QWidget):
                             account=account):
             return
         self.pending[ticker] = {"shares": p["shares"], "entry": p["entry"], "exit": p["exit"], "stop": p["stop"],
-                                "account": account}
+                                "account": account, "atm": self.atm_snapshot(p, account)}
         self.sending.add(ticker)
         self.update_trade_buttons()
         self.trader.place(ticker, "BUY", p["shares"], p["entry"], account)
+
+    # ---- atm.json: the plan and the market at each Buy ATM sent, deleted if the buy is canceled ----
+    def atm_snapshot(self, p, account):
+        """The plan and the market now (Level I and the full Level II), for atm.json.
+        account: the last 3 digits of the account it goes to (the full number is never kept)."""
+        fee = self.fees.get(self.ticker, (None, ""))[0]
+        top = lambda book: (book[0][1], book[0][2]) if book else (None, None)
+        bid = (self.bid, self.bid_size) if self.bid else top(self.bids)
+        ask = (self.ask, self.ask_size) if self.ask else top(self.asks)
+        book = lambda rows: [[mm, price, size] for mm, price, size, *_ in rows]
+        return {"ticker": self.ticker, "account": account, "entry": p["entry"], "exit": p["exit"], "shares": p["shares"],
+                "usd": round(p["shares"] * p["entry"], 2), "stop": p["stop"], "fee": fee,
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "bid": list(bid), "ask": list(ask),
+                "level2": {"bids": book(self.bids), "asks": book(self.asks)}}
+
+    def atm_entries(self):
+        try:
+            return json.loads(self.atm_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    def atm_write(self, entries):
+        tmp = self.atm_path.with_suffix(".tmp")
+        text = json.dumps(entries, indent=1)
+        # each [price, amount] / [market maker, price, amount] on one line
+        text = re.sub(r"\[\s+([^\[\]{}]*?)\s+\]", lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self.atm_path)
+
+    def atm_save(self, entry, order_id):
+        entries = self.atm_entries()
+        entries.append({"order_id": order_id, **entry})
+        self.atm_write(entries)
+
+    def atm_delete(self, ticker, order_id):
+        """Takes out the entry of a buy order that was canceled (nothing bought)."""
+        entries = self.atm_entries()
+        left = [e for e in entries if not (e.get("ticker") == ticker and str(e.get("order_id")) == str(order_id))]
+        if len(left) != len(entries):
+            self.atm_write(left)
 
     def sell(self):
         ticker = self.ticker
@@ -967,6 +1011,12 @@ class ChecklistPanel(QWidget):
         orders = self.settings.setdefault("orders", {})
         now = datetime.now().isoformat(timespec="seconds")
         if side == "BUY":
+            snapshot = pending.pop("atm", None)
+            if snapshot:
+                try:
+                    self.atm_save(snapshot, order_id)
+                except OSError as e:
+                    QMessageBox.warning(self, "atm.json", f"Can't save {self.atm_path.name}: {e.strerror}")
             orders[ticker] = dict(pending, state="buy_open", buy_id=order_id, filled=0, sent=now,
                                   note=message)
             # The plan stays as sent: typed values, so live quotes no longer move them
@@ -1019,6 +1069,10 @@ class ChecklistPanel(QWidget):
                 order["note"] = ("" if status == "FILLED" else
                                  f"The buy order was {status.lower()} after {filled:,} of {order['shares']:,}.")
             elif status in ORDER_DONE:
+                try:
+                    self.atm_delete(ticker, order.get("buy_id"))    # nothing bought: not an ATM trade
+                except OSError:
+                    pass
                 self.close_order(ticker, f"buy {status.lower()}")
         else:
             order["sold"] = filled
@@ -1059,6 +1113,7 @@ class ChecklistPanel(QWidget):
         if ticker != self.ticker:
             self.ticker = ticker
             self.bid = self.ask = None
+            self.bid_size = self.ask_size = None
             self.bids, self.asks, self.l2_live = [], [], False
         self.rows, self.market_days, self.range, self.period = rows, market_days, rng, period
         self.read_fee()
@@ -1068,6 +1123,8 @@ class ChecklistPanel(QWidget):
         if ticker == self.ticker:
             self.bid = q.get("BID_PRICE") or self.bid
             self.ask = q.get("ASK_PRICE") or self.ask
+            self.bid_size = q.get("BID_SIZE") or self.bid_size
+            self.ask_size = q.get("ASK_SIZE") or self.ask_size
             self.refresh()
 
     def set_book(self, ticker, bids, asks):
@@ -1077,6 +1134,7 @@ class ChecklistPanel(QWidget):
 
     def clear_live(self):
         self.bid = self.ask = None
+        self.bid_size = self.ask_size = None
         self.bids, self.asks, self.l2_live = [], [], False
         self.refresh()
 
