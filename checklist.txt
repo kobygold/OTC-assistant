@@ -27,7 +27,7 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
   info(exit): Trips: the Ask. Dubs and up: the Ask - 0.0001 (editable)
 - כמות מניות
   info(shares): round(150 / entry price)
-- כרית ביטחון (סטופ)
+- כרית ביטחון
   info(stop): going down the Level II bids from the highest, the price of the first bid where the bids so far
         add up to at least twice our amount of stocks (editable)
 - רווח פוטנציאלי

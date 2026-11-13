@@ -35,7 +35,8 @@ CHANGED = "#f0a020"     # a Sell at price changed from the exit plan
 # (title, tooltip)
 COLUMNS = [
     ("Ticker", ""),
-    ("State", "Step 1/4: Wait for Buy → 2/4: Sell the Shares (you own them) → 3/4: Wait for Sell → 4/4: Done!"),
+    ("State", "Step 1/4: Wait for Buy → 2/4: Sell the Shares (you own them) → 3/4: Wait for Sell → 4/4: Done!"
+              " · Transaction Canceled: the buy was canceled before anything was bought"),
     ("Sent", "When the Buy ATM was sent"),
     ("Shares", "Step 1: the amount ordered. Steps 2-3: the amount owned. Step 4: the amount sold."),
     ("$", "Amount of stocks x entry"),
@@ -210,8 +211,9 @@ class AtmTable(QTableWidget):
         self.cell(row, COL["Sent"], (e.get("time") or "").replace("T", " ")[5:16], DIM,
                   tip=f"Sent {e.get('time', '')}" + (f"\nBought {e['bought_time']}" if e.get("bought_time") else "")
                   + (f"\nSell sent {e['sell_time']}" if e.get("sell_time") else "")
-                  + (f"\nSold {e['sold_time']}" if e.get("sold_time") else ""))
-        if state == "buy_open":
+                  + (f"\nSold {e['sold_time']}" if e.get("sold_time") else "")
+                  + (f"\nCanceled {e['canceled_time']}" if e.get("canceled_time") else ""))
+        if state in ("buy_open", "canceled"):
             shares = f"{e['shares']:,}" + (f" ({e['filled']:,} bought)" if e.get("filled") else "")
         elif state == "sold":
             shares = f"{e.get('filled', 0):,}"
@@ -235,7 +237,7 @@ class AtmTable(QTableWidget):
         edit.setFixedWidth(80)
         edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,6}(\.\d{0,6})?"), edit))
-        if state in ("sell_open", "sold"):
+        if state in ("sell_open", "sold", "canceled"):
             edit.setText(fmt_price(e["sell_price"]) if e.get("sell_price") else "")
             edit.setReadOnly(True)
             edit.setToolTip("The sell order's price" + (": Cancel Sell to change it" if state == "sell_open" else ""))
@@ -270,8 +272,8 @@ class AtmTable(QTableWidget):
             self.removeCellWidget(row, COL["Order"])
             self.cell(row, COL["Order"], "")
         clear = button("Clear", "#4a5560")
-        clear.setEnabled(state == "sold")
-        clear.setToolTip("Take the trade off the list (and out of atm.json)" if state == "sold" else
+        clear.setEnabled(state in ("sold", "canceled"))
+        clear.setToolTip("Take the trade off the list (and out of atm.json)" if state in ("sold", "canceled") else
                          "Once sold: not while you own the stocks or an order works")
         clear.clicked.connect(lambda _c=False, e=e: self.clear(e))
         self.setCellWidget(row, COL["Clear"], centered(clear))

@@ -48,7 +48,8 @@ ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
 STATES = {"buy_open": ("Step 1/4: Wait for Buy", "#e0404f", "#ffffff"),
           "bought": ("Step 2/4: Sell the Shares", "#e3b23c", "#111111"),
           "sell_open": ("Step 3/4: Wait for Sell", "#4fc3f7", "#111111"),
-          "sold": ("Step 4/4: Done!", "#1db31d", "#111111")}
+          "sold": ("Step 4/4: Done!", "#1db31d", "#111111"),
+          "canceled": ("Transaction Canceled", None, "#d8d8d8")}     # the buy canceled, nothing bought
 CANCEL_COLOR = "#e3b23c"    # the Cancel Buy / Cancel Sell buttons
 BUY_COLOR, SELL_COLOR = "#009300", "#cf0508"
 
@@ -633,8 +634,8 @@ def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
 class AtmTrades(QObject):
     """The ATM trades, kept in atm.json: each Buy ATM sent, with the plan and the market at that
     moment, and what happened since. state: "buy_open" (waiting for the buy) -> "bought" (you own
-    it) -> "sell_open" (waiting for the sell) -> "sold". A buy canceled before anything was bought
-    takes its entry out; the rest stay until cleared on the Schwab tab. The open orders are checked
+    it) -> "sell_open" (waiting for the sell) -> "sold". A buy canceled (or rejected, or expired)
+    before anything was bought is "canceled". They all stay until cleared on the Schwab tab. The open orders are checked
     at Schwab every ORDER_CHECK_S seconds. Also keeps the latest market of the trades' tickers."""
     changed = pyqtSignal()          # the trades, or their states
     market_changed = pyqtSignal(str)    # a ticker's bid / ask / Level II
@@ -713,7 +714,7 @@ class AtmTrades(QObject):
     def active(self, ticker):
         """The ticker's trade the checklist shows: the last one not reset after it was sold."""
         for e in reversed(self.entries):
-            if e.get("ticker") == ticker and not e.get("reset"):
+            if e.get("ticker") == ticker and not e.get("reset") and e.get("state") != "canceled":
                 return e
         return None
 
@@ -722,7 +723,7 @@ class AtmTrades(QObject):
 
     def open_tickers(self):
         """The tickers with a buy or sell order working, or stocks owned."""
-        return sorted({e["ticker"] for e in self.entries if e.get("state") != "sold"})
+        return sorted({e["ticker"] for e in self.entries if e.get("state") not in ("sold", "canceled")})
 
     @staticmethod
     def remaining(e):
@@ -747,7 +748,7 @@ class AtmTrades(QObject):
         got = e.get("proceeds") or 0.0
         if e.get("state") == "sold":
             return got - cost - 2 * fee
-        if not e.get("filled") or bid is None:
+        if e.get("state") == "canceled" or not e.get("filled") or bid is None:
             return None
         return got + AtmTrades.remaining(e) * bid - cost - 2 * fee
 
@@ -832,8 +833,8 @@ class AtmTrades(QObject):
         self.changed.emit()
 
     def clear(self, e):
-        """Takes a sold trade out of atm.json."""
-        if e.get("state") != "sold":
+        """Takes a sold or canceled trade out of atm.json."""
+        if e.get("state") not in ("sold", "canceled"):
             return
         self.entries = [x for x in self.entries if x is not e]
         self.save()
@@ -918,8 +919,9 @@ class AtmTrades(QObject):
                          note="" if status == "FILLED" else
                          f"The buy order was {status.lower()} after {filled:,} of {e['shares']:,}.")
                 e.pop("status", None)
-            elif status in ORDER_DONE:      # nothing bought: not an ATM trade, its entry goes
-                self.entries = [x for x in self.entries if x is not e]
+            elif status in ORDER_DONE:      # nothing bought
+                e.update(state="canceled", canceled_time=now,
+                         note="" if status == "CANCELED" else f"The buy order was {status.lower()}.")
         else:
             e["sell_filled"] = filled
             if status in ORDER_DONE:
