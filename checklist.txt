@@ -38,9 +38,9 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
   auto(fee): the buy fee read from Schwab (the order preview of a $150 buy, nothing is placed), commission plus
         fees; the sell is taken to cost the same. An X when it's more than $6.95, in yellow (like the section titles) when more than $7.
         Until it's read it shows N/A, and $6.95 is used
-- רווח פוטנציאלי בדולרים בניכוי עמלות
+- רווח פוטנציאלי בניכוי עמלות
   info(profit_usd): amount of stocks x (exit - entry) - 2 x the fee above (the buy and the sell)
-- הפסד פוטנציאלי בדולרים בתוספת עמלות
+- הפסד פוטנציאלי בתוספת עמלות
   info(loss_usd): -(amount of stocks x (entry - stop)) - 2 x the fee above (the buy and the sell)
 - יחס רווח/הפסד (בהתעלם מעמלות)
   info(ratio): shown as 1:X, where X = profit % / loss %, without the fees (N/A when the loss is 0)
