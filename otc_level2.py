@@ -96,8 +96,8 @@ def _login_expired(error: Exception) -> bool:
 
 
 class Level2Feed(QObject):
-    """Streams Level II and Level 1 for one ticker in a background thread. The signals arrive in
-    the GUI thread."""
+    """Streams Level II and Level 1 in a background thread: the ticker followed (the chart's) and
+    any extra ones (the open ATM trades). The signals arrive in the GUI thread, for every ticker."""
     book = pyqtSignal(str, list, list)     # ticker, bids, asks: [(market maker, price, size, level)]
     quote = pyqtSignal(str, dict)          # ticker, Level 1 fields so far (stream names)
     status = pyqtSignal(str)               # what the connection is doing
@@ -107,17 +107,28 @@ class Level2Feed(QObject):
         super().__init__()
         self.app_key, self.app_secret, self.token_path = app_key, app_secret, token_path
         self._want = None                  # the ticker to follow, None for none
+        self._extra = set()                # more tickers to stream (the open ATM trades)
+        self._symbols = set()              # the tickers subscribed now
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
         self._current = None
-        self._books = {}                   # service -> (bids, asks) of the current ticker
-        self._l1 = {}
+        self._books = {}                   # ticker -> {service -> (bids, asks)}
+        self._l1 = {}                      # ticker -> its Level 1 fields so far
 
     def set_symbol(self, ticker):
         with self._lock:
             self._want = ticker or None
-        if ticker and not (self._thread and self._thread.is_alive()):
+            extra = bool(self._extra)
+        if (ticker or extra) and not (self._thread and self._thread.is_alive()):
+            self.start()
+
+    def set_extra(self, tickers):
+        """More tickers to stream besides the one followed."""
+        with self._lock:
+            self._extra = {t for t in tickers if t}
+            want = self._want or self._extra
+        if want and not (self._thread and self._thread.is_alive()):
             self.start()
 
     def start(self):
@@ -182,12 +193,13 @@ class Level2Feed(QObject):
         stream.add_nyse_book_handler(lambda m: self._on_book("NYSE_BOOK", m))
         stream.add_level_one_equity_handler(self._on_level1)
         self._current = None
+        self._symbols = set()
         try:
             while not self._stop.is_set():
                 with self._lock:
-                    want = self._want
-                if want != self._current:
-                    await self._switch(client, stream, self._current, want)
+                    want, extra = self._want, set(self._extra)
+                if want != self._current or (({want} if want else set()) | extra) != self._symbols:
+                    await self._sync(client, stream, want, extra)
                 # Subscribing and reading share the socket, so the ticker check waits for a pause
                 try:
                     await asyncio.wait_for(stream.handle_message(), timeout=POLL_SECONDS)
@@ -199,57 +211,85 @@ class Level2Feed(QObject):
             except Exception:
                 pass
 
-    async def _switch(self, client, stream, old, new):
-        if old:
-            await stream.nasdaq_book_unsubs([old])
-            await stream.nyse_book_unsubs([old])
-            await stream.level_one_equity_unsubs([old])
-        self._current, self._books, self._l1 = new, {}, {}
-        if not new:
-            self.status.emit("Level II paused.")
-            return
-        # A quote right away, so the header has prices even when nothing is streaming
-        try:
-            r = await asyncio.to_thread(client.get_quote, new)
-            q = r.json().get(new, {}).get("quote", {}) if r.status_code == 200 else {}
-        except Exception:
-            q = {}
-        for rest, name in (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
-                           ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
-                           ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
-                           ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
-                           ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME"),
-                           ("openPrice", "OPEN_PRICE"), ("highPrice", "HIGH_PRICE"), ("lowPrice", "LOW_PRICE"),
-                           ("tradeTime", "TRADE_TIME_MILLIS")):
-            if q.get(rest) is not None:
-                self._l1[name] = q[rest]
-        if self._l1:
-            self.quote.emit(new, dict(self._l1))
-        await stream.nasdaq_book_subs([new])
-        await stream.nyse_book_subs([new])
-        await stream.level_one_equity_subs([new])
-        self.status.emit(f"Live: waiting for {new}'s book...")
-        self.book.emit(new, [], [])
+    async def _sync(self, client, stream, want, extra):
+        """Subscribes to the tickers wanted now, and leaves the others."""
+        wanted = ({want} if want else set()) | extra
+        gone, new = sorted(self._symbols - wanted), sorted(wanted - self._symbols)
+        if gone:
+            await stream.nasdaq_book_unsubs(gone)
+            await stream.nyse_book_unsubs(gone)
+            await stream.level_one_equity_unsubs(gone)
+            for s in gone:
+                self._books.pop(s, None)
+                self._l1.pop(s, None)
+        kept = self._symbols - set(gone)
+        for s in new:
+            self._books[s], self._l1[s] = {}, {}
+            # A quote right away, so the header has prices even when nothing is streaming
+            try:
+                r = await asyncio.to_thread(client.get_quote, s)
+                q = r.json().get(s, {}).get("quote", {}) if r.status_code == 200 else {}
+            except Exception:
+                q = {}
+            for rest, name in (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
+                               ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
+                               ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
+                               ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
+                               ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME"),
+                               ("openPrice", "OPEN_PRICE"), ("highPrice", "HIGH_PRICE"), ("lowPrice", "LOW_PRICE"),
+                               ("tradeTime", "TRADE_TIME_MILLIS")):
+                if q.get(rest) is not None:
+                    self._l1[s][name] = q[rest]
+            if self._l1[s]:
+                self.quote.emit(s, dict(self._l1[s]))
+            self.book.emit(s, [], [])
+        if new:
+            # SUBS replaces a service's whole list, ADD adds to it
+            if kept:
+                await stream.nasdaq_book_add(new)
+                await stream.nyse_book_add(new)
+                await stream.level_one_equity_add(new)
+            else:
+                await stream.nasdaq_book_subs(new)
+                await stream.nyse_book_subs(new)
+                await stream.level_one_equity_subs(new)
+        self._symbols = wanted
+        if want != self._current:
+            self._current = want
+            if not want:
+                self.status.emit("Level II paused.")
+            elif want in new:
+                self.status.emit(f"Live: waiting for {want}'s book...")
+            else:       # streamed already (an ATM trade's ticker): what came so far, right away
+                if self._l1.get(want):
+                    self.quote.emit(want, dict(self._l1[want]))
+                self._emit_book(want)
 
     def _on_level1(self, msg):
         for c in msg.get("content", []):
-            if c.get("key") == self._current:
+            key = c.get("key")
+            if key in self._l1:
                 # After the first message only changed fields come
-                self._l1.update({k: v for k, v in c.items() if k.isupper()})
-                self.quote.emit(self._current, dict(self._l1))
+                self._l1[key].update({k: v for k, v in c.items() if k.isupper()})
+                self.quote.emit(key, dict(self._l1[key]))
 
     def _on_book(self, service, msg):
         for c in msg.get("content", []):
-            if c.get("key") != self._current:
-                continue            # still arriving for the ticker just left
-            self._books[service] = (self._side(c.get("BIDS", []), "BID"), self._side(c.get("ASKS", []), "ASK"))
-            # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
-            bids = sorted((r for b, _ in self._books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
-            asks = sorted((r for _, a in self._books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
-            self.book.emit(self._current, self._levels(bids), self._levels(asks))
-            n = len(bids) + len(asks)
-            self.status.emit(f"Live · {time.strftime('%H:%M:%S')}" if n else
-                             f"Live · no quotes for {self._current} now (OTC quotes run 6:00-17:00 ET)")
+            key = c.get("key")
+            if key not in self._books:
+                continue            # still arriving for a ticker just left
+            self._books[key][service] = (self._side(c.get("BIDS", []), "BID"), self._side(c.get("ASKS", []), "ASK"))
+            self._emit_book(key)
+
+    def _emit_book(self, key):
+        books = self._books.get(key, {})
+        # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
+        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
+        asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
+        self.book.emit(key, self._levels(bids), self._levels(asks))
+        if key == self._current and books:
+            self.status.emit(f"Live · {time.strftime('%H:%M:%S')}" if bids or asks else
+                             f"Live · no quotes for {key} now (OTC quotes run 6:00-17:00 ET)")
 
     @staticmethod
     def _side(levels, side):
@@ -273,8 +313,10 @@ class Level2Feed(QObject):
 
 
 class Level2Panel(QWidget):
-    live_quote = pyqtSignal(str, dict)
-    book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown     # ticker, Level 1 fields: for the chart's price and volume tags
+    live_quote = pyqtSignal(str, dict)            # ticker, Level 1 fields: for the chart's price and volume tags
+    book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown
+    any_quote = pyqtSignal(str, dict)             # the same for every ticker streamed (the ATM trades' too)
+    any_book = pyqtSignal(str, list, list)
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -287,6 +329,7 @@ class Level2Panel(QWidget):
         self.ticker = ""
         self.name = ""
         self.feed = None
+        self.extra = set()                     # the open ATM trades' tickers, streamed too
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
         self.prev_quote = {}                   # bid/ask price and size at the last quote update
@@ -395,6 +438,17 @@ class Level2Panel(QWidget):
             if self.feed:
                 self.feed.set_symbol(None)
             return
+        self._make_feed()
+        if self.feed:
+            self.feed.set_symbol(ticker)
+
+    def watch(self, tickers):
+        """Streams these tickers too (the open ATM trades), while Level II is on."""
+        self.extra = set(tickers)
+        if self.feed:
+            self.feed.set_extra(self.extra)
+
+    def _make_feed(self):
         key, secret, _ = self.keys()
         if not key or not secret:
             self.set_status("Add schwab_app_key and schwab_app_secret to settings.json to see Level II.")
@@ -405,9 +459,10 @@ class Level2Panel(QWidget):
             self.feed.quote.connect(self.on_quote)
             self.feed.status.connect(self.set_status)
             self.feed.login_needed.connect(self.on_login_needed)
-        self.feed.set_symbol(ticker)
+            self.feed.set_extra(self.extra)
 
     def on_quote(self, ticker, q):
+        self.any_quote.emit(ticker, q)
         if ticker == self.ticker:
             self.show_quote(q)
             self.live_quote.emit(ticker, q)
@@ -516,6 +571,7 @@ class Level2Panel(QWidget):
                 f"<div style='color:{color}; font-size:7pt'>{change / close * 100:+.2f}%</div>")
 
     def show_book(self, ticker, bids, asks):
+        self.any_book.emit(ticker, bids, asks)
         if ticker != self.ticker:
             return
         self._fill(self.bid_table, bids, "BID")

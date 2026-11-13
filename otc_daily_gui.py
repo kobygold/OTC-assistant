@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_atm as atm
+from otc_atm_trades import AtmTable
 import otc_checklist as checklist
 import otc_daily as core
 import otc_zones as zones
@@ -55,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -939,8 +940,16 @@ class MainWindow(QMainWindow):
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
                                         APP_DIR / "schwab_token.json")
         self.checklist.setVisible(self.checklist_btn.isChecked())
-        # A BUY order sent from the checklist: the ticker becomes a yellow favorite
-        self.checklist.order_placed.connect(lambda ticker: self.set_fav(ticker, 1))
+        # The ATM trades: a Buy ATM makes the ticker a yellow favorite; their tickers are streamed
+        # too (the Schwab tab's market now); their open orders are lines on the chart
+        atm_trades = self.checklist.atm
+        atm_trades.buy_sent.connect(lambda ticker: self.set_fav(ticker, 1))
+        self.level2.any_quote.connect(atm_trades.on_quote)
+        self.level2.any_book.connect(atm_trades.on_book)
+        atm_trades.changed.connect(self.on_atm_changed)
+        self.chart.order_lines = self.chart_orders
+        self.chart.cancel_order.connect(self.cancel_chart_order)
+        self.level2.watch(atm_trades.open_tickers())
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
@@ -2268,13 +2277,43 @@ class MainWindow(QMainWindow):
         self.schwab_status.setWordWrap(True)
         lay.addWidget(self.schwab_status)
         root.addWidget(box)
-        root.addStretch()
+        trades = self.atm_box = QGroupBox("ATM trades (atm.json)")
+        tlay = QVBoxLayout(trades)
+        self.trades_table = AtmTable(self.checklist.atm)
+        self.trades_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
+        tlay.addWidget(self.trades_table)
+        note = QLabel("Bid / Ask now: live while Level II is on, else read every minute. Level II now: while "
+                      "Level II is on. Hover the Bid / Ask then for the Level II when the buy was sent.")
+        note.setStyleSheet("color: #8a8a8a;")
+        note.setWordWrap(True)
+        tlay.addWidget(note)
+        root.addWidget(trades, 1)
         self.schwab_accounts_read = False
         reader = self.checklist.fee_reader
         if reader:
             reader.accounts_read.connect(self.on_schwab_accounts)
         self.show_schwab_accounts([])
         return tab
+
+    def on_atm_changed(self):
+        self.level2.watch(self.checklist.atm.open_tickers())
+        self.chart.update()
+
+    def chart_orders(self, ticker):
+        """The open orders of the ticker's ATM trade: [(side, shares, price)], for the chart."""
+        atm_trades = self.checklist.atm
+        e = atm_trades.active(ticker)
+        if not e:
+            return []
+        if e.get("state") == "buy_open":
+            return [("BUY", e["shares"] - (e.get("filled") or 0), e["entry"])]
+        if e.get("state") == "sell_open" and e.get("sell_price"):
+            return [("SELL", atm_trades.remaining(e) - (e.get("sell_filled") or 0), e["sell_price"])]
+        return []
+
+    def cancel_chart_order(self, side):
+        atm_trades = self.checklist.atm
+        atm_trades.ask_cancel(self, atm_trades.active(self.chart.ticker), side)
 
     def read_schwab_accounts(self, again=False):
         reader = self.checklist.fee_reader
@@ -2304,6 +2343,10 @@ class MainWindow(QMainWindow):
         for tail in tails:
             combo.addItem(reader.kind(tail), tail)
         combo.setCurrentIndex(max(0, combo.findData(saved)) if saved else 0)
+        if hasattr(self, "trades_table"):   # the trades of this account only
+            self.atm_box.setTitle(f"ATM trades of account ...{saved} (atm.json)" if saved else
+                                  "ATM trades of all the accounts (atm.json): choose an account above")
+            self.trades_table.rebuild()
         if error:
             self.schwab_status.setText(f"Can't read the accounts: {error}")
         elif not accounts:

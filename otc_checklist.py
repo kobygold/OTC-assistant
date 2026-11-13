@@ -42,6 +42,13 @@ ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed
 ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
 # Schwab order statuses after which an order no longer works
 ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
+# An ATM trade's states: the name shown, its colour and its text colour (the table's price colours)
+STATES = {"buy_open": ("Step 1/4: Wait for Buy", "#e0404f", "#ffffff"),
+          "bought": ("Step 2/4: Sell the Shares", "#e3b23c", "#111111"),
+          "sell_open": ("Step 3/4: Wait for Sell", "#4fc3f7", "#111111"),
+          "sold": ("Step 4/4: Done!", "#1db31d", "#111111")}
+CANCEL_COLOR = "#e3b23c"    # the Cancel Buy / Cancel Sell buttons
+BUY_COLOR, SELL_COLOR = "#009300", "#cf0508"
 
 OK, BAD, WARN, UNKNOWN, INFO, EMPTY = "ok", "bad", "warn", "unknown", "info", "empty"
 MAYBE = "maybe"         # could be good or bad: a yellow ?
@@ -78,7 +85,14 @@ PANEL_STYLE = """
 #checklist QPushButton#cl_buy:hover { background: #00b300; }
 #checklist QPushButton#cl_sell { background: #cf0508; }
 #checklist QPushButton#cl_sell:hover { background: #e8262a; }
-#checklist QPushButton#cl_buy:disabled, #checklist QPushButton#cl_sell:disabled {
+#checklist QPushButton#cl_cancel, #checklist QPushButton#cl_done {
+    font-weight: bold; border-radius: 4px; padding: 3px 14px; border: 1px solid transparent; }
+#checklist QPushButton#cl_cancel { background: #e3b23c; color: #111111; }
+#checklist QPushButton#cl_cancel:hover { background: #f0c75a; }
+#checklist QPushButton#cl_done { background: #6a4fb0; color: #ffffff; padding: 2px 10px; }
+#checklist QPushButton#cl_done:hover { background: #7f62c8; }
+#checklist QPushButton#cl_buy:disabled, #checklist QPushButton#cl_sell:disabled,
+#checklist QPushButton#cl_cancel:disabled {
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
 """
@@ -235,6 +249,23 @@ def reset_icon(color="#c8c8c8"):
     head = 4.2
     base = tip - d * head * 0.5
     p.drawPolygon(QPolygonF([tip + d * head * 0.6, base + n * head * 0.6, base - n * head * 0.6]))
+    p.end()
+    return QIcon(pix)
+
+
+def red_x_icon(color="#d0101a"):
+    """A bold red X for the Cancel Buy / Cancel Sell buttons, drawn at 4x and anti-aliased."""
+    scale, size = 4, 12
+    pix = QPixmap(size * scale, size * scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(scale)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color), 2.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(2.5, 2.5), QPointF(9.5, 9.5))
+    p.drawLine(QPointF(9.5, 2.5), QPointF(2.5, 9.5))
     p.end()
     return QIcon(pix)
 
@@ -444,27 +475,37 @@ class FeeReader(QObject):
 
 # ---------------------------------------------------------------- orders ---
 class SchwabTrader(QObject):
-    """Sends the checklist's GTC limit orders to Schwab and reads their status, in background
-    threads, through the FeeReader's login (one client, one call at a time).
-    placed(ticker, side, order id or None, message) and checked(ticker, side, order or None,
-    message) arrive in the GUI thread. side is "BUY" or "SELL"."""
+    """Sends GTC limit orders to Schwab, cancels them and reads their status, in background
+    threads, through the FeeReader's login (one client, one call at a time). Each request has a
+    key (whose it is), given back with the answer in the GUI thread:
+    placed(key, side, order id or None, message), checked(key, side, order or None, message),
+    canceled(key, side, error or ""), quotes({ticker: Schwab quote}). side is "BUY" or "SELL"."""
     placed = pyqtSignal(str, str, object, str)
     checked = pyqtSignal(str, str, object, str)
+    canceled = pyqtSignal(str, str, str)
+    quotes = pyqtSignal(object)
 
     def __init__(self, session: FeeReader):
         super().__init__()
         self.session = session
 
-    def place(self, ticker, side, shares, price, account, replace_id=None):
+    def _start(self, target, *args):
+        threading.Thread(target=target, args=args, name="order", daemon=True).start()
+
+    def place(self, key, ticker, side, shares, price, account):
         """account: the last 3 digits of the account to send it to."""
-        threading.Thread(target=self._place, args=(ticker, side, shares, price, account, replace_id),
-                         name="order", daemon=True).start()
+        self._start(self._place, key, ticker, side, shares, price, account)
 
-    def check(self, ticker, side, order_id, account=None):
-        threading.Thread(target=self._check, args=(ticker, side, order_id, account), name="order status",
-                         daemon=True).start()
+    def check(self, key, side, order_id, account=None):
+        self._start(self._check, key, side, order_id, account)
 
-    def _place(self, ticker, side, shares, price, account_tail, replace_id):
+    def cancel(self, key, side, order_id, account=None):
+        self._start(self._cancel, key, side, order_id, account)
+
+    def read_quotes(self, tickers):
+        self._start(self._quotes, list(tickers))
+
+    def _place(self, key, ticker, side, shares, price, account_tail):
         try:
             from schwab.orders.common import Duration, Session
             from schwab.orders.equities import equity_buy_limit, equity_sell_limit
@@ -474,34 +515,51 @@ class SchwabTrader(QObject):
                 make = equity_buy_limit if side == "BUY" else equity_sell_limit
                 order = (make(ticker, int(shares), limit_text(price))
                          .set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL).build())
-                if replace_id:
-                    r = client.replace_order(account, replace_id, order)
-                else:
-                    r = client.place_order(account, order)
+                r = client.place_order(account, order)
                 if r.status_code not in (200, 201):
-                    self.placed.emit(ticker, side, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
+                    self.placed.emit(key, side, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
                     return
                 try:
                     order_id = Utils(client, account).extract_order_id(r)
                 except ValueError:
                     order_id = None
-            self.placed.emit(ticker, side, order_id,
+            self.placed.emit(key, side, order_id,
                              "" if order_id else "Schwab took the order but didn't say its number. "
                                                  "Check it in Schwab; the app can't follow it.")
         except Exception as e:      # never let the thread die silently
-            self.placed.emit(ticker, side, None, f"{type(e).__name__}: {e}")
+            self.placed.emit(key, side, None, f"{type(e).__name__}: {e}")
 
-    def _check(self, ticker, side, order_id, account_tail):
+    def _check(self, key, side, order_id, account_tail):
         try:
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
                 r = client.get_order(order_id, account)
             if r.status_code != 200:
-                self.checked.emit(ticker, side, None, f"HTTP {r.status_code}")
+                self.checked.emit(key, side, None, f"HTTP {r.status_code}")
                 return
-            self.checked.emit(ticker, side, r.json(), "")
+            self.checked.emit(key, side, r.json(), "")
         except Exception as e:
-            self.checked.emit(ticker, side, None, f"{type(e).__name__}: {e}")
+            self.checked.emit(key, side, None, f"{type(e).__name__}: {e}")
+
+    def _cancel(self, key, side, order_id, account_tail):
+        try:
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                r = client.cancel_order(order_id, account)
+            ok = r.status_code in (200, 201, 204)
+            self.canceled.emit(key, side, "" if ok else f"HTTP {r.status_code} {r.text[:300]}")
+        except Exception as e:
+            self.canceled.emit(key, side, f"{type(e).__name__}: {e}")
+
+    def _quotes(self, tickers):
+        try:
+            with self.session._lock:
+                client, _ = self.session.connect()
+                r = client.get_quotes(tickers)
+            if r.status_code == 200:
+                self.quotes.emit({t: v.get("quote", {}) for t, v in r.json().items() if isinstance(v, dict)})
+        except Exception:
+            pass        # the next check tries again
 
 
 def tint(value) -> str:
@@ -514,26 +572,413 @@ def limit_text(price) -> str:
     return f"{price:.6f}".rstrip("0").rstrip(".") if price < 1 else f"{price:.2f}"
 
 
+def usd_signed(v) -> str:
+    return f"{'+' if v >= 0 else '-'}${abs(v):,.2f}"
+
+
+def fee_rows(fee, total, sell=False):
+    """The fee rows for an order dialog: Schwab's fee, if read, and the total with it (a buy pays
+    it on top, a sell gets the total less it)."""
+    if fee is None:
+        return [("Fee", f"{NA} (not read from Schwab yet)")]
+    if fee > FEE_HIGH:      # in the section titles' yellow, as on the panel
+        shown = (f"${fee:.2f} (more than ${FEE_HIGH:.2f}!)", "#e3b23c")
+    else:
+        shown = f"${fee:.2f}"
+    if sell:
+        return [("Fee (from Schwab)", shown), ("You get, less the fee", f"${total - fee:,.2f}")]
+    return [("Fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
+
+
+def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
+    """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
+    account_name: the account it goes to, shown first for checking (it is chosen on the Schwab
+    tab). color: the send button's. True when approved."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    lay = QVBoxLayout(dlg)
+    lay.addWidget(QLabel(f"<b>{title}</b>"))
+    form = QGridLayout()
+    form.setHorizontalSpacing(14)
+    rows = [("Account", (account_name, ORDER_COLOR))] + rows
+    for i, (k, v) in enumerate(rows):
+        form.addWidget(QLabel(f"<span style='color:#a8a8a8'>{k}</span>"), i, 0)
+        form.addWidget(QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>"), i, 1)
+    form.itemAtPosition(0, 1).widget().setToolTip("Chosen on the Schwab tab")
+    lay.addLayout(form)
+    buttons = QHBoxLayout()
+    buttons.addStretch()
+    send, cancel = QPushButton(action), QPushButton("Cancel")
+    button = ("QPushButton {{ background: {0}; color: #ffffff; font-weight: bold; border: 1px solid {0};"
+              " border-radius: 4px; padding: 5px 16px; }} QPushButton:hover {{ background: {1}; }}")
+    send.setStyleSheet(button.format(color, QColor(color).lighter(125).name()))
+    cancel.setStyleSheet(button.format("#4a5560", "#5b6875"))
+    cancel.setDefault(True)             # Enter doesn't send it by mistake
+    send.setAutoDefault(False)
+    send.clicked.connect(dlg.accept)
+    cancel.clicked.connect(dlg.reject)
+    buttons.addWidget(send)
+    buttons.addWidget(cancel)
+    lay.addSpacing(6)
+    lay.addLayout(buttons)
+    cancel.setFocus()
+    if parent is not None:
+        parent.dialog = dlg             # for tests
+    return dlg.exec() == QDialog.DialogCode.Accepted
+
+
+# ------------------------------------------------------------ ATM trades ---
+class AtmTrades(QObject):
+    """The ATM trades, kept in atm.json: each Buy ATM sent, with the plan and the market at that
+    moment, and what happened since. state: "buy_open" (waiting for the buy) -> "bought" (you own
+    it) -> "sell_open" (waiting for the sell) -> "sold". A buy canceled before anything was bought
+    takes its entry out; the rest stay until cleared on the Schwab tab. The open orders are checked
+    at Schwab every ORDER_CHECK_S seconds. Also keeps the latest market of the trades' tickers."""
+    changed = pyqtSignal()          # the trades, or their states
+    market_changed = pyqtSignal(str)    # a ticker's bid / ask / Level II
+    buy_sent = pyqtSignal(str)      # a Buy ATM went out for this ticker
+
+    def __init__(self, path: Path, settings: dict, save_settings, fee_reader=None, trader=None):
+        super().__init__()
+        self.path, self.settings, self.save_settings = path, settings, save_settings
+        self.fee_reader, self.trader = fee_reader, trader
+        self.entries = self._read()
+        self.sending = set()        # tickers with a buy on its way, entry ids with a sell on its way
+        self.pending = {}           # the same keys -> what was sent
+        self.canceling = set()      # entry ids whose order is being canceled
+        self.market = {}            # ticker -> {"bid": [price, size], "ask": [...], "bids": [[mm, price, size]], "asks"}
+        self._migrate()
+        if trader:
+            trader.placed.connect(self._placed)
+            trader.checked.connect(self._checked)
+            trader.canceled.connect(self._canceled)
+            trader.quotes.connect(self._quotes)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.check)
+        self.timer.start(ORDER_CHECK_S * 1000)
+        QTimer.singleShot(3000, self.check)
+
+    # ---- the file ----
+    def _read(self):
+        try:
+            entries = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        for e in entries:
+            e.setdefault("id", str(e.get("order_id") or f"{e.get('ticker')}-{e.get('time')}"))
+            e.setdefault("state", "buy_open")
+            e.setdefault("filled", 0)
+            e.setdefault("sold", 0)
+        return entries
+
+    def save(self):
+        text = json.dumps(self.entries, indent=1)
+        # each [price, amount] / [market maker, price, amount] on one line
+        text = re.sub(r"\[\s+([^\[\]{}]*?)\s+\]", lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)
+        try:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as e:
+            QMessageBox.warning(QApplication.activeWindow(), self.path.name, f"Can't save {self.path.name}: {e.strerror}")
+
+    def _migrate(self):
+        """Orders sent before atm.json kept them (settings["orders"], v0.9.0-0.9.2) become entries."""
+        old = self.settings.pop("orders", None)
+        if not old:
+            return
+        for ticker, o in old.items():
+            if any(str(e.get("order_id")) == str(o.get("buy_id")) for e in self.entries):
+                continue
+            shares, entry = o.get("shares"), o.get("entry")
+            e = {"id": str(o.get("buy_id") or f"{ticker}-{o.get('sent')}"), "order_id": o.get("buy_id"),
+                 "ticker": ticker, "account": o.get("account"), "entry": entry, "exit": o.get("exit"),
+                 "shares": shares, "usd": round(shares * entry, 2) if shares and entry else None,
+                 "stop": o.get("stop"), "fee": None, "time": o.get("sent"),
+                 "bid": [None, None], "ask": [None, None], "level2": {"bids": [], "asks": []},
+                 "state": o.get("state", "buy_open"), "filled": o.get("filled", 0), "sold": 0,
+                 "sell_at": o.get("sell_price") or o.get("exit"), "note": o.get("note", "")}
+            for k in ("sell_id", "sell_price", "status", "bought"):
+                if o.get(k) is not None:
+                    e[k] = o[k]
+            self.entries.append(e)
+        self.save()
+        self.save_settings(self.settings)
+
+    # ---- looking up ----
+    def active(self, ticker):
+        """The ticker's trade the checklist shows: the last one not reset after it was sold."""
+        for e in reversed(self.entries):
+            if e.get("ticker") == ticker and not e.get("reset"):
+                return e
+        return None
+
+    def find(self, eid):
+        return next((e for e in self.entries if e["id"] == eid), None)
+
+    def open_tickers(self):
+        """The tickers with a buy or sell order working, or stocks owned."""
+        return sorted({e["ticker"] for e in self.entries if e.get("state") != "sold"})
+
+    @staticmethod
+    def remaining(e):
+        """The stocks owned now."""
+        return max(0, (e.get("filled") or 0) - (e.get("sold") or 0))
+
+    def busy(self, e=None, ticker=None):
+        """An order on its way to Schwab, or being canceled."""
+        return (ticker in self.sending if ticker else False) or (
+            e is not None and (e["id"] in self.sending or e["id"] in self.canceling))
+
+    def account_name(self, tail):
+        return self.fee_reader.kind(tail) if self.fee_reader else f"...{tail}"
+
+    @staticmethod
+    def profit(e, bid=None):
+        """$ after both fees: of the sale when sold, else what selling the rest at `bid` would give
+        (None without a bid)."""
+        fee = e.get("fee")
+        fee = FEE_USD if fee is None else fee
+        cost = (e.get("filled") or 0) * e["entry"]
+        got = e.get("proceeds") or 0.0
+        if e.get("state") == "sold":
+            return got - cost - 2 * fee
+        if not e.get("filled") or bid is None:
+            return None
+        return got + AtmTrades.remaining(e) * bid - cost - 2 * fee
+
+    # ---- orders ----
+    def send_buy(self, snapshot):
+        """Sends the Buy ATM: snapshot is the entry-to-be (the plan and the market now)."""
+        ticker = snapshot["ticker"]
+        self.sending.add(ticker)
+        self.pending[ticker] = snapshot
+        self.changed.emit()
+        self.trader.place(ticker, ticker, "BUY", snapshot["shares"], snapshot["entry"], snapshot["account"])
+
+    def ask_sell(self, parent, e, price, fee=None):
+        """Sells all the stocks owned at `price`, GTC, after the dialog is approved."""
+        if self.trader is None or e.get("state") != "bought" or self.busy(e):
+            return
+        if not price:
+            QMessageBox.warning(parent, "Sell ATM", "There's no exit price.")
+            return
+        shares = self.remaining(e)
+        total = shares * price
+        fee = e.get("fee") if fee is None else fee
+        rows = [("Ticker", e["ticker"]), ("Order", "SELL · Limit · GTC (good till canceled)"),
+                ("Amount of stocks", f"{shares:,} (all)"), ("Limit price (exit)", fmt_price(price)),
+                ("Total", f"${total:,.2f}")] + fee_rows(fee, total, sell=True)
+        used = FEE_USD if fee is None else fee
+        gain = (e.get("proceeds") or 0) + total - (e.get("filled") or 0) * e["entry"] - 2 * used
+        rows.append(("Profit after both fees", usd_signed(gain)))
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        if not confirm_order(parent, self.account_name(e.get("account")), f"Sell {shares:,} {e['ticker']} at "
+                             f"{fmt_price(price)}?", rows, "Send SELL order", SELL_COLOR):
+            return
+        self.sending.add(e["id"])
+        self.pending[e["id"]] = {"sell_price": price, "shares": shares}
+        self.changed.emit()
+        self.trader.place(e["id"], e["ticker"], "SELL", shares, price, e.get("account"))
+
+    def ask_cancel(self, parent, e, side):
+        """Cancels the trade's open buy or sell order, after asking."""
+        if self.trader is None or e is None or self.busy(e):
+            return
+        if side == "BUY" and e.get("state") == "buy_open":
+            order_id, text = e.get("order_id"), (f"Cancel the buy order of {e['shares']:,} {e['ticker']} "
+                                                 f"at {fmt_price(e['entry'])}?")
+        elif side == "SELL" and e.get("state") == "sell_open":
+            order_id, text = e.get("sell_id"), (f"Cancel the sell order of {self.remaining(e):,} {e['ticker']} "
+                                                f"at {fmt_price(e['sell_price'])}?\nYou keep the stocks; "
+                                                f"Sell ATM can send it again.")
+        else:
+            return
+        if not order_id:
+            QMessageBox.warning(parent, "Cancel", "The order's number isn't known. Cancel it in Schwab.")
+            return
+        answer = QMessageBox.question(parent, f"Cancel {side.title()}", text,
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.canceling.add(e["id"])
+        self.changed.emit()
+        self.trader.cancel(e["id"], side, order_id, e.get("account"))
+
+    def set_sell_at(self, e, price):
+        """The price Sell ATM sells at (starts as the planned exit). The checklist's exit follows."""
+        if not price or price <= 0 or e.get("sell_at") == price:
+            return
+        e["sell_at"] = price
+        self.save()
+        if self.active(e["ticker"]) is e:
+            self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
+            self.save_settings(self.settings)
+        self.changed.emit()
+
+    def reset(self, e):
+        """The checklist leaves the fulfilled trade (it stays in atm.json) and its typed values."""
+        e["reset"] = True
+        self.save()
+        self.settings.get("checklist_prices", {}).pop(e["ticker"], None)
+        self.settings.get("checklist_ticks", {}).pop(e["ticker"], None)
+        self.save_settings(self.settings)
+        self.changed.emit()
+
+    def clear(self, e):
+        """Takes a sold trade out of atm.json."""
+        if e.get("state") != "sold":
+            return
+        self.entries = [x for x in self.entries if x is not e]
+        self.save()
+        self.changed.emit()
+
+    def check(self):
+        """Asks Schwab about every open order, and for the quotes of the open trades' tickers."""
+        if self.trader is None:
+            return
+        for e in self.entries:
+            if e["id"] in self.sending:
+                continue
+            if e.get("state") == "buy_open" and e.get("order_id"):
+                self.trader.check(e["id"], "BUY", e["order_id"], e.get("account"))
+            elif e.get("state") == "sell_open" and e.get("sell_id"):
+                self.trader.check(e["id"], "SELL", e["sell_id"], e.get("account"))
+        tickers = self.open_tickers()
+        if tickers:
+            self.trader.read_quotes(tickers)
+
+    # ---- answers from Schwab ----
+    def _placed(self, key, side, order_id, message):
+        self.sending.discard(key)
+        pending = self.pending.pop(key, {})
+        if order_id is None and not message.startswith("Schwab took"):
+            QMessageBox.warning(QApplication.activeWindow(), f"{side} order not sent",
+                                f"{pending.get('ticker') or (self.find(key) or {}).get('ticker', '')}: {message}")
+            self.changed.emit()
+            return
+        now = datetime.now().isoformat(timespec="seconds")
+        if side == "BUY":
+            ticker = key
+            e = {"id": str(order_id or f"{ticker}-{now}"), "order_id": order_id, **pending,
+                 "state": "buy_open", "filled": 0, "sold": 0, "sell_at": pending.get("exit"), "note": message}
+            self.entries.append(e)
+            # The plan stays as sent: typed values, so live quotes no longer move them
+            mine = self.settings.setdefault("checklist_prices", {}).setdefault(ticker, {})
+            for k in ("entry", "exit", "stop"):
+                if pending.get(k) is not None:
+                    mine[k] = limit_text(pending[k])
+            self.save_settings(self.settings)
+            self.buy_sent.emit(ticker)
+        else:
+            e = self.find(key)
+            if e is None:
+                return
+            e.update(state="sell_open", sell_price=pending.get("sell_price"), sell_id=order_id,
+                     sell_time=now, sell_filled=0, note=message)
+            e.pop("status", None)
+        self.save()
+        self.changed.emit()
+        if order_id:
+            QTimer.singleShot(5000, self.check)
+
+    def _canceled(self, key, side, error):
+        self.canceling.discard(key)
+        if error:
+            QMessageBox.warning(QApplication.activeWindow(), f"{side.title()} order not canceled", error)
+        else:
+            e = self.find(key)
+            if e is not None:
+                e["note"] = f"Canceling the {side.lower()} order..."
+            QTimer.singleShot(1500, self.check)     # Schwab says CANCELED a moment later
+        self.changed.emit()
+
+    def _checked(self, key, side, info, message):
+        e = self.find(key)
+        if info is None or e is None:
+            return                  # tried again at the next check
+        if e.get("state") != ("buy_open" if side == "BUY" else "sell_open"):
+            return                  # an older answer
+        if side == "SELL" and str(info.get("orderId", e.get("sell_id"))) != str(e.get("sell_id")):
+            return                  # about an older sell order
+        status = info.get("status", "")
+        filled = int(info.get("filledQuantity") or 0)
+        now = datetime.now().isoformat(timespec="seconds")
+        e["status"] = status
+        if side == "BUY":
+            e["filled"] = filled
+            if status == "FILLED" or (status in ORDER_DONE and filled):
+                e.update(state="bought", bought_time=now,
+                         note="" if status == "FILLED" else
+                         f"The buy order was {status.lower()} after {filled:,} of {e['shares']:,}.")
+                e.pop("status", None)
+            elif status in ORDER_DONE:      # nothing bought: not an ATM trade, its entry goes
+                self.entries = [x for x in self.entries if x is not e]
+        else:
+            e["sell_filled"] = filled
+            if status in ORDER_DONE:
+                e["sold"] = (e.get("sold") or 0) + filled
+                e["proceeds"] = (e.get("proceeds") or 0.0) + filled * (e.get("sell_price") or 0)
+                e.pop("sell_filled", None)
+                e.pop("status", None)
+                if self.remaining(e) <= 0:
+                    e.update(state="sold", sold_time=now, note="")
+                else:               # Sell ATM can send it again
+                    e.update(state="bought", note=f"The sell order was {status.lower()}"
+                                                  + (f" after {filled:,} were sold." if filled else "."))
+        self.save()
+        self.changed.emit()
+
+    # ---- the market of the trades' tickers ----
+    def _known(self, ticker):
+        return any(e.get("ticker") == ticker for e in self.entries)
+
+    def on_quote(self, ticker, q):
+        """A Level 1 quote from the stream (stream field names)."""
+        if not self._known(ticker):
+            return
+        m = self.market.setdefault(ticker, {})
+        for side in ("BID", "ASK"):
+            if q.get(f"{side}_PRICE"):
+                m[side.lower()] = [q[f"{side}_PRICE"], q.get(f"{side}_SIZE")]
+        self.market_changed.emit(ticker)
+
+    def on_book(self, ticker, bids, asks):
+        if not self._known(ticker):
+            return
+        m = self.market.setdefault(ticker, {})
+        m["bids"] = [[mm, price, size] for mm, price, size, *_ in bids]
+        m["asks"] = [[mm, price, size] for mm, price, size, *_ in asks]
+        self.market_changed.emit(ticker)
+
+    def _quotes(self, quotes):
+        """Quotes read with the order check: the bid and ask even while Level II is off."""
+        for ticker, q in quotes.items():
+            m = self.market.setdefault(ticker, {})
+            for side in ("bid", "ask"):
+                if q.get(f"{side}Price"):
+                    m[side] = [q[f"{side}Price"], q.get(f"{side}Size")]
+            self.market_changed.emit(ticker)
+
+
 # ---------------------------------------------------------------- the panel ---
 class ChecklistPanel(QWidget):
     ticks_changed = pyqtSignal()
-    order_placed = pyqtSignal(str)      # a BUY order was sent for this ticker
 
     def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None):
         super().__init__(parent)
         self.path, self.settings, self.save_settings = path, settings, save_settings
-        self.atm_path = path.parent / "atm.json"     # what the market looked like at each Buy ATM
         self.fees = {}          # ticker -> (fee or None, details), read from Schwab once a session
         self.fee_reader = FeeReader(settings, token_path) if token_path else None
         self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
-        self.sending = set()    # tickers with an order on its way to Schwab
-        self.pending = {}       # ticker -> the order's details while it's on its way
+        # The ATM trades (atm.json), shared with the Schwab tab and the chart
+        self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
+        self.atm.changed.connect(self.refresh)
         self.price_tools = {}   # price key -> (its +/- buttons, its reset button)
         if self.fee_reader:
             self.fee_reader.done.connect(self.fee_read)
-        if self.trader:
-            self.trader.placed.connect(self.order_sent)
-            self.trader.checked.connect(self.order_checked)
         self.setObjectName("checklist")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(PANEL_STYLE)
@@ -559,14 +1004,21 @@ class ChecklistPanel(QWidget):
         root.addLayout(head)
         trade = QHBoxLayout()
         trade.setSpacing(6)
-        self.buy_btn = QPushButton("Buy ATM")
+        self.buy_btn = QPushButton("Buy ATM")           # Cancel Buy while the buy waits
         self.buy_btn.setObjectName("cl_buy")
-        self.buy_btn.clicked.connect(self.buy)
-        self.sell_btn = QPushButton("Sell ATM")
+        self.buy_btn.clicked.connect(self.buy_clicked)
+        self.sell_btn = QPushButton("Sell ATM")         # Cancel Sell while the sell waits
         self.sell_btn.setObjectName("cl_sell")
-        self.sell_btn.clicked.connect(self.sell)
-        for b in (self.buy_btn, self.sell_btn):
+        self.sell_btn.clicked.connect(self.sell_clicked)
+        self.done_btn = QPushButton("ATM fulfilled!\nPress to reset")     # on their left once sold
+        self.done_btn.setObjectName("cl_done")
+        self.done_btn.setToolTip("Sold. Resets the checklist of this ticker to its automatic values. "
+                                 "The trade stays on the Schwab tab until you clear it there.")
+        self.done_btn.clicked.connect(self.reset_done)
+        self.done_btn.hide()
+        for b in (self.buy_btn, self.sell_btn, self.done_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setLayoutDirection(Qt.LayoutDirection.LeftToRight)     # the X before the text
             trade.addWidget(b)
         trade.addStretch()
         root.addLayout(trade)
@@ -578,11 +1030,6 @@ class ChecklistPanel(QWidget):
         self.summary = QLabel()
         self.summary.setObjectName("cl_summary")
         root.addWidget(self.summary)
-        # Open orders are checked at Schwab now and then, for every ticker, shown or not
-        self.order_timer = QTimer(self)
-        self.order_timer.timeout.connect(self.check_orders)
-        self.order_timer.start(ORDER_CHECK_S * 1000)
-        QTimer.singleShot(3000, self.check_orders)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -596,7 +1043,7 @@ class ChecklistPanel(QWidget):
         self.fees.pop(self.ticker, None)
         self.load()
         self.read_fee()
-        self.check_orders()
+        self.atm.check()
 
     def load(self):
         try:
@@ -780,6 +1227,9 @@ class ChecklistPanel(QWidget):
                 mine.pop(key, None)
             if not mine:
                 prices.pop(self.ticker, None)
+            order = self.order()
+            if valid and key == "exit" and order and order.get("state") in ("buy_open", "bought"):
+                self.atm.set_sell_at(order, float(text))    # Sell ATM sells at it
         self.refresh()
 
     def edit_done(self, key=None, edit=None):
@@ -797,131 +1247,118 @@ class ChecklistPanel(QWidget):
         self.save_settings(self.settings)
         self.refresh()
 
-    # ---- orders: settings["orders"][ticker] = {state, shares, entry, exit, stop, buy_id, ...} ----
-    # state: "buy_open" (sent, not filled yet) -> "bought" -> "sell_open" -> done (moved to order_history)
+    # ---- the ATM trade of the ticker shown (atm.json, through self.atm) ----
     def order(self, ticker=None):
-        return self.settings.get("orders", {}).get(ticker or self.ticker)
+        return self.atm.active(ticker or self.ticker)
+
+    @staticmethod
+    def style_button(button, name, text):
+        button.setText(text)
+        button.setIcon(red_x_icon() if name == "cl_cancel" else QIcon())   # Cancel Buy / Cancel Sell
+        if button.objectName() != name:
+            button.setObjectName(name)
+            button.style().unpolish(button)     # the panel's style sheet picks the new name
+            button.style().polish(button)
 
     def update_trade_buttons(self):
-        order = self.order()
-        state = order.get("state") if order else None
-        busy = self.ticker in self.sending
-        can_trade = self.trader is not None
-        self.buy_btn.setEnabled(bool(self.ticker) and can_trade and not busy and state is None)
-        self.sell_btn.setEnabled(can_trade and not busy and state in ("bought", "sell_open"))
-        self.sell_btn.setText("Update Sell ATM" if state == "sell_open" else "Sell ATM")
-        if not can_trade:
-            tip = "Needs the Schwab login"
-            self.buy_btn.setToolTip(tip)
-            self.sell_btn.setToolTip(tip)
+        e = self.order()
+        state = e.get("state") if e else None
+        busy = self.atm.busy(e, self.ticker)
+        can = self.trader is not None and bool(self.ticker) and not busy
+        if state == "buy_open":
+            self.style_button(self.buy_btn, "cl_cancel", "Cancel Buy")
+            self.buy_btn.setEnabled(can)
+        else:
+            self.style_button(self.buy_btn, "cl_buy", "Buy ATM")
+            self.buy_btn.setEnabled(can and state is None)
+        if state == "sell_open":
+            self.style_button(self.sell_btn, "cl_cancel", "Cancel Sell")
+            self.sell_btn.setEnabled(can)
+        else:
+            self.style_button(self.sell_btn, "cl_sell", "Sell ATM")
+            self.sell_btn.setEnabled(can and state == "bought")
+        self.done_btn.setVisible(state == "sold")
+        if self.trader is None:
+            self.buy_btn.setToolTip("Needs the Schwab login")
+            self.sell_btn.setToolTip("Needs the Schwab login")
         else:
             self.buy_btn.setToolTip(
-                "Sending..." if busy else
+                "Cancel the buy order (after you approve it)" if state == "buy_open" else
                 "Send a GTC limit buy at the entry price for the amount of stocks, after you approve it"
-                if state is None else "There is already an order for this ticker")
+                if state is None else "There is an ATM trade for this ticker (Schwab tab)")
             self.sell_btn.setToolTip(
-                "Sending..." if busy else
-                "Change the open sell order's price to the exit price" if state == "sell_open" else
-                "Send a GTC limit sell at the exit price, after you approve it" if state == "bought" else
+                "Cancel the sell order, to change its price or keep the stocks longer" if state == "sell_open" else
+                "Sell all the stocks at the exit price, GTC, after you approve it" if state == "bought" else
                 "Once the stocks are bought")
         text = ""
-        if busy:
+        if self.ticker in self.atm.sending or (e and e["id"] in self.atm.sending):
             text = "Sending the order to Schwab..."
-        elif order:
-            shares, filled = order.get("shares", 0), order.get("filled", 0)
-            status = order.get("status", "")
+        elif e and e["id"] in self.atm.canceling:
+            text = "Canceling the order..."
+        elif e:
+            status = e.get("status", "")
             status = f" ({status})" if status else ""
+            left = self.atm.remaining(e)
             if state == "buy_open":
-                text = (f"Buy order open{status}: {shares:,} @ {fmt_price(order['entry'])} GTC"
-                        + (f" · {filled:,} bought so far" if filled else ""))
+                text = (f"Buy order open{status}: {e['shares']:,} @ {fmt_price(e['entry'])} GTC"
+                        + (f" · {e['filled']:,} bought so far" if e.get("filled") else ""))
             elif state == "bought":
-                text = f"Bought {filled or shares:,} @ {fmt_price(order['entry'])}. SELL sends them at the exit price."
+                text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
             elif state == "sell_open":
-                text = (f"Sell order open{status}: {filled or shares:,} @ {fmt_price(order['sell_price'])} GTC"
-                        + (f" · {order.get('sold', 0):,} sold so far" if order.get("sold") else ""))
-            if order.get("note"):
-                text += f"\n{order['note']}"
+                text = (f"Sell order open{status}: {left:,} @ {fmt_price(e['sell_price'])} GTC"
+                        + (f" · {e['sell_filled']:,} sold so far" if e.get("sell_filled") else ""))
+            elif state == "sold":
+                text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
+            if e.get("note") and state != "sold":
+                text += f"\n{e['note']}"
         self.order_label.setText(text)
         self.order_label.setVisible(bool(text))
 
-    def confirm(self, title, rows, action, color="#009300", account=""):
-        """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
-        color: the send button's. account: the last 3 digits of the account it goes to, shown first
-        for checking (it is chosen on the Schwab tab). True when approved."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"<b>{title}</b>"))
-        form = QGridLayout()
-        form.setHorizontalSpacing(14)
-        rows = [("Account", (self.fee_reader.kind(account), ORDER_COLOR))] + rows
-        for i, (k, v) in enumerate(rows):
-            form.addWidget(QLabel(f"<span style='color:#a8a8a8'>{k}</span>"), i, 0)
-            form.addWidget(QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>"), i, 1)
-        form.itemAtPosition(0, 1).widget().setToolTip("Chosen on the Schwab tab")
-        lay.addLayout(form)
-        buttons = QHBoxLayout()
-        buttons.addStretch()
-        send, cancel = QPushButton(action), QPushButton("Cancel")
-        button = ("QPushButton {{ background: {0}; color: #ffffff; font-weight: bold; border: 1px solid {0};"
-                  " border-radius: 4px; padding: 5px 16px; }} QPushButton:hover {{ background: {1}; }}")
-        send.setStyleSheet(button.format(color, QColor(color).lighter(125).name()))
-        cancel.setStyleSheet(button.format("#4a5560", "#5b6875"))
-        cancel.setDefault(True)             # Enter doesn't send it by mistake
-        send.setAutoDefault(False)
-        send.clicked.connect(dlg.accept)
-        cancel.clicked.connect(dlg.reject)
-        buttons.addWidget(send)
-        buttons.addWidget(cancel)
-        lay.addSpacing(6)
-        lay.addLayout(buttons)
-        cancel.setFocus()
-        self.dialog = dlg                   # for tests
-        return dlg.exec() == QDialog.DialogCode.Accepted
-
-    def fee_rows(self, total, sell=False):
-        """The fee rows for a dialog: Schwab's fee, if read, and the total with it (a buy pays it on
-        top, a sell gets the total less it)."""
-        fee = self.fees.get(self.ticker, (None, ""))[0]
-        if fee is None:
-            return [("Fee", f"{NA} (not read from Schwab yet)")]
-        if fee > FEE_HIGH:      # in the section titles' yellow, as on the panel
-            shown = (f"${fee:.2f} (more than ${FEE_HIGH:.2f}!)", "#e3b23c")
+    def buy_clicked(self):
+        e = self.order()
+        if e and e.get("state") == "buy_open":
+            self.atm.ask_cancel(self, e, "BUY")
         else:
-            shown = f"${fee:.2f}"
-        if sell:
-            return [("Fee (from Schwab)", shown), ("You get, less the fee", f"${total - fee:,.2f}")]
-        return [("Fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
+            self.buy()
+
+    def sell_clicked(self):
+        e = self.order()
+        if e and e.get("state") == "sell_open":
+            self.atm.ask_cancel(self, e, "SELL")
+        else:
+            self.sell()
+
+    def reset_done(self):
+        e = self.order()
+        if e and e.get("state") == "sold":
+            self.atm.reset(e)
+            self.load()         # the typed values went: the boxes show the automatic ones again
 
     def buy(self):
         ticker = self.ticker
-        if not ticker or self.trader is None or self.order(ticker):
+        if not ticker or self.trader is None or self.order(ticker) or self.atm.busy(ticker=ticker):
             return
         self.evaluate()
         p, _ = self.last_plan
         if not p["entry"] or not p["shares"]:
-            QMessageBox.warning(self, "BUY", "There's no entry price or amount of stocks yet.")
+            QMessageBox.warning(self, "Buy ATM", "There's no entry price or amount of stocks yet.")
             return
         total = p["shares"] * p["entry"]
+        fee = self.fees.get(ticker, (None, ""))[0]
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC (good till canceled)"),
                 ("Amount of stocks", f"{p['shares']:,}"), ("Limit price (entry)", fmt_price(p["entry"])),
-                ("Total", f"${total:,.2f}")] + self.fee_rows(total)
+                ("Total", f"${total:,.2f}")] + fee_rows(fee, total)
         self.fee_reader.load_accounts()
         account = self.fee_reader.order_tail()
         if not account:
-            QMessageBox.warning(self, "BUY", "Choose the account for orders on the Schwab tab first."
+            QMessageBox.warning(self, "Buy ATM", "Choose the account for orders on the Schwab tab first."
                                 if self.fee_reader.accounts else "Can't read the Schwab accounts. Check the Schwab login.")
             return
-        if not self.confirm(f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order",
-                            account=account):
+        if not confirm_order(self, self.atm.account_name(account),
+                             f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order"):
             return
-        self.pending[ticker] = {"shares": p["shares"], "entry": p["entry"], "exit": p["exit"], "stop": p["stop"],
-                                "account": account, "atm": self.atm_snapshot(p, account)}
-        self.sending.add(ticker)
-        self.update_trade_buttons()
-        self.trader.place(ticker, "BUY", p["shares"], p["entry"], account)
+        self.atm.send_buy(self.atm_snapshot(p, account))
 
-    # ---- atm.json: the plan and the market at each Buy ATM sent, deleted if the buy is canceled ----
     def atm_snapshot(self, p, account):
         """The plan and the market now (Level I and the full Level II), for atm.json.
         account: the last 3 digits of the account it goes to (the full number is never kept)."""
@@ -936,164 +1373,13 @@ class ChecklistPanel(QWidget):
                 "bid": list(bid), "ask": list(ask),
                 "level2": {"bids": book(self.bids), "asks": book(self.asks)}}
 
-    def atm_entries(self):
-        try:
-            return json.loads(self.atm_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
-
-    def atm_write(self, entries):
-        tmp = self.atm_path.with_suffix(".tmp")
-        text = json.dumps(entries, indent=1)
-        # each [price, amount] / [market maker, price, amount] on one line
-        text = re.sub(r"\[\s+([^\[\]{}]*?)\s+\]", lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(self.atm_path)
-
-    def atm_save(self, entry, order_id):
-        entries = self.atm_entries()
-        entries.append({"order_id": order_id, **entry})
-        self.atm_write(entries)
-
-    def atm_delete(self, ticker, order_id):
-        """Takes out the entry of a buy order that was canceled (nothing bought)."""
-        entries = self.atm_entries()
-        left = [e for e in entries if not (e.get("ticker") == ticker and str(e.get("order_id")) == str(order_id))]
-        if len(left) != len(entries):
-            self.atm_write(left)
-
     def sell(self):
-        ticker = self.ticker
-        order = self.order(ticker)
-        if not order or order.get("state") not in ("bought", "sell_open") or self.trader is None:
+        e = self.order()
+        if not e or e.get("state") != "bought":
             return
         self.evaluate()
         p, _ = self.last_plan
-        price = p["exit"]
-        if not price:
-            QMessageBox.warning(self, "SELL", "There's no exit price.")
-            return
-        shares = order.get("filled") or order["shares"]
-        total = shares * price
-        update = order["state"] == "sell_open"
-        rows = [("Ticker", ticker), ("Order", "SELL · Limit · GTC (good till canceled)"),
-                ("Amount of stocks", f"{shares:,}")]
-        if update:
-            rows.append(("Open sell order's price", fmt_price(order["sell_price"])))
-        rows += [("Limit price (exit)", fmt_price(price)), ("Total", f"${total:,.2f}")] + self.fee_rows(total, sell=True)
-        fee = self.fees.get(ticker, (None, ""))[0]
-        fee = FEE_USD if fee is None else fee
-        gain = shares * (price - order["entry"]) - 2 * fee
-        rows.append(("Profit after both fees", f"{'+' if gain >= 0 else '-'}${abs(gain):,.2f}"))
-        title = (f"Change the sell order of {ticker} to {fmt_price(price)}?" if update
-                 else f"Sell {shares:,} {ticker} at {fmt_price(price)}?")
-        self.fee_reader.load_accounts()
-        # the account that bought (orders from before accounts were kept: the one for orders)
-        account = order.get("account") or self.fee_reader.order_tail()
-        if not account:
-            QMessageBox.warning(self, "SELL", "Choose the account for orders on the Schwab tab first.")
-            return
-        if not self.confirm(title, rows, "Change SELL order" if update else "Send SELL order",
-                            "#cf0508", account=account):
-            return
-        self.pending[ticker] = {"sell_price": price}
-        self.sending.add(ticker)
-        self.update_trade_buttons()
-        self.trader.place(ticker, "SELL", shares, price, account, order.get("sell_id") if update else None)
-
-    def order_sent(self, ticker, side, order_id, message):
-        self.sending.discard(ticker)
-        pending = self.pending.pop(ticker, {})
-        if order_id is None and not message.startswith("Schwab took"):
-            QMessageBox.warning(self, f"{side} order not sent", f"{ticker}: {message}")
-            self.refresh()
-            return
-        orders = self.settings.setdefault("orders", {})
-        now = datetime.now().isoformat(timespec="seconds")
-        if side == "BUY":
-            snapshot = pending.pop("atm", None)
-            if snapshot:
-                try:
-                    self.atm_save(snapshot, order_id)
-                except OSError as e:
-                    QMessageBox.warning(self, "atm.json", f"Can't save {self.atm_path.name}: {e.strerror}")
-            orders[ticker] = dict(pending, state="buy_open", buy_id=order_id, filled=0, sent=now,
-                                  note=message)
-            # The plan stays as sent: typed values, so live quotes no longer move them
-            mine = self.settings.setdefault("checklist_prices", {}).setdefault(ticker, {})
-            for key in ("entry", "exit", "stop"):
-                if pending.get(key) is not None:
-                    mine[key] = limit_text(pending[key])
-            self.order_placed.emit(ticker)
-        else:
-            order = orders.get(ticker, {})
-            order.update(state="sell_open", sell_price=pending.get("sell_price"), sell_sent=now,
-                         note=message)
-            if order_id:
-                order["sell_id"] = order_id
-            order.pop("status", None)
-        self.save_settings(self.settings)
-        self.refresh()
-        if order_id:
-            QTimer.singleShot(5000, self.check_orders)
-
-    def check_orders(self):
-        """Asks Schwab about every open order, of every ticker."""
-        if self.trader is None:
-            return
-        for ticker, order in list(self.settings.get("orders", {}).items()):
-            if ticker in self.sending:
-                continue
-            if order.get("state") == "buy_open" and order.get("buy_id"):
-                self.trader.check(ticker, "BUY", order["buy_id"], order.get("account"))
-            elif order.get("state") == "sell_open" and order.get("sell_id"):
-                self.trader.check(ticker, "SELL", order["sell_id"], order.get("account"))
-
-    def order_checked(self, ticker, side, info, message):
-        order = self.order(ticker)
-        if info is None or not order:
-            return                  # tried again at the next check
-        if order.get("state") != ("buy_open" if side == "BUY" else "sell_open"):
-            return                  # an older answer
-        if side == "SELL" and str(info.get("orderId", order.get("sell_id"))) != str(order.get("sell_id")):
-            return                  # about a sell order since replaced
-        status = info.get("status", "")
-        filled = int(info.get("filledQuantity") or 0)
-        order["status"] = status
-        if side == "BUY":
-            order["filled"] = filled
-            if status == "FILLED" or (status in ORDER_DONE and filled):
-                order["state"] = "bought"
-                order["bought"] = datetime.now().isoformat(timespec="seconds")
-                order.pop("status", None)
-                order["note"] = ("" if status == "FILLED" else
-                                 f"The buy order was {status.lower()} after {filled:,} of {order['shares']:,}.")
-            elif status in ORDER_DONE:
-                try:
-                    self.atm_delete(ticker, order.get("buy_id"))    # nothing bought: not an ATM trade
-                except OSError:
-                    pass
-                self.close_order(ticker, f"buy {status.lower()}")
-        else:
-            order["sold"] = filled
-            if status == "FILLED":
-                self.close_order(ticker, "sold")
-            elif status in ORDER_DONE and status != "REPLACED":
-                order["state"] = "bought"       # SELL can send it again
-                order.pop("status", None)
-                order["filled"] = (order.get("filled") or order["shares"]) - filled    # what's left
-                order["note"] = (f"The sell order was {status.lower()}"
-                                 + (f" after {filled:,} were sold." if filled else "."))
-        self.save_settings(self.settings)
-        if ticker == self.ticker:
-            self.refresh()
-
-    def close_order(self, ticker, how):
-        """The order is over (sold, or the buy didn't happen): kept in order_history, BUY works again."""
-        order = self.settings.get("orders", {}).pop(ticker, None)
-        if order:
-            order.update(ticker=ticker, ended=datetime.now().isoformat(timespec="seconds"), how=how)
-            self.settings.setdefault("order_history", []).append(order)
+        self.atm.ask_sell(self, e, p["exit"] or e.get("sell_at"), self.fees.get(self.ticker, (None, ""))[0])
 
     # ---- the fee from Schwab, once per ticker a session ----
     def read_fee(self):
@@ -1173,7 +1459,8 @@ class ChecklistPanel(QWidget):
         fee, fee_details = self.fees.get(self.ticker, (None, "No ticker"))
         fee_used = FEE_USD if fee is None else fee
         order = self.order()
-        shares = (order.get("filled") or order.get("shares")) if order else None
+        shares = ((self.atm.remaining(order) if order.get("state") in ("bought", "sell_open") else 0)
+                  or order.get("filled") or order.get("shares")) if order else None
         p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used, shares)
         self.last_plan = (p, usd)       # for the trade plan the ticker copies
         auto = p["auto"]
@@ -1187,7 +1474,7 @@ class ChecklistPanel(QWidget):
             "entry": (INFO, price(auto["entry"]), "Trips: the Bid. Dubs and up: the Bid + 0.0001. " + typed),
             "size": (INFO, f"${POSITION_USD:,}", f"Default ${POSITION_USD:,}, kept for all tickers. " + typed),
             "shares": (INFO, f"{p['shares']:,}" if p["shares"] else NA,
-                       "From the order sent to Schwab" if order else f"round({usd:g} / entry)"),
+                       "From the ATM trade (Schwab tab)" if order else f"round({usd:g} / entry)"),
             "exit": (INFO, price(auto["exit"]), "Trips: the Ask. Dubs and up: the Ask - 0.0001. " + typed),
             "order": (INFO, "GTC", ""),
             "stop": (INFO, price(auto["stop"]),
@@ -1331,12 +1618,17 @@ class ChecklistPanel(QWidget):
                     tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
-                locked = order is not None and item.key == "entry"      # the price the buy was sent at
+                state = order.get("state") if order else None
                 fixed = order is not None and item.key in ("entry", "exit", "stop")
+                # the price the buy was sent at; the exit while the sell order works or once sold
+                locked = (order is not None and item.key == "entry") or (
+                    item.key == "exit" and state in ("sell_open", "sold"))
                 if fixed:
-                    tip = ("From the order sent to Schwab, not the live prices. "
-                           + ("Fixed: the buy order's price." if locked else
-                              "Change it to sell at another price." if item.key == "exit" else "You can change it."))
+                    tip = ("From the ATM trade, not the live prices. "
+                           + ("Fixed: the buy order's price." if item.key == "entry" else
+                              "The sell order's price: Cancel Sell to change it." if locked else
+                              "Sell ATM sells at it: change it to sell at another price." if item.key == "exit"
+                              else "You can change it."))
                 value.setToolTip(tip)
                 value.setReadOnly(locked)
                 pal = value.palette()
