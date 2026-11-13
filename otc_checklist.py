@@ -73,10 +73,10 @@ PANEL_STYLE = """
 #checklist QLineEdit[readOnly="true"] { background: #101214; }
 #checklist QPushButton#cl_buy, #checklist QPushButton#cl_sell {
     color: #ffffff; font-weight: bold; border-radius: 4px; padding: 3px 14px; border: 1px solid transparent; }
-#checklist QPushButton#cl_buy { background: #1d811d; }
-#checklist QPushButton#cl_buy:hover { background: #24a124; }
-#checklist QPushButton#cl_sell { background: #a0303b; }
-#checklist QPushButton#cl_sell:hover { background: #bb3946; }
+#checklist QPushButton#cl_buy { background: #009300; }
+#checklist QPushButton#cl_buy:hover { background: #00b300; }
+#checklist QPushButton#cl_sell { background: #cf0508; }
+#checklist QPushButton#cl_sell:hover { background: #e8262a; }
 #checklist QPushButton#cl_buy:disabled, #checklist QPushButton#cl_sell:disabled {
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
@@ -556,10 +556,10 @@ class ChecklistPanel(QWidget):
         root.addLayout(head)
         trade = QHBoxLayout()
         trade.setSpacing(6)
-        self.buy_btn = QPushButton("BUY")
+        self.buy_btn = QPushButton("Buy ATM")
         self.buy_btn.setObjectName("cl_buy")
         self.buy_btn.clicked.connect(self.buy)
-        self.sell_btn = QPushButton("SELL")
+        self.sell_btn = QPushButton("Sell ATM")
         self.sell_btn.setObjectName("cl_sell")
         self.sell_btn.clicked.connect(self.sell)
         for b in (self.buy_btn, self.sell_btn):
@@ -806,7 +806,7 @@ class ChecklistPanel(QWidget):
         can_trade = self.trader is not None
         self.buy_btn.setEnabled(bool(self.ticker) and can_trade and not busy and state is None)
         self.sell_btn.setEnabled(can_trade and not busy and state in ("bought", "sell_open"))
-        self.sell_btn.setText("UPDATE SELL" if state == "sell_open" else "SELL")
+        self.sell_btn.setText("Update Sell ATM" if state == "sell_open" else "Sell ATM")
         if not can_trade:
             tip = "Needs the Schwab login"
             self.buy_btn.setToolTip(tip)
@@ -841,7 +841,7 @@ class ChecklistPanel(QWidget):
         self.order_label.setText(text)
         self.order_label.setVisible(bool(text))
 
-    def confirm(self, title, rows, action, color="#1d811d", account=""):
+    def confirm(self, title, rows, action, color="#009300", account=""):
         """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
         color: the send button's. account: the last 3 digits of the account it goes to, shown first
         for checking (it is chosen on the Schwab tab). True when approved."""
@@ -950,7 +950,7 @@ class ChecklistPanel(QWidget):
             QMessageBox.warning(self, "SELL", "Choose the account for orders on the Schwab tab first.")
             return
         if not self.confirm(title, rows, "Change SELL order" if update else "Send SELL order",
-                            "#a0303b", account=account):
+                            "#cf0508", account=account):
             return
         self.pending[ticker] = {"sell_price": price}
         self.sending.add(ticker)
