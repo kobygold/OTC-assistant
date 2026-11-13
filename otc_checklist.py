@@ -39,6 +39,10 @@ NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
 # Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
 TARGETS = {"profit": 25.0, "ratio": 3.0}
+# Once Buy ATM was pressed these show the plan sent, fixed, in a cell of their own. Entry and size
+# show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
+# the buy; the gains and losses worked out from them)
+LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_usd", "loss_usd", "ratio")
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
 ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
@@ -98,6 +102,8 @@ PANEL_STYLE = """
 #checklist QPushButton#cl_cancel:disabled {
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
+#checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: #101214;
+                              border: 1px solid #2c3136; border-radius: 3px; padding: 1px 4px; }
 """
 
 
@@ -870,12 +876,6 @@ class AtmTrades(QObject):
             e = {"id": str(order_id or f"{ticker}-{now}"), "order_id": order_id, **pending,
                  "state": "buy_open", "filled": 0, "sold": 0, "sell_at": pending.get("exit"), "note": message}
             self.entries.append(e)
-            # The plan stays as sent: typed values, so live quotes no longer move them
-            mine = self.settings.setdefault("checklist_prices", {}).setdefault(ticker, {})
-            for k, key in (("entry", "entry"), ("exit", "exit"), ("stop", "safety-net")):
-                if pending.get(key) is not None:
-                    mine[k] = limit_text(pending[key])
-            self.save_settings(self.settings)
             self.buy_sent.emit(ticker)
         else:
             e = self.find(key)
@@ -1065,6 +1065,8 @@ class ChecklistPanel(QWidget):
         lay.setSpacing(3)
         self.widgets = []
         self.price_tools = {}
+        self.locked = {}        # key -> its fixed cell (the plan sent with Buy ATM), shown once sent
+        self.boxes = {}         # key -> its live value's box
         for name, items in sections:
             head = QLabel(name)
             head.setObjectName("cl_section")
@@ -1104,18 +1106,31 @@ class ChecklistPanel(QWidget):
                         value.mousePressEvent = lambda e, b=box: b.copy() if e.button() == Qt.MouseButton.LeftButton else None
                     else:
                         box = CopyBox(value, shown)
-                    if item.key in EDITABLE and item.key != "size":
-                        # box, +/- and reset close together, left to right
+                    self.boxes[item.key] = box
+                    if item.key in LOCKED:
+                        # the fixed cell, the box, +/- and reset close together, left to right
                         group = QWidget()
                         group.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
                         glay = QHBoxLayout(group)
                         glay.setContentsMargins(0, 0, 0, 0)
                         glay.setSpacing(2)
+                        lock = QLabel()
+                        lock.setObjectName("cl_locked")
+                        lock.setMinimumWidth(84 if item.key in EDITABLE else 70)
+                        lock.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                        lock.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                        lock.hide()
+                        lock.setFixedHeight(value.sizeHint().height() if isinstance(value, QLineEdit) else 22)
+                        self.locked[item.key] = lock
+                        glay.addWidget(lock, 0, Qt.AlignmentFlag.AlignVCenter)
+                        if item.key not in EDITABLE:
+                            glay.addSpacing(4)
                         glay.addWidget(box)
-                        stepper, reset = self.make_stepper(item.key, value), self.make_reset(item.key, value)
-                        self.price_tools[item.key] = (stepper, reset)
-                        glay.addWidget(stepper)
-                        glay.addWidget(reset)
+                        if item.key in EDITABLE and item.key != "size":
+                            stepper, reset = self.make_stepper(item.key, value), self.make_reset(item.key, value)
+                            self.price_tools[item.key] = (stepper, reset)
+                            glay.addWidget(stepper)
+                            glay.addWidget(reset)
                         box = group
                     row.addWidget(box)
                 lay.addLayout(row)
@@ -1385,7 +1400,8 @@ class ChecklistPanel(QWidget):
         bid = (self.bid, self.bid_size) if self.bid else top(self.bids)
         ask = (self.ask, self.ask_size) if self.ask else top(self.asks)
         book = lambda rows: [[mm, price, size] for mm, price, size, *_ in rows]
-        return {"ticker": self.ticker, "account": account, "entry": p["entry"], "exit": p["exit"], "shares": p["shares"],
+        return {"ticker": self.ticker, "account": account, "size": self.last_plan[1],
+                "entry": p["entry"], "exit": p["exit"], "shares": p["shares"],
                 "usd": round(p["shares"] * p["entry"], 2), "safety-net": p["stop"], "fee": fee,
                 "time": datetime.now().isoformat(timespec="seconds"),
                 "bid": list(bid), "ask": list(ask),
@@ -1479,6 +1495,8 @@ class ChecklistPanel(QWidget):
         order = self.order()
         shares = ((self.atm.remaining(order) if order.get("state") in ("bought", "sell_open") else 0)
                   or order.get("filled") or order.get("shares")) if order else None
+        if order:
+            own["entry"] = order["entry"]       # the buy's price: exit and stop are worked out from it
         p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used, shares)
         self.last_plan = (p, usd)       # for the trade plan the ticker copies
         auto = p["auto"]
@@ -1613,12 +1631,38 @@ class ChecklistPanel(QWidget):
         ]
         return chr(10).join(lines)      # one line each
 
+    def locked_texts(self, e):
+        """The fixed cells' texts: the plan sent with Buy ATM, and what it gives."""
+        fee = FEE_USD if e.get("fee") is None else e["fee"]
+        size = e.get("size") or e.get("usd")
+        p = plan(None, None, [], size, e["entry"], e.get("exit"), e.get("safety-net"), fee, e.get("shares"))
+        price = lambda v: NA if v is None else fmt_price(v)
+        pct = lambda v: NA if v is None else f"{v:+.1f}%"
+        usd = lambda v: NA if v is None else usd_signed(v)
+        return {"size": NA if size is None else f"${size:,.2f}".replace(".00", ""),
+                "entry": price(p["entry"]), "exit": price(p["exit"]), "stop": price(p["stop"]),
+                "profit": pct(p["profit"]), "loss": pct(-p["loss"]) if p["loss"] is not None else NA,
+                "profit_usd": usd(p["profit_usd"]), "loss_usd": usd(p["loss_usd"]),
+                "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
+
     def refresh(self):
         if not self.widgets:
             return
         results = self.evaluate()
         order = self.order()
         self.update_trade_buttons()
+        fixed = self.locked_texts(order) if order else {}
+        for key, lock in self.locked.items():
+            lock.setVisible(bool(order))
+            if order:
+                lock.setText(fixed.get(key, NA))
+                lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
+                    "" if key in ("entry", "size") else ". Beside it: now, from the live prices."))
+        for key in ("entry", "size"):       # only the fixed cell once sent
+            if key in self.boxes:
+                self.boxes[key].setVisible(not order)
+            for w in self.price_tools.get(key, ()):
+                w.setVisible(not order)
         ticks = self.ticked()
         manual, solvers = {}, {}      # the manual items' marks and texts, by their keys
         for item, *_ in self.widgets:
@@ -1637,25 +1681,18 @@ class ChecklistPanel(QWidget):
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
                 state = order.get("state") if order else None
-                fixed = order is not None and item.key in ("entry", "exit", "stop")
-                # the price the buy was sent at; the exit while the sell order works or once sold
-                locked = (order is not None and item.key == "entry") or (
-                    item.key == "exit" and state in ("sell_open", "sold"))
-                if fixed:
-                    tip = ("From the ATM trade, not the live prices. "
-                           + ("Fixed: the buy order's price." if item.key == "entry" else
-                              "The sell order's price: Cancel Sell to change it." if locked else
-                              "Sell ATM sells at it: change it to sell at another price." if item.key == "exit"
-                              else "You can change it."))
+                # the exit while the sell order works (Cancel Sell to change it) or once sold
+                locked = item.key == "exit" and state in ("sell_open", "sold")
+                if locked:
+                    tip = "The sell order's price: Cancel Sell to change it."
+                elif order and item.key == "exit":
+                    tip += " Sell ATM sells at it."
                 value.setToolTip(tip)
                 value.setReadOnly(locked)
-                pal = value.palette()
-                pal.setColor(QPalette.ColorRole.Text, QColor(ORDER_COLOR if fixed else "#f0a020"))
-                value.setPalette(pal)
                 tools = self.price_tools.get(item.key)
                 if tools:
                     tools[0].setEnabled(not locked)
-                    tools[1].setEnabled(not fixed)      # no going back to the live value
+                    tools[1].setEnabled(not locked)
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 own = self.override_text(item.key)
                 if not value.hasFocus() and value.text() != own:
