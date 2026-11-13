@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -604,6 +604,7 @@ class MainWindow(QMainWindow):
         self.zone_tab_index = self.tabs.addTab(self._build_zones_tab(), "Zones")
         self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
+        self.schwab_tab_index = self.tabs.addTab(self._build_schwab_tab(), "Schwab")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
         visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
@@ -1535,6 +1536,8 @@ class MainWindow(QMainWindow):
             self.refresh_ticker_list()
         if index == 2:
             self.refresh_screener_dates()
+        if index == self.schwab_tab_index and not self.schwab_accounts_read:
+            self.read_schwab_accounts()
         if index == self.fav_tab_index:
             if self.tickers_stale:
                 self.refresh_ticker_list()
@@ -2240,6 +2243,85 @@ class MainWindow(QMainWindow):
         self.show_chart(item.text(), channel)
 
     # ================================================== ATM tab ===
+    # ================================================== Schwab tab ===
+    def _build_schwab_tab(self):
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        box = QGroupBox("Account for orders")
+        lay = QVBoxLayout(box)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Account:"))
+        self.schwab_account = QComboBox()
+        self.schwab_account.setMinimumWidth(220)
+        self.schwab_account.setToolTip("The BUY and SELL orders of the checklist go to this account, "
+                                       "until it is changed here. Only its last 3 digits are kept.")
+        self.schwab_account.activated.connect(self.on_schwab_account)
+        row.addWidget(self.schwab_account)
+        self.schwab_reload = QPushButton("Reload")
+        self.schwab_reload.setToolTip("Read the login's accounts from Schwab again")
+        self.schwab_reload.clicked.connect(lambda: self.read_schwab_accounts(again=True))
+        row.addWidget(self.schwab_reload)
+        row.addStretch()
+        lay.addLayout(row)
+        self.schwab_status = QLabel("")
+        self.schwab_status.setStyleSheet("color: #a8a8a8;")
+        self.schwab_status.setWordWrap(True)
+        lay.addWidget(self.schwab_status)
+        root.addWidget(box)
+        root.addStretch()
+        self.schwab_accounts_read = False
+        reader = self.checklist.fee_reader
+        if reader:
+            reader.accounts_read.connect(self.on_schwab_accounts)
+        self.show_schwab_accounts([])
+        return tab
+
+    def read_schwab_accounts(self, again=False):
+        reader = self.checklist.fee_reader
+        if reader is None:
+            self.schwab_status.setText("No Schwab login.")
+            return
+        self.schwab_accounts_read = True
+        self.schwab_reload.setEnabled(False)
+        self.schwab_status.setText("Reading the accounts from Schwab...")
+        reader.read_accounts(again)
+
+    def on_schwab_accounts(self, accounts, error):
+        self.schwab_reload.setEnabled(True)
+        self.show_schwab_accounts(accounts, error)
+
+    def show_schwab_accounts(self, accounts, error=""):
+        """Fills the account choice: the saved account selected, or a "Choose" line while none is."""
+        saved = self.settings.get("schwab_account", "")
+        combo = self.schwab_account
+        combo.clear()
+        reader = self.checklist.fee_reader
+        tails = [tail for tail, _, _ in accounts]
+        if saved not in tails:
+            combo.addItem(f"...{saved} (not read yet)" if saved and not accounts else "Choose an account", "")
+            if saved and not accounts:
+                combo.setItemData(0, saved)
+        for tail in tails:
+            combo.addItem(reader.kind(tail), tail)
+        combo.setCurrentIndex(max(0, combo.findData(saved)) if saved else 0)
+        if error:
+            self.schwab_status.setText(f"Can't read the accounts: {error}")
+        elif not accounts:
+            self.schwab_status.setText("The accounts are read from Schwab when this tab opens.")
+        elif saved in tails:
+            self.schwab_status.setText(f"BUY and SELL orders go to {reader.kind(saved)}.")
+        else:
+            self.schwab_status.setText("Choose the account the BUY and SELL orders go to.")
+
+    def on_schwab_account(self, index):
+        tail = self.schwab_account.itemData(index)
+        if not tail or tail == self.settings.get("schwab_account"):
+            return
+        self.settings["schwab_account"] = tail
+        save_settings(self.settings)
+        reader = self.checklist.fee_reader
+        self.show_schwab_accounts(reader.accounts if reader else [])
+
     def _build_atm_tab(self):
         tab = QWidget()
         root = QVBoxLayout(tab)
