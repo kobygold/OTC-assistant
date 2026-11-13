@@ -18,7 +18,7 @@ from statistics import median
 from PyQt6.QtCore import QObject, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
-from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QToolButton, QToolTip,
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QToolButton, QToolTip,
                              QVBoxLayout, QWidget)
 
 from otc_chart import fmt_price, fmt_volume
@@ -318,8 +318,10 @@ class FeeReader(QObject):
         super().__init__()
         self.settings, self.token_path = settings, token_path
         self._lock = threading.Lock()       # one Schwab call at a time
-        self._client = self._account = None
-        self.account_tail = ""          # the account number's last 3 digits, once logged in
+        self._client = None
+        # [(last 3 digits, hash, type)] of the login's accounts, once logged in. The full numbers
+        # are never kept or shown; settings["schwab_account"] holds the chosen one's last 3 digits.
+        self.accounts = []
 
     def request(self, ticker):
         threading.Thread(target=self._read, args=(ticker,), name="fee", daemon=True).start()
@@ -332,8 +334,9 @@ class FeeReader(QObject):
         except Exception as e:      # never let the thread die silently
             self.done.emit(ticker, None, f"{type(e).__name__}: {e}")
 
-    def connect(self):
-        """Logs in once (call it holding self._lock): the client and the first account's hash.
+    def connect(self, tail=None):
+        """Logs in once (call it holding self._lock): the client and the hash of the account
+        ending in `tail`, or else the chosen one (the first until one is chosen).
         Raises RuntimeError with the reason when it can't."""
         key = self.settings.get("schwab_app_key", "").strip()
         secret = self.settings.get("schwab_app_secret", "").strip()
@@ -342,14 +345,44 @@ class FeeReader(QObject):
         from schwab.auth import client_from_token_file
         if self._client is None:
             self._client = client_from_token_file(str(self.token_path), key, secret)
-        if self._account is None:
+        if not self.accounts:
             r = self._client.get_account_numbers()
-            if r.status_code != 200:
+            if r.status_code != 200 or not r.json():
                 raise RuntimeError(f"Schwab accounts: HTTP {r.status_code}")
-            first = r.json()[0]
-            self._account = first["hashValue"]
-            self.account_tail = str(first.get("accountNumber", ""))[-3:]    # shown as ...123, never in full
-        return self._client, self._account
+            types = {}
+            try:        # Cash / Margin, for telling the accounts apart; fine without it
+                a = self._client.get_accounts()
+                if a.status_code == 200:
+                    for acc in a.json():
+                        sa = acc.get("securitiesAccount", {})
+                        types[str(sa.get("accountNumber", ""))] = str(sa.get("type", "")).title()
+            except Exception:
+                pass
+            self.accounts = [(str(x.get("accountNumber", ""))[-3:], x["hashValue"],
+                              types.get(str(x.get("accountNumber", "")), "")) for x in r.json()]
+        return self._client, self.account_hash(tail)
+
+    def chosen_tail(self):
+        """The last 3 digits of the account orders go to: the one chosen last time, else the first."""
+        tails = [tail for tail, _, _ in self.accounts]
+        saved = self.settings.get("schwab_account")
+        return saved if saved in tails else (tails[0] if tails else "")
+
+    def account_hash(self, tail=None):
+        tail = tail or self.chosen_tail()
+        for t, h, _ in self.accounts:
+            if t == tail:
+                return h
+        raise RuntimeError(f"No Schwab account ending in {tail}")
+
+    def load_accounts(self):
+        """The accounts, logging in if needed (blocks: for the order dialogs). [] when it can't."""
+        try:
+            with self._lock:
+                self.connect()
+        except Exception:
+            pass
+        return self.accounts
 
     def _preview(self, ticker):
         try:
@@ -366,7 +399,7 @@ class FeeReader(QObject):
         shares = max(1, round(POSITION_USD / price))
         limit = f"{price:.6f}".rstrip("0").rstrip(".")
         order = equity_buy_limit(ticker, shares, limit).set_duration(Duration.GOOD_TILL_CANCEL).build()
-        r = self._client.preview_order(self._account, order)
+        r = self._client.preview_order(self.account_hash(), order)
         if r.status_code != 200:
             return None, f"Schwab order preview: HTTP {r.status_code} {r.text[:200]}"
         parts = r.json().get("commissionAndFee", {})
@@ -396,21 +429,22 @@ class SchwabTrader(QObject):
         super().__init__()
         self.session = session
 
-    def place(self, ticker, side, shares, price, replace_id=None):
-        threading.Thread(target=self._place, args=(ticker, side, shares, price, replace_id),
+    def place(self, ticker, side, shares, price, account, replace_id=None):
+        """account: the last 3 digits of the account to send it to."""
+        threading.Thread(target=self._place, args=(ticker, side, shares, price, account, replace_id),
                          name="order", daemon=True).start()
 
-    def check(self, ticker, side, order_id):
-        threading.Thread(target=self._check, args=(ticker, side, order_id), name="order status",
+    def check(self, ticker, side, order_id, account=None):
+        threading.Thread(target=self._check, args=(ticker, side, order_id, account), name="order status",
                          daemon=True).start()
 
-    def _place(self, ticker, side, shares, price, replace_id):
+    def _place(self, ticker, side, shares, price, account_tail, replace_id):
         try:
             from schwab.orders.common import Duration, Session
             from schwab.orders.equities import equity_buy_limit, equity_sell_limit
             from schwab.utils import Utils
             with self.session._lock:
-                client, account = self.session.connect()
+                client, account = self.session.connect(account_tail)
                 make = equity_buy_limit if side == "BUY" else equity_sell_limit
                 order = (make(ticker, int(shares), limit_text(price))
                          .set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL).build())
@@ -431,10 +465,10 @@ class SchwabTrader(QObject):
         except Exception as e:      # never let the thread die silently
             self.placed.emit(ticker, side, None, f"{type(e).__name__}: {e}")
 
-    def _check(self, ticker, side, order_id):
+    def _check(self, ticker, side, order_id, account_tail):
         try:
             with self.session._lock:
-                client, account = self.session.connect()
+                client, account = self.session.connect(account_tail)
                 r = client.get_order(order_id, account)
             if r.status_code != 200:
                 self.checked.emit(ticker, side, None, f"HTTP {r.status_code}")
@@ -782,30 +816,63 @@ class ChecklistPanel(QWidget):
         self.order_label.setText(text)
         self.order_label.setVisible(bool(text))
 
-    def confirm(self, title, rows, action, color="#1d811d"):
+    def confirm(self, title, rows, action, color="#1d811d", account=None):
         """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
-        color: the send button's. True when approved."""
-        account = getattr(self.fee_reader, "account_tail", "")
-        rows = [("Account", f"...{account}" if account else "the first account of the Schwab login")] + rows
-        html = "<table cellspacing='0' cellpadding='3'>" + "".join(
-            f"<tr><td style='color:#a8a8a8'>{k}</td><td><b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b></td></tr>"
-            for k, v in rows) + "</table>"
-        box = QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(f"<b>{title}</b>")
-        box.setInformativeText(html)
-        send = box.addButton(action, QMessageBox.ButtonRole.AcceptRole)
-        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        color: the send button's. account: the account's last 3 digits when it is fixed (a sell goes
+        to the account that bought), else a choice of the login's accounts, starting at the one
+        chosen last time. The chosen account's last 3 digits when approved, else None."""
+        accounts = self.fee_reader.load_accounts() if self.fee_reader else []
+        if not accounts:
+            QMessageBox.warning(self, title, "Can't read the Schwab accounts. Check the Schwab login.")
+            return None
+        named = lambda tail, kind: f"...{tail}" + (f" ({kind})" if kind else "")
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"<b>{title}</b>"))
+        form = QGridLayout()
+        form.setHorizontalSpacing(14)
+        form.addWidget(QLabel("<span style='color:#a8a8a8'>Account</span>"), 0, 0)
+        choice = QComboBox()
+        if account:
+            kinds = {tail: kind for tail, _, kind in accounts}
+            choice.addItem(named(account, kinds.get(account, "")), account)
+            choice.setEnabled(False)
+            choice.setToolTip("The sell goes to the account the stocks were bought in")
+        else:
+            for tail, _, kind in accounts:
+                choice.addItem(named(tail, kind), tail)
+            choice.setCurrentIndex(max(0, choice.findData(self.fee_reader.chosen_tail())))
+            choice.setToolTip("The one you choose is remembered for next time")
+        form.addWidget(choice, 0, 1)
+        for i, (k, v) in enumerate(rows, 1):
+            form.addWidget(QLabel(f"<span style='color:#a8a8a8'>{k}</span>"), i, 0)
+            form.addWidget(QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>"), i, 1)
+        lay.addLayout(form)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        send, cancel = QPushButton(action), QPushButton("Cancel")
         button = ("QPushButton {{ background: {0}; color: #ffffff; font-weight: bold; border: 1px solid {0};"
                   " border-radius: 4px; padding: 5px 16px; }} QPushButton:hover {{ background: {1}; }}")
         send.setStyleSheet(button.format(color, QColor(color).lighter(125).name()))
         cancel.setStyleSheet(button.format("#4a5560", "#5b6875"))
-        box.setDefaultButton(cancel)        # Enter doesn't send it by mistake
-        box.setEscapeButton(cancel)
-        box.exec()
-        return box.clickedButton() is send
+        cancel.setDefault(True)             # Enter doesn't send it by mistake
+        send.setAutoDefault(False)
+        send.clicked.connect(dlg.accept)
+        cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(send)
+        buttons.addWidget(cancel)
+        lay.addSpacing(6)
+        lay.addLayout(buttons)
+        cancel.setFocus()
+        self.dialog = dlg                   # for tests
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        tail = choice.currentData()
+        if not account and self.settings.get("schwab_account") != tail:
+            self.settings["schwab_account"] = tail          # the default from now on
+            self.save_settings(self.settings)
+        return tail
 
     def fee_rows(self, total, sell=False):
         """The fee rows for a dialog: Schwab's fee, if read, and the total with it (a buy pays it on
@@ -834,12 +901,14 @@ class ChecklistPanel(QWidget):
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC (good till canceled)"),
                 ("Amount of stocks", f"{p['shares']:,}"), ("Limit price (entry)", fmt_price(p["entry"])),
                 ("Total", f"${total:,.2f}")] + self.fee_rows(total)
-        if not self.confirm(f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order"):
+        account = self.confirm(f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order")
+        if not account:
             return
-        self.pending[ticker] = {"shares": p["shares"], "entry": p["entry"], "exit": p["exit"], "stop": p["stop"]}
+        self.pending[ticker] = {"shares": p["shares"], "entry": p["entry"], "exit": p["exit"], "stop": p["stop"],
+                                "account": account}
         self.sending.add(ticker)
         self.update_trade_buttons()
-        self.trader.place(ticker, "BUY", p["shares"], p["entry"])
+        self.trader.place(ticker, "BUY", p["shares"], p["entry"], account)
 
     def sell(self):
         ticker = self.ticker
@@ -866,13 +935,14 @@ class ChecklistPanel(QWidget):
         rows.append(("Profit after both fees", f"{'+' if gain >= 0 else '-'}${abs(gain):,.2f}"))
         title = (f"Change the sell order of {ticker} to {fmt_price(price)}?" if update
                  else f"Sell {shares:,} {ticker} at {fmt_price(price)}?")
+        account = order.get("account") or (self.fee_reader.chosen_tail() if self.fee_reader else "")
         if not self.confirm(title, rows, "Change SELL order" if update else "Send SELL order",
-                            "#a0303b"):
+                            "#a0303b", account=account or None):
             return
         self.pending[ticker] = {"sell_price": price}
         self.sending.add(ticker)
         self.update_trade_buttons()
-        self.trader.place(ticker, "SELL", shares, price, order.get("sell_id") if update else None)
+        self.trader.place(ticker, "SELL", shares, price, account, order.get("sell_id") if update else None)
 
     def order_sent(self, ticker, side, order_id, message):
         self.sending.discard(ticker)
@@ -912,9 +982,9 @@ class ChecklistPanel(QWidget):
             if ticker in self.sending:
                 continue
             if order.get("state") == "buy_open" and order.get("buy_id"):
-                self.trader.check(ticker, "BUY", order["buy_id"])
+                self.trader.check(ticker, "BUY", order["buy_id"], order.get("account"))
             elif order.get("state") == "sell_open" and order.get("sell_id"):
-                self.trader.check(ticker, "SELL", order["sell_id"])
+                self.trader.check(ticker, "SELL", order["sell_id"], order.get("account"))
 
     def order_checked(self, ticker, side, info, message):
         order = self.order(ticker)
