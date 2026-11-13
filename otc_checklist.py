@@ -444,6 +444,11 @@ class SchwabTrader(QObject):
             self.checked.emit(ticker, side, None, f"{type(e).__name__}: {e}")
 
 
+def tint(value) -> str:
+    """The style attribute for a dialog value given as (text, colour); nothing for plain text."""
+    return f" style='color:{value[1]}'" if isinstance(value, tuple) else ""
+
+
 def limit_text(price) -> str:
     """A limit price as Schwab takes it: 0.0395, 1.25."""
     return f"{price:.6f}".rstrip("0").rstrip(".") if price < 1 else f"{price:.2f}"
@@ -777,12 +782,14 @@ class ChecklistPanel(QWidget):
         self.order_label.setText(text)
         self.order_label.setVisible(bool(text))
 
-    def confirm(self, title, rows, action):
-        """Asks before an order goes out. rows: [(label, value)]. True when approved."""
+    def confirm(self, title, rows, action, color="#1c7a3a"):
+        """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
+        color: the send button's. True when approved."""
         account = getattr(self.fee_reader, "account_tail", "")
         rows = [("Account", f"...{account}" if account else "the first account of the Schwab login")] + rows
         html = "<table cellspacing='0' cellpadding='3'>" + "".join(
-            f"<tr><td style='color:#a8a8a8'>{k}</td><td><b>{v}</b></td></tr>" for k, v in rows) + "</table>"
+            f"<tr><td style='color:#a8a8a8'>{k}</td><td><b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b></td></tr>"
+            for k, v in rows) + "</table>"
         box = QMessageBox(self)
         box.setWindowTitle(title)
         box.setIcon(QMessageBox.Icon.Question)
@@ -791,6 +798,10 @@ class ChecklistPanel(QWidget):
         box.setInformativeText(html)
         send = box.addButton(action, QMessageBox.ButtonRole.AcceptRole)
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        button = ("QPushButton {{ background: {0}; color: #ffffff; font-weight: bold; border: 1px solid {0};"
+                  " border-radius: 4px; padding: 5px 16px; }} QPushButton:hover {{ background: {1}; }}")
+        send.setStyleSheet(button.format(color, QColor(color).lighter(125).name()))
+        cancel.setStyleSheet(button.format("#4a5560", "#5b6875"))
         box.setDefaultButton(cancel)        # Enter doesn't send it by mistake
         box.setEscapeButton(cancel)
         box.exec()
@@ -802,9 +813,13 @@ class ChecklistPanel(QWidget):
         fee = self.fees.get(self.ticker, (None, ""))[0]
         if fee is None:
             return [("Fee", f"{NA} (not read from Schwab yet)")]
+        if fee > FEE_HIGH:      # in the section titles' yellow, as on the panel
+            shown = (f"${fee:.2f} (more than ${FEE_HIGH:.2f}!)", "#e3b23c")
+        else:
+            shown = f"${fee:.2f}"
         if sell:
-            return [("Fee (from Schwab)", f"${fee:.2f}"), ("You get, less the fee", f"${total - fee:,.2f}")]
-        return [("Fee (from Schwab)", f"${fee:.2f}"), ("Total with the fee", f"${total + fee:,.2f}")]
+            return [("Fee (from Schwab)", shown), ("You get, less the fee", f"${total - fee:,.2f}")]
+        return [("Fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
 
     def buy(self):
         ticker = self.ticker
@@ -853,7 +868,8 @@ class ChecklistPanel(QWidget):
         rows.append(("Profit after both fees", f"{'+' if gain >= 0 else '-'}${abs(gain):,.2f}"))
         title = (f"Change the sell order of {ticker} to {fmt_price(price)}?" if update
                  else f"Sell {shares:,} {ticker} at {fmt_price(price)}?")
-        if not self.confirm(title, rows, "Change SELL order" if update else "Send SELL order"):
+        if not self.confirm(title, rows, "Change SELL order" if update else "Send SELL order",
+                            "#a0303b"):
             return
         self.pending[ticker] = {"sell_price": price}
         self.sending.add(ticker)
