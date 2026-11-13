@@ -43,6 +43,9 @@ TARGETS = {"profit": 25.0, "ratio": 3.0}
 # show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
 # the buy; the gains and losses worked out from them)
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_usd", "loss_usd", "ratio")
+LOCKED_W = 84             # px: the fixed cells' width
+LIVE_INDENT = 6           # px: a live value's text, where the text in the live price boxes starts
+LOCKED_INDENT = 8         # px: the fixed cells' left padding, for the values beside them to line up
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
 ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
@@ -103,7 +106,7 @@ PANEL_STYLE = """
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
 #checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: transparent;
-                              border: none; padding: 1px 5px; }
+                              border: none; padding: 1px 0px 1px 5px; }
 """
 
 
@@ -1165,15 +1168,13 @@ class ChecklistPanel(QWidget):
                         glay.setSpacing(2)
                         lock = QLabel()
                         lock.setObjectName("cl_locked")
-                        lock.setMinimumWidth(84 if item.key in EDITABLE else 70)
+                        lock.setFixedWidth(LOCKED_W)       # the live cells beside them in one column
                         lock.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                         lock.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                         lock.hide()
                         lock.setFixedHeight(value.sizeHint().height() if isinstance(value, QLineEdit) else 22)
                         self.locked[item.key] = lock
                         glay.addWidget(lock, 0, Qt.AlignmentFlag.AlignVCenter)
-                        if item.key not in EDITABLE:
-                            glay.addSpacing(4)
                         glay.addWidget(box)
                         if item.key in EDITABLE and item.key != "size":
                             stepper, reset = self.make_stepper(item.key, value), self.make_reset(item.key, value)
@@ -1709,9 +1710,15 @@ class ChecklistPanel(QWidget):
                 lock.setText(fixed.get(key, NA))
                 lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
                     "" if key in ("entry", "size") else ". Beside it: now, from the live prices."))
-        for key in LOCKED:      # no copy buttons by the live cells once sent
+        for key in LOCKED + ("shares", "fee", "ticker"):     # no copy buttons by the live cells once sent
             if isinstance(self.boxes.get(key), CopyBox):
                 self.boxes[key].set_copyable(not order)
+        # ...and the values without a fixed cell start where the fixed cells' values do
+        for item, _, _, value in self.widgets:
+            if item.key in ("ticker", "shares", "fee") and isinstance(value, QLabel):
+                value.setIndent(LOCKED_INDENT if order else -1)
+            elif item.key in LOCKED and isinstance(value, QLabel) and not isinstance(value, QLineEdit):
+                value.setIndent(LIVE_INDENT if order else -1)     # in line with the live price boxes
         for key in ("entry", "size"):       # only the fixed cell once sent
             if key in self.boxes:
                 self.boxes[key].setVisible(not order)
