@@ -244,7 +244,7 @@ class AtmTable(QTableWidget):
             edit.setToolTip("The sell order's price" + (": Cancel Sell to change it" if state == "sell_open" else ""))
             edit.setStyleSheet("QLineEdit { background: #101214; color: #a8a8a8; border: 1px solid #22262a; }")
         else:
-            price = e.get("sell_at") or e.get("exit")
+            price = e.get("exit-live") or e.get("sell_at") or e.get("exit")      # the checklist's live exit
             edit.setText(limit_text(price) if price else "")
             edit.setToolTip(COLUMNS[COL["Sell at"]][1])
             self.tint_sell_at(e, edit)
@@ -374,7 +374,7 @@ class AtmTable(QTableWidget):
         """The boxes show the Sell at prices (changed on the checklist, say), unless being typed in."""
         for eid, edit in self.edits.items():
             e = self.atm.find(eid)
-            price = e and (e.get("sell_at") or e.get("exit"))
+            price = e and (e.get("exit-live") or e.get("sell_at") or e.get("exit"))
             if price and not edit.hasFocus() and edit.text() != limit_text(price):
                 edit.setText(limit_text(price))
 
@@ -416,7 +416,7 @@ class AtmTable(QTableWidget):
         price = self.typed_price(w)
         if price:
             self.atm.set_sell_at(e, price)
-        self.atm.ask_sell(self, e, price or e.get("sell_at") or e.get("exit"))
+        self.atm.ask_sell(self, e, price or e.get("exit-live") or e.get("sell_at") or e.get("exit"))
 
     def clear(self, e):
         answer = QMessageBox.question(self, "Clear", f"Take the {e['ticker']} trade off the list?\n"

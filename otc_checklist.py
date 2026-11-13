@@ -843,6 +843,7 @@ class AtmTrades(QObject):
         if self.active(e["ticker"]) is e:
             self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
             self.save_settings(self.settings)
+        self.update_live(e["ticker"])
         self.changed.emit()
 
     def reset(self, e):
@@ -985,6 +986,7 @@ class AtmTrades(QObject):
                 changed = True
         if changed:
             self.save()
+            self.changed.emit()         # the Schwab tab's Sell at follows the live exit
 
     # ---- the market of the trades' tickers ----
     def _known(self, ticker):
