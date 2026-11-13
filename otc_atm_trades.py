@@ -177,7 +177,8 @@ class AtmTable(QTableWidget):
         account = self.atm.settings.get("schwab_account", "")
         entries = [e for e in reversed(self.atm.entries) if not account or e.get("account") == account]
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
-        signature = json.dumps([account, [{k: v for k, v in e.items() if k != "sell_at"} for e in entries],
+        signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
+                                          for e in entries],
                                 sorted(self.atm.sending), sorted(self.atm.canceling)], sort_keys=True, default=str)
         if signature == self.signature:
             self.sync_sell_at()

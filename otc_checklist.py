@@ -102,8 +102,8 @@ PANEL_STYLE = """
 #checklist QPushButton#cl_cancel:disabled {
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
-#checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: #101214;
-                              border: 1px solid #2c3136; border-radius: 3px; padding: 1px 4px; }
+#checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: transparent;
+                              border: none; padding: 1px 5px; }
 """
 
 
@@ -287,6 +287,7 @@ class CopyBox(QWidget):
         super().__init__(parent)
         self.shown_text = shown_text
         self.copy_text = copy_text
+        self.copyable = True
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
@@ -310,9 +311,19 @@ class CopyBox(QWidget):
         else:
             copy_value(self.shown_text(), self.button)
 
+    def set_copyable(self, on):
+        """Without the copy button, and without its room."""
+        if on == self.copyable:
+            return
+        self.copyable = on
+        policy = self.button.sizePolicy()
+        policy.setRetainSizeWhenHidden(on)
+        self.button.setSizePolicy(policy)
+        self.button.hide()
+
     def enterEvent(self, e):
         text = self.shown_text().strip()
-        self.button.setVisible(bool(text) and text != NA)
+        self.button.setVisible(self.copyable and bool(text) and text != NA)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
@@ -680,6 +691,8 @@ class AtmTrades(QObject):
             e.setdefault("state", "buy_open")
             e.setdefault("filled", 0)
             e.setdefault("sold", 0)
+            e.setdefault("exit-live", e.get("exit"))
+            e.setdefault("safety-net-live", e.get("safety-net"))
         return entries
 
     def save(self):
@@ -874,6 +887,7 @@ class AtmTrades(QObject):
         if side == "BUY":
             ticker = key
             e = {"id": str(order_id or f"{ticker}-{now}"), "order_id": order_id, **pending,
+                 "exit-live": pending.get("exit"), "safety-net-live": pending.get("safety-net"),
                  "state": "buy_open", "filled": 0, "sold": 0, "sell_at": pending.get("exit"), "note": message}
             self.entries.append(e)
             self.buy_sent.emit(ticker)
@@ -937,6 +951,38 @@ class AtmTrades(QObject):
         self.save()
         self.changed.emit()
 
+    # ---- the live exit and safety net, kept in atm.json beside the planned ones ----
+    def update_live(self, ticker):
+        """The checklist's live exit and safety net for the ticker's trade (typed on the checklist,
+        else from the Ask and the Level II bids, as before the buy): "exit-live" and
+        "safety-net-live" in atm.json, beside the planned "exit" and "safety-net"."""
+        e = self.active(ticker)
+        if e is None or e.get("state") not in ("buy_open", "bought", "sell_open"):
+            return
+        m = self.market.get(ticker, {})
+        typed = self.settings.get("checklist_prices", {}).get(ticker, {})
+
+        def number(key):
+            try:
+                v = float(typed.get(key, ""))
+                return v if v > 0 else None
+            except ValueError:
+                return None
+        shares = (self.remaining(e) if e.get("state") != "buy_open" else 0) or e.get("shares")
+        fee = FEE_USD if e.get("fee") is None else e["fee"]
+        p = plan((m.get("bid") or [None])[0], (m.get("ask") or [None])[0],
+                 [(mm, price, size, 0) for mm, price, size in m.get("bids", [])],
+                 None, e["entry"], number("exit"), number("stop"), fee, shares)
+        if e.get("state") == "sell_open" and e.get("sell_price"):
+            p["exit"] = e["sell_price"]         # the sell order's price
+        changed = False
+        for key, value in (("exit-live", p["exit"]), ("safety-net-live", p["stop"])):
+            if value is not None and e.get(key) != value:     # kept while not known (Level II off)
+                e[key] = value
+                changed = True
+        if changed:
+            self.save()
+
     # ---- the market of the trades' tickers ----
     def _known(self, ticker):
         return any(e.get("ticker") == ticker for e in self.entries)
@@ -949,6 +995,7 @@ class AtmTrades(QObject):
         for side in ("BID", "ASK"):
             if q.get(f"{side}_PRICE"):
                 m[side.lower()] = [q[f"{side}_PRICE"], q.get(f"{side}_SIZE")]
+        self.update_live(ticker)
         self.market_changed.emit(ticker)
 
     def on_book(self, ticker, bids, asks):
@@ -957,6 +1004,7 @@ class AtmTrades(QObject):
         m = self.market.setdefault(ticker, {})
         m["bids"] = [[mm, price, size] for mm, price, size, *_ in bids]
         m["asks"] = [[mm, price, size] for mm, price, size, *_ in asks]
+        self.update_live(ticker)
         self.market_changed.emit(ticker)
 
     def _quotes(self, quotes):
@@ -966,6 +1014,7 @@ class AtmTrades(QObject):
             for side in ("bid", "ask"):
                 if q.get(f"{side}Price"):
                     m[side] = [q[f"{side}Price"], q.get(f"{side}Size")]
+            self.update_live(ticker)
             self.market_changed.emit(ticker)
 
 
@@ -1251,6 +1300,8 @@ class ChecklistPanel(QWidget):
             order = self.order()
             if valid and key == "exit" and order and order.get("state") in ("buy_open", "bought"):
                 self.atm.set_sell_at(order, float(text))    # Sell ATM sells at it
+            if key in ("exit", "stop"):
+                self.atm.update_live(self.ticker)
         self.refresh()
 
     def edit_done(self, key=None, edit=None):
@@ -1658,6 +1709,9 @@ class ChecklistPanel(QWidget):
                 lock.setText(fixed.get(key, NA))
                 lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
                     "" if key in ("entry", "size") else ". Beside it: now, from the live prices."))
+        for key in LOCKED:      # no copy buttons by the live cells once sent
+            if isinstance(self.boxes.get(key), CopyBox):
+                self.boxes[key].set_copyable(not order)
         for key in ("entry", "size"):       # only the fixed cell once sent
             if key in self.boxes:
                 self.boxes[key].setVisible(not order)
