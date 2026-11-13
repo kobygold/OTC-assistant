@@ -73,8 +73,8 @@ PANEL_STYLE = """
 #checklist QLineEdit[readOnly="true"] { background: #101214; }
 #checklist QPushButton#cl_buy, #checklist QPushButton#cl_sell {
     color: #ffffff; font-weight: bold; border-radius: 4px; padding: 3px 14px; border: 1px solid transparent; }
-#checklist QPushButton#cl_buy { background: #1c7a3a; }
-#checklist QPushButton#cl_buy:hover { background: #239447; }
+#checklist QPushButton#cl_buy { background: #1d811d; }
+#checklist QPushButton#cl_buy:hover { background: #24a124; }
 #checklist QPushButton#cl_sell { background: #a0303b; }
 #checklist QPushButton#cl_sell:hover { background: #bb3946; }
 #checklist QPushButton#cl_buy:disabled, #checklist QPushButton#cl_sell:disabled {
@@ -782,7 +782,7 @@ class ChecklistPanel(QWidget):
         self.order_label.setText(text)
         self.order_label.setVisible(bool(text))
 
-    def confirm(self, title, rows, action, color="#1c7a3a"):
+    def confirm(self, title, rows, action, color="#1d811d"):
         """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
         color: the send button's. True when approved."""
         account = getattr(self.fee_reader, "account_tail", "")
@@ -833,9 +833,7 @@ class ChecklistPanel(QWidget):
         total = p["shares"] * p["entry"]
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC (good till canceled)"),
                 ("Amount of stocks", f"{p['shares']:,}"), ("Limit price (entry)", fmt_price(p["entry"])),
-                ("Total", f"${total:,.2f}")] + self.fee_rows(total) + [
-                ("Exit (sell) price", fmt_price(p["exit"]) if p["exit"] else NA),
-                ("Stop", fmt_price(p["stop"]) if p["stop"] is not None else NA)]
+                ("Total", f"${total:,.2f}")] + self.fee_rows(total)
         if not self.confirm(f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order"):
             return
         self.pending[ticker] = {"shares": p["shares"], "entry": p["entry"], "exit": p["exit"], "stop": p["stop"]}
