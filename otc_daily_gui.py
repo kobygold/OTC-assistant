@@ -55,7 +55,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.8.10"
+APP_VERSION = "0.9.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -938,6 +938,8 @@ class MainWindow(QMainWindow):
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
                                         APP_DIR / "schwab_token.json")
         self.checklist.setVisible(self.checklist_btn.isChecked())
+        # A BUY order sent from the checklist: the ticker becomes a yellow favorite
+        self.checklist.order_placed.connect(lambda ticker: self.set_fav(ticker, 1))
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
