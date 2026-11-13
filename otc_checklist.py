@@ -37,6 +37,8 @@ COPIED_MS = 1000        # how long the "Copied" note stays, in ms
 RANGE_DAYS = 30         # calendar days the bounce range must have lasted
 NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
+# Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
+TARGETS = {"profit": 25.0, "ratio": 3.0}
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
 ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
@@ -665,6 +667,8 @@ class AtmTrades(QObject):
         except (OSError, ValueError):
             return []
         for e in entries:
+            if "stop" in e:         # called "safety-net" since v0.9.4
+                e["safety-net"] = e.pop("stop")
             e.setdefault("id", str(e.get("order_id") or f"{e.get('ticker')}-{e.get('time')}"))
             e.setdefault("state", "buy_open")
             e.setdefault("filled", 0)
@@ -694,7 +698,7 @@ class AtmTrades(QObject):
             e = {"id": str(o.get("buy_id") or f"{ticker}-{o.get('sent')}"), "order_id": o.get("buy_id"),
                  "ticker": ticker, "account": o.get("account"), "entry": entry, "exit": o.get("exit"),
                  "shares": shares, "usd": round(shares * entry, 2) if shares and entry else None,
-                 "stop": o.get("stop"), "fee": None, "time": o.get("sent"),
+                 "safety-net": o.get("stop"), "fee": None, "time": o.get("sent"),
                  "bid": [None, None], "ask": [None, None], "level2": {"bids": [], "asks": []},
                  "state": o.get("state", "buy_open"), "filled": o.get("filled", 0), "sold": 0,
                  "sell_at": o.get("sell_price") or o.get("exit"), "note": o.get("note", "")}
@@ -867,9 +871,9 @@ class AtmTrades(QObject):
             self.entries.append(e)
             # The plan stays as sent: typed values, so live quotes no longer move them
             mine = self.settings.setdefault("checklist_prices", {}).setdefault(ticker, {})
-            for k in ("entry", "exit", "stop"):
-                if pending.get(k) is not None:
-                    mine[k] = limit_text(pending[k])
+            for k, key in (("entry", "entry"), ("exit", "exit"), ("stop", "safety-net")):
+                if pending.get(key) is not None:
+                    mine[k] = limit_text(pending[key])
             self.save_settings(self.settings)
             self.buy_sent.emit(ticker)
         else:
@@ -1078,7 +1082,7 @@ class ChecklistPanel(QWidget):
                     mark.mousePressEvent = lambda _e, it=item: self.toggle(it)
                     text.setCursor(Qt.CursorShape.PointingHandCursor)
                     text.mousePressEvent = lambda _e, it=item: self.toggle(it)
-                if item.kind == "info":
+                if item.kind == "info" and item.key not in TARGETS:
                     mark.setFixedWidth(4)
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
@@ -1343,6 +1347,18 @@ class ChecklistPanel(QWidget):
         if not p["entry"] or not p["shares"]:
             QMessageBox.warning(self, "Buy ATM", "There's no entry price or amount of stocks yet.")
             return
+        self.refresh()
+        passed, count = getattr(self, "score", (0, 0))
+        if passed < count:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Buy ATM",
+                              "לא כל הצ'ק ליסט ירוק,\nהאם אתה בטוח שאתה רוצה לשים פקודת קנייה?",
+                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self)
+            box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            box.setInformativeText(f"{passed}/{count} ✔")
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            self.dialog = box               # for tests
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
         total = p["shares"] * p["entry"]
         fee = self.fees.get(ticker, (None, ""))[0]
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC (good till canceled)"),
@@ -1368,7 +1384,7 @@ class ChecklistPanel(QWidget):
         ask = (self.ask, self.ask_size) if self.ask else top(self.asks)
         book = lambda rows: [[mm, price, size] for mm, price, size, *_ in rows]
         return {"ticker": self.ticker, "account": account, "entry": p["entry"], "exit": p["exit"], "shares": p["shares"],
-                "usd": round(p["shares"] * p["entry"], 2), "stop": p["stop"], "fee": fee,
+                "usd": round(p["shares"] * p["entry"], 2), "safety-net": p["stop"], "fee": fee,
                 "time": datetime.now().isoformat(timespec="seconds"),
                 "bid": list(bid), "ask": list(ask),
                 "level2": {"bids": book(self.bids), "asks": book(self.asks)}}
@@ -1651,6 +1667,20 @@ class ChecklistPanel(QWidget):
                 if item.key in ("profit", "loss", "profit_usd", "loss_usd"):
                     value.setStyleSheet("" if val in ("", NA) else
                                         f"color: {MARKS[OK if val.startswith('+') else BAD][1]};")
+                if item.key not in TARGETS:
+                    continue
+                # ✔ once it reaches its target, else ✘ (? while unknown)
+                number = self.last_plan[0][item.key]
+                need = TARGETS[item.key]
+                state = UNKNOWN if number is None else OK if number >= need - 1e-9 else BAD
+                tip = (f"{tip} · " if tip else "") + (f"At least {need:g}%" if item.key == "profit" else
+                                                      f"At least 1:{need:g}")
+                symbol, color = MARKS[state]
+                mark.setText(f"<b style='color:{color}'>{symbol}</b>")
+                for w in (mark, text):
+                    w.setToolTip(tip)
+                total += 1
+                passed += state == OK
                 continue
             if value is not None:
                 value.setText(val)
@@ -1664,3 +1694,4 @@ class ChecklistPanel(QWidget):
             total += 1
             passed += state in (OK, SOLVED)
         self.summary.setText(f"{self.ticker} · {passed}/{total} ✔" if self.ticker else "")
+        self.score = (passed, total)        # Buy ATM asks first when not all are ✔

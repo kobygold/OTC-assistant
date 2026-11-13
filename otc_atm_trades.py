@@ -221,7 +221,7 @@ class AtmTable(QTableWidget):
         self.cell(row, COL["$"], f"${e['usd']:,.2f}" if e.get("usd") else "-", bold=True)
         self.cell(row, COL["Entry"], fmt_price(e.get("entry")), ORDER_COLOR, bold=True)
         self.cell(row, COL["Exit plan"], fmt_price(e.get("exit")), GREEN, bold=True)
-        self.cell(row, COL["Safety Net"], fmt_price(e.get("stop")), RED, bold=True)
+        self.cell(row, COL["Safety Net"], fmt_price(e.get("safety-net")), RED, bold=True)
         fee = e.get("fee")
         self.cell(row, COL["Fee"], "-" if fee is None else f"${fee:.2f}", YELLOW if fee and fee > FEE_HIGH else None,
                   bold=bool(fee and fee > FEE_HIGH), tip="" if fee is not None else "Not read from Schwab at the buy")
