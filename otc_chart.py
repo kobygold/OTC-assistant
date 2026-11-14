@@ -671,7 +671,9 @@ class CandleChart(DrawingsMixin, QWidget):
             if in_price or in_vol:
                 idx = self._index_at(mx, price)
                 pane = price if in_price else vol
-                snapped, slot = self._snap(idx, mx, my, py, price) if in_price else (None, None)
+                # Ctrl (Cmd on a Mac) held: no snapping, as when placing or moving a drawing
+                free = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+                snapped, slot = self._snap(idx, mx, my, py, price) if in_price and not free else (None, None)
                 # A Bid/Ask tag's point isn't on a candle: the crosshair goes to the point itself
                 at = slot if slot is not None else idx
                 idx = last if slot is not None else round(at)      # the tag's time is now: the last candle
@@ -786,8 +788,12 @@ class CandleChart(DrawingsMixin, QWidget):
         """Shift down over the price pane starts the measuring line at the crosshair; letting go
         of Shift ends it."""
         t = e.type()
-        if t == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Delete)                 and QApplication.activeWindow() is self.window() and self._drawing_key(e):
+        if t == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Delete) and \
+                QApplication.activeWindow() is self.window() and self._drawing_key(e):
             return True         # Esc stops placing a drawing, Delete removes the selected one
+        if t in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and e.key() == Qt.Key.Key_Control and \
+                self.mouse is not None and self.isVisible():
+            self.update()       # Ctrl (Cmd on a Mac): the crosshair stops snapping, or snaps again
         if t in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and e.key() == Qt.Key.Key_Shift \
                 and not e.isAutoRepeat():
             if t == QEvent.Type.KeyPress:

@@ -4,7 +4,8 @@ level, a vertical line, a text note, an arrow, an ellipse and a rectangle.
 
 Right-click the chart for the tools: the point right-clicked places a price level, a vertical line
 or a text note, and is the first point of the others (then click the second, or drag to it). Points
-snap to a candle's open, high, low or close near the mouse; hold Ctrl to place them freely.
+snap where the crosshair snaps (a candle's open, high, low or close, a Bid/Ask or Level II
+tag's point), when placing and when moving; hold Ctrl (Cmd on a Mac) to place or move them freely.
 Click a drawing to select it, drag it (or its end points) to move it, press Delete or right-click
 it to remove it. Esc stops placing. Double-click a text note to edit it.
 
@@ -187,18 +188,21 @@ class DrawingsMixin:
         return self.first + (x - price.left()) / self._bar_w(price) - 0.5
 
     def _point_at(self, pos, free=False):
-        """(slot, price) for the mouse: the slot of the candle under it, and the price, snapped to
-        that candle's open, high, low or close when near one (unless free: Ctrl held)."""
-        import otc_chart as ch
+        """(slot, price) for the mouse: the slot of the candle under it, and the price snapped as the
+        crosshair's (CandleChart._snap): a Bid/Ask or Level II tag's point, or that candle's open,
+        high, low or close when near one. free (Ctrl / Cmd held): not snapped."""
+        return self._snapped_point(pos, free)[0]
+
+    def _snapped_point(self, pos, free=False):
+        """((slot, price), snapped: True when the price is the crosshair's snap)."""
         price, _ = self._layout()
         slot = round(self._slot_frac(pos.x(), price))
         value = self._value_of(pos.y(), price)
-        if not free and 0 <= slot < len(self.dates):
-            best = min((self.h[slot], self.l[slot], self.o[slot], self.c[slot]),
-                       key=lambda v: abs(self._y_of(v, price) - pos.y()))
-            if abs(self._y_of(best, price) - pos.y()) <= ch.SNAP_PX:
-                return slot, best
-        return slot, round(value, 8)
+        if not free:
+            snap, at = self._snap(slot, pos.x(), pos.y(), lambda v: self._y_of(v, price), price)
+            if snap is not None:
+                return ((round(at) if at is not None else slot), snap), True
+        return (slot, round(value, 8)), False
 
     # ---- the drawings ----
     def drawings(self):
@@ -372,6 +376,38 @@ class DrawingsMixin:
                 return d, None
         return None
 
+    def _nearest_on(self, d, pos, price):
+        """The point of the drawing nearest pos, on screen: where it was grabbed, so a snapped move
+        puts that point of it right on the snap."""
+        pts = self._slots(d)
+        if pts is None:
+            return pos
+        kind = d["kind"]
+        sp = self._screen_points(kind, pts, price)
+
+        def on_seg(a, b):
+            dx, dy = b.x() - a.x(), b.y() - a.y()
+            if dx == dy == 0:
+                return QPointF(a)
+            t = max(0.0, min(1.0, ((pos.x() - a.x()) * dx + (pos.y() - a.y()) * dy) / (dx * dx + dy * dy)))
+            return QPointF(a.x() + t * dx, a.y() + t * dy)
+        if kind in ("trend", "arrow"):
+            return on_seg(*sp)
+        if kind == "price":
+            return QPointF(pos.x(), sp[0].y())
+        if kind == "vline":
+            return QPointF(sp[0].x(), pos.y())
+        if kind == "text":
+            return QPointF(sp[0])
+        r = QRectF(sp[0], sp[1]).normalized()
+        if kind == "rect":
+            c = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
+            return min((on_seg(c[k], c[(k + 1) % 4]) for k in range(4)),
+                       key=lambda q: math.hypot(q.x() - pos.x(), q.y() - pos.y()))
+        rx, ry = r.width() / 2, r.height() / 2      # ellipse: along the ray from its centre
+        ang = math.atan2((pos.y() - r.center().y()) / (ry or 1), (pos.x() - r.center().x()) / (rx or 1))
+        return QPointF(r.center().x() + rx * math.cos(ang), r.center().y() + ry * math.sin(ang))
+
     # ---- placing ----
     def start_tool(self, kind, at=None):
         """Starts placing a drawing. at: the (slot, price) right-clicked for the menu: it places a
@@ -430,8 +466,10 @@ class DrawingsMixin:
             return False
         d, handle = hit
         self.selected = d["id"]
+        on = self._nearest_on(d, pos, price)       # the drawing's own point grabbed
         self.draw_drag = {"id": d["id"], "handle": handle, "orig": self._slots(d), "moved": False,
-                          "slot0": self._slot_frac(pos.x(), price), "value0": self._value_of(pos.y(), price)}
+                          "slot0": self._slot_frac(on.x(), price), "value0": self._value_of(on.y(), price),
+                          "press_slot": self._slot_frac(pos.x(), price), "press_value": self._value_of(pos.y(), price)}
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.update()
         return True
@@ -457,11 +495,20 @@ class DrawingsMixin:
             pts = list(orig)
             pts[g["handle"]] = self._point_at(pos, free)
         else:
-            ds = round(self._slot_frac(pos.x(), price) - g["slot0"])
-            dv = self._value_of(pos.y(), price) - g["value0"]
+            # the point grabbed follows the mouse, snapped as the crosshair: the drawing goes
+            # through the candle's high, low... or the Bid/Ask the crosshair snaps to
+            free = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            (slot, value), snapped = self._snapped_point(pos, free)
+            if snapped:     # its grabbed point onto the snap
+                ds, dv = slot - round(g["slot0"]), value - g["value0"]
+            else:           # it moves with the mouse, as grabbed
+                ds = round(self._slot_frac(pos.x(), price) - g["press_slot"])
+                dv = self._value_of(pos.y(), price) - g["press_value"]
             pts = [(None if s is None else s + (0 if kind == "price" else ds),
                     v if kind == "vline" else round(v + dv, 8)) for s, v in orig]
-            if kind == "price":
+            if kind == "price" and snapped:
+                pts = [(None, value)]       # exactly at the price snapped to
+            elif kind == "price":
                 tick = 0.0001 if pts[0][1] < 1 else 0.01
                 pts = [(None, max(tick, round(round(pts[0][1] / tick) * tick, 4)))]
         d["points"] = [[None if kind == "price" else self._key_of_slot(s), v] for s, v in pts]
