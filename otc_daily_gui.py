@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_atm as atm
-from otc_atm_trades import AtmTable
+from otc_atm_trades import AtmTable, SchwabOrdersTable
 import otc_checklist as checklist
 import otc_daily as core
 import otc_zones as zones
@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2306,12 +2306,20 @@ class MainWindow(QMainWindow):
         self.trades_table = AtmTable(self.checklist.atm)
         self.trades_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         tlay.addWidget(self.trades_table)
-        note = QLabel("Bid / Ask now: live while Level II is on, else read every minute. Level II now: while "
+        note = QLabel("Bid / Ask now: live while Level II is on, else read every 15 seconds. Level II now: while "
                       "Level II is on. Hover the Bid / Ask then for the Level II when the buy was sent.")
         note.setStyleSheet("color: #8a8a8a;")
         note.setWordWrap(True)
         tlay.addWidget(note)
-        root.addWidget(trades, 1)
+        root.addWidget(trades, 3)
+        # the account's other orders (sent from thinkorswim): change or cancel them here too
+        others = self.orders_box = QGroupBox("Other orders")
+        olay = QVBoxLayout(others)
+        self.orders_table = SchwabOrdersTable(self.checklist.atm)
+        self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
+        olay.addWidget(self.orders_table)
+        root.addWidget(others, 2)
+        self.checklist.atm.changed.connect(self.update_orders_title)
         self.schwab_accounts_read = False
         reader = self.checklist.fee_reader
         if reader:
@@ -2366,6 +2374,9 @@ class MainWindow(QMainWindow):
             self.atm_box.setTitle(f"ATM trades of account ...{saved} (atm.json)" if saved else
                                   "ATM trades of all the accounts (atm.json): choose an account above")
             self.trades_table.rebuild()
+        if hasattr(self, "orders_table"):   # and its other orders
+            self.orders_table.rebuild()
+            self.update_orders_title()
         if error:
             self.schwab_status.setText(f"Can't read the accounts: {error}")
         elif not accounts:
@@ -2374,6 +2385,19 @@ class MainWindow(QMainWindow):
             self.schwab_status.setText(f"BUY and SELL orders go to {reader.kind(saved)}.")
         else:
             self.schwab_status.setText("Choose the account the BUY and SELL orders go to.")
+
+    def update_orders_title(self):
+        atm = self.checklist.atm
+        saved = self.settings.get("schwab_account", "")
+        if not saved:
+            title = "Other orders: choose an account above"
+        elif not atm.orders_read(saved):
+            title = f"Other orders of account ...{saved} (not ATM trades): reading them from Schwab..."
+        else:
+            n = len(atm.other_orders(account=saved))
+            title = (f"Other orders of account ...{saved} (not ATM trades, e.g. from thinkorswim): "
+                     + (f"{n} open" if n else "none open") + ", read every 15 seconds")
+        self.orders_box.setTitle(title)
 
     def on_schwab_account(self, index):
         tail = self.schwab_account.itemData(index)

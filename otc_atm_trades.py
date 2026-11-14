@@ -1,4 +1,5 @@
-"""The Schwab tab's list of ATM trades (atm.json): one row per trade, from the Buy ATM to the sale.
+"""The Schwab tab's list of ATM trades (atm.json): one row per trade, from the Buy ATM to the sale; and
+its list of the account's other orders (sent from thinkorswim), to change or cancel.
 
 Each row shows the plan and the market when the buy was sent next to the market now (live while
 Level II is on, else the bid and ask read every minute), and the order buttons of its state:
@@ -13,7 +14,7 @@ from PyQt6.QtGui import QBrush, QColor, QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QPushButton,
                              QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
-from otc_checklist import (CANCEL_COLOR, FEE_HIGH, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
+from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            AtmTrades, red_x_icon, reset_icon, usd_signed)
 
 
@@ -425,3 +426,218 @@ class AtmTable(QTableWidget):
                                       QMessageBox.StandardButton.No)
         if answer == QMessageBox.StandardButton.Yes:
             self.atm.clear(e)
+
+
+# ---------------------------------------------------------------- other Schwab orders ---
+# (title, tooltip)
+ORDER_COLUMNS = [
+    ("Ticker", "Double-click: its chart"),
+    ("Side", ""),
+    ("Status", "Schwab's status of the order"),
+    ("Entered", "When the order was placed"),
+    ("Duration", "GTC: good till canceled. Day: for the day only."),
+    ("Shares", "The shares left to fill (and those filled)"),
+    ("Limit", "The order's limit price"),
+    ("$", "Shares left x limit"),
+    ("Bid now", "Read every 15 seconds (live while Level II streams the ticker)"),
+    ("Ask now", "Read every 15 seconds (live while Level II streams the ticker)"),
+    ("New limit", "A new limit price for Change: typed, or +/- (0.0001 up / down). A whole number is a count "
+                  "of 0.0001 steps (12 -> 0.0012). The round arrow: back to the order's limit."),
+    ("Change", ""),
+    ("Cancel", ""),
+]
+OCOL = {title: i for i, (title, _) in enumerate(ORDER_COLUMNS)}
+
+
+def entered_text(iso):
+    """Schwab's entered time (UTC) as local "MM-DD HH:MM"."""
+    from datetime import datetime
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S%z").astimezone().strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return (iso or "")[5:16].replace("T", " ")
+
+
+class SchwabOrdersTable(AtmTable):
+    """The chosen account's open orders that aren't ATM trades (sent from thinkorswim), as on the
+    chart: each can be changed to a new limit (Schwab replaces it, as thinkorswim does) or canceled."""
+
+    def __init__(self, atm: AtmTrades, parent=None):
+        self.keys = []              # the orders' chart keys ("schwab:<id>"), in row order
+        QTableWidget.__init__(self, 0, len(ORDER_COLUMNS), parent)
+        self.atm = atm
+        self.edits = {}
+        self.signature = None
+        self.dirty = set()
+        self.setHorizontalHeaderLabels([t for t, _ in ORDER_COLUMNS])
+        for i, (_, tip) in enumerate(ORDER_COLUMNS):
+            self.horizontalHeaderItem(i).setToolTip(tip)
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWordWrap(False)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.bold = QFont(self.font())
+        self.bold.setBold(True)
+        self.market_timer = QTimer(self)
+        self.market_timer.setSingleShot(True)
+        self.market_timer.setInterval(500)
+        self.market_timer.timeout.connect(self.update_market)
+        atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
+        atm.market_changed.connect(self.market_changed)
+        self.cellDoubleClicked.connect(self.double_clicked)
+        self.rebuild()
+
+    def double_clicked(self, row, col):
+        if col == OCOL["Ticker"] and self.item(row, col):
+            self.open_chart.emit(self.item(row, col).text())
+
+    def cell(self, row, col, text, color=None, bold=False, bg=None, tip="", align=None):
+        return super().cell(row, col, text, color, bold, bg, tip,
+                            align or (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                                      if col in (OCOL["Ticker"], OCOL["Side"], OCOL["Status"]) else None))
+
+    def orders(self):
+        return sorted(self.atm.other_orders(), key=lambda o: o.get("entered") or "", reverse=True)
+
+    def rebuild(self):
+        orders = self.orders()
+        busy = sorted(k for k in self.atm.sending | self.atm.canceling if str(k).startswith("schwab:"))
+        signature = json.dumps([self.atm.chosen_account(), orders, busy], sort_keys=True, default=str)
+        if signature == self.signature:
+            return
+        focused = QApplication.focusWidget()
+        if isinstance(focused, QLineEdit) and self.isAncestorOf(focused) and focused.isModified():
+            QTimer.singleShot(1000, self.rebuild)       # not while a price is being typed
+            return
+        self.signature = signature
+        self.keys = [f"schwab:{o['id']}" for o in orders]
+        self.edits = {}
+        self.setRowCount(len(orders))
+        for row, o in enumerate(orders):
+            self.fill(row, o)
+            self.fill_market(row, o)
+            self.fit_row(row)
+
+    def fit_row(self, row):
+        self.resizeRowToContents(row)
+        self.setRowHeight(row, self.rowHeight(row) + 6)
+
+    def fill(self, row, o):
+        key = f"schwab:{o['id']}"
+        changing, canceling = key in self.atm.sending, key in self.atm.canceling
+        buy = o["side"] == "BUY"
+        self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff", bold=True)
+        self.cell(row, OCOL["Side"], o["side"], "#ffffff", bold=True, bg=BUY_COLOR if buy else SELL_COLOR)
+        status = "Changing ..." if changing else "Canceling ..." if canceling else \
+            (o.get("status") or "").replace("_", " ").title()
+        self.cell(row, OCOL["Status"], status, YELLOW if changing or canceling else None)
+        self.cell(row, OCOL["Entered"], entered_text(o.get("entered")), DIM, tip=o.get("entered") or "")
+        duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration") or "")
+        self.cell(row, OCOL["Duration"], duration)
+        filled = o.get("filled") or 0
+        self.cell(row, OCOL["Shares"], f"{o['shares']:,}" + (f" ({filled:,} filled)" if filled else ""), bold=True)
+        self.cell(row, OCOL["Limit"], fmt_price(o["price"]), ORDER_COLOR, bold=True)
+        self.cell(row, OCOL["$"], f"${o['shares'] * o['price']:,.2f}", bold=True)
+
+        # the new limit: + / - and back to the order's limit, then Change
+        edit = SelectAllEdit()
+        edit.setFixedWidth(80)
+        edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,6}(\.\d{0,6})?"), edit))
+        edit.setText(limit_text(o["price"]))
+        edit.setToolTip(ORDER_COLUMNS[OCOL["New limit"]][1])
+        change = button("Change", BUY_COLOR if buy else SELL_COLOR)
+        change.setToolTip("Change the order's limit to the New limit, after asking (Schwab replaces the order, "
+                          "as thinkorswim does)" + (". Partly filled: change it in thinkorswim." if filled else ""))
+        cancel = button("Cancel", CANCEL_COLOR, "#111111")
+        cancel.setIcon(red_x_icon())
+        cancel.setToolTip("Cancel the order, after asking")
+        ready = not (changing or canceling) and self.atm.trader is not None
+
+        def tint(_t=None, o=o, edit=edit, change=change):
+            try:
+                new = float(edit.text())
+            except ValueError:
+                new = None
+            same = new is not None and abs(new - o["price"]) < 1e-9
+            edit.setStyleSheet(f"QLineEdit {{ background: #1b1e21; color: {ORDER_COLOR if same else CHANGED};"
+                               " font-weight: bold; border: 1px solid #3a4046; }")
+            change.setEnabled(ready and not filled and bool(new) and not same)
+        edit.textChanged.connect(tint)
+        edit.editingFinished.connect(lambda w=edit: self.typed_price(w))
+        edit.setEnabled(ready)
+        self.edits[key] = edit
+        self.setCellWidget(row, OCOL["New limit"], self.limit_box(o, edit, ready))
+        change.clicked.connect(lambda _c=False, k=key, w=edit: self.change(k, w))
+        cancel.clicked.connect(lambda _c=False, k=key: self.atm.ask_cancel_key(self, k))
+        cancel.setEnabled(ready)
+        self.setCellWidget(row, OCOL["Change"], centered(change))
+        self.setCellWidget(row, OCOL["Cancel"], centered(cancel))
+        tint()
+
+    def limit_box(self, o, edit, enabled):
+        """The New limit box, + above - beside it, and back to the order's limit."""
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(2)
+        lay.addWidget(edit)
+        steps = QVBoxLayout()
+        steps.setSpacing(1)
+        for sign, step in (("+", 1), ("−", -1)):
+            b = QToolButton()
+            b.setText(sign)
+            b.setFixedSize(18, 12)
+            b.setStyleSheet(TOOL.format(""))
+            b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
+            b.setAutoRepeat(True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setEnabled(enabled)
+            b.clicked.connect(lambda _c=False, w=edit, s=step: self.step_limit(w, s))
+            steps.addWidget(b)
+        lay.addLayout(steps)
+        reset = QToolButton()
+        reset.setIcon(reset_icon())
+        reset.setIconSize(QSize(14, 14))
+        reset.setFixedSize(18, 25)
+        reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
+            "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
+            "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
+        reset.setToolTip(f"Back to the order's limit ({fmt_price(o['price'])})")
+        reset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.setEnabled(enabled)
+        reset.clicked.connect(lambda _c=False, w=edit, p=o["price"]: w.setText(limit_text(p)))
+        lay.addWidget(reset)
+        return box
+
+    @staticmethod
+    def step_limit(w, direction):
+        try:
+            base = Decimal(w.text().strip())
+        except InvalidOperation:
+            return
+        new = base + direction * PRICE_STEP
+        if new > 0:
+            w.setText(limit_text(new))
+
+    def change(self, key, w):
+        price = self.typed_price(w)
+        if price:
+            self.atm.ask_move(self, key, price)       # the dialog with the price, then Schwab's replace
+
+    def fill_market(self, row, o):
+        m = self.atm.market.get(o["ticker"], {})
+        for k, col in (("bid", OCOL["Bid now"]), ("ask", OCOL["Ask now"])):
+            self.cell(row, col, quote_text(m.get(k)), bold=True)
+
+    def update_market(self):
+        dirty, self.dirty = self.dirty, set()
+        orders = {f"schwab:{o['id']}": o for o in self.orders()}
+        for row, key in enumerate(self.keys):
+            o = orders.get(key)
+            if o is not None and o["ticker"] in dirty:
+                self.fill_market(row, o)

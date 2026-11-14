@@ -1091,13 +1091,17 @@ class AtmTrades(QObject):
             ids.update(str(x) for x in e.get("replaced_ids", []))
         return ids
 
-    def other_orders(self, ticker, account=None):
-        """The open limit orders of the ticker in the account (the chosen one) that aren't an ATM
-        trade's: sent from thinkorswim."""
+    def other_orders(self, ticker=None, account=None):
+        """The open limit orders of the ticker (None: of every ticker) in the account (the chosen
+        one) that aren't an ATM trade's: sent from thinkorswim."""
         tracked = self.tracked_ids()
         return [o for o in self.schwab_orders.get(account or self.chosen_account(), [])
-                if o["ticker"] == ticker and o["open"] and o["price"] and o["shares"] > 0
+                if (ticker is None or o["ticker"] == ticker) and o["open"] and o["price"] and o["shares"] > 0
                 and o["id"] not in tracked]
+
+    def orders_read(self, account=None):
+        """True once the account's (the chosen one's) orders were read from Schwab."""
+        return (account or self.chosen_account()) in self.schwab_orders
 
     def chart_orders(self, ticker):
         """The ticker's open orders in the account chosen on the Schwab tab (one account at a time):
@@ -1277,6 +1281,11 @@ class AtmTrades(QObject):
             return                  # tried again at the next check
         self.schwab_orders[account] = orders
         self.orders_time[account] = time.time()
+        if account == self.chosen_account() and self.trader is not None:
+            # new tickers on the Schwab tab's list (another account chosen, say): their bid / ask now
+            new = sorted({o["ticker"] for o in self.other_orders()} - set(self.market))
+            if new:
+                self.trader.read_quotes(new)
         # trades whose order was canceled or replaced outside the app: follow the new one, or, once
         # the orders read after it show none, take it as canceled
         for e in list(self.entries):
@@ -1333,7 +1342,8 @@ class AtmTrades(QObject):
                 self.trader.check(e["id"], "BUY", e["order_id"], e.get("account"))
             elif e.get("state") == "sell_open" and e.get("sell_id"):
                 self.trader.check(e["id"], "SELL", e["sell_id"], e.get("account"))
-        tickers = self.open_tickers()
+        # the open trades' tickers, and the chosen account's other orders' (the Schwab tab's bid / ask)
+        tickers = sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()})
         if tickers:
             self.trader.read_quotes(tickers)
         # the accounts' orders: the chosen one's are drawn on the chart; an open trade's show a
