@@ -787,6 +787,12 @@ class PriceBox(QWidget):
     STYLE = PANEL_STYLE.replace("#checklist", "#price_box") + "#price_box { background: transparent; }"
 
     class Edit(CopyLineEdit):
+        def focusInEvent(self, e):
+            super().focusInEvent(e)
+            if not self.text() and self.placeholderText():
+                self.setText(self.placeholderText())    # the default, to type over or step from
+            QTimer.singleShot(0, self.selectAll)        # the whole text selected (after a click's own)
+
         def keyPressEvent(self, e):
             if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.editingFinished.emit()     # takes the typed price; doesn't press a button
@@ -812,6 +818,7 @@ class PriceBox(QWidget):
         self.edit.setPalette(pal)
         self.edit.setPlaceholderText(fmt_price(start))
         self.edit.textChanged.connect(lambda _t: self.price_changed.emit(self.price()))
+        self.edit.textChanged.connect(self._recolor)
         self.edit.editingFinished.connect(self._steps)
         lay.addWidget(self.edit)
         steps = QWidget()
@@ -849,6 +856,14 @@ class PriceBox(QWidget):
             return 0.0
         return v if v > 0 else 0.0
 
+    def _recolor(self, *_):
+        """Orange when typed over, white while it shows the default (as the placeholder)."""
+        text = self.edit.text().replace(",", "")
+        same = not text or text == self.edit.placeholderText().replace(",", "")
+        pal = self.edit.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff" if same else "#f0a020"))
+        self.edit.setPalette(pal)
+
     def set_price(self, value: Decimal):
         """Shown as everywhere in the app: 4 decimals under $1 (0.0300), 2 from $1."""
         self.edit.setText(fmt_price(float(value)).replace(",", ""))
@@ -872,6 +887,52 @@ class PriceBox(QWidget):
             typed *= PRICE_STEP
         if typed > 0:
             self.set_price(typed)           # 0.031 -> 0.0310
+
+
+class AmountBox(PriceBox):
+    """PriceBox's look for an amount: the $ ("usd", 2 decimals) or the shares (whole). The reset goes
+    back to the default, default() (it may follow the price: refresh() after it changes), shown
+    white as the placeholder until typed over. value_changed(float) as PriceBox's price_changed."""
+
+    def __init__(self, kind, default, step, reset_tip, step_tip, parent=None):
+        self.kind, self.default, self.step_of = kind, default, step
+        super().__init__(0, parent, reset_tip=reset_tip)
+        self.value_changed = self.price_changed
+        self.edit.setFixedWidth(104)
+        rx = r"[\d,]{0,12}(\.\d{0,2})?" if kind == "usd" else r"[\d,]{0,12}"
+        self.edit.setValidator(QRegularExpressionValidator(QRegularExpression(rx), self.edit))
+        for b in self.findChildren(QToolButton):
+            if b.objectName() == "cl_step":
+                b.setToolTip(step_tip)
+        self.refresh()
+
+    def fmt(self, v):
+        return f"{v:,.2f}" if self.kind == "usd" else f"{int(v):,}"
+
+    def refresh(self):
+        """The default shown again (when the price it follows changed)."""
+        self.edit.setPlaceholderText(self.fmt(max(self.default() or 0, 0)))
+        self._recolor()
+
+    def price(self):
+        try:
+            v = float(self.edit.shown().replace(",", ""))
+        except ValueError:
+            return 0.0
+        return v if v > 0 else 0.0
+    value = price
+
+    def set_value(self, v):
+        self.edit.setText(self.fmt(max(v, 0)))
+
+    def step(self, direction):
+        size = self.step_of()
+        v = (round(self.price() / size) + direction) * size
+        self.set_value(max(v, 0))
+
+    def _steps(self):
+        if self.edit.text():
+            self.set_value(self.price())        # 1500 -> 1,500.00 / 1,500
 
 
 def confirm_price_order(parent, account_name, start, make, action, color=BUY_COLOR):
@@ -964,52 +1025,56 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
 
 def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
                  remember_usd=None):
-    """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, the price (from the
-    chart's y where right-clicked: +/- and back to it), the shares and the $ (each follows the
-    other), GTC (the default) or Day, and the $ with the commission in yellow: "$101.00 + $6.95 =
-    $107.95" (a sell: less it). owned / in_orders: a sell's stocks owned (None: none known): a sell
-    starts with all of them not in sell orders yet. usd_start: the $ a buy starts with (the shares
-    follow); remember_usd($): called with a $ typed in, kept for the next time (even if canceled).
-    {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
+    """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, GTC (the default)
+    or Day, and three boxes alike (+/-, reset, the whole text selected on entering): the price (from
+    the chart's y where right-clicked), the $ and the shares, each of these two following the other.
+    The $ with the commission in yellow: "$101.00 + $6.95 = $107.95" (a sell: less it).
+    The defaults (the resets): a buy's $ is usd_start (the last one bought with) and its shares
+    what it buys; a sell's shares are all those owned not in sell orders yet (owned less in_orders;
+    owned None: none known) and its $ what they come to. remember_usd($): called with a buy's $
+    when it is sent. {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
     selling = side == "SELL"
     usual = fee is None
     fee = FEE_USD if usual else fee
+    free = None if owned is None else max(int(owned - in_orders), 0)
     kind = QComboBox()
     kind.addItem("Limit", "LIMIT")
     kind.addItem("Market", "MARKET")
     kind.setToolTip("Market: at the market's price now, Day only (Schwab takes no GTC market orders)")
-    box = PriceBox(start, reset_tip=f"Back to {fmt_price(start)}, the chart's price where it was right-clicked")
-    shares = QSpinBox()
-    shares.setRange(0, 2_000_000_000)
-    shares.setGroupSeparatorShown(True)
-    shares.setMinimumWidth(140)
-    shares.setToolTip("The amount of shares: the $ follows it")
-    usd = QDoubleSpinBox()
-    usd.setRange(0, 100_000_000)
-    usd.setDecimals(2)
-    usd.setPrefix("$ ")
-    usd.setGroupSeparatorShown(True)
-    usd.setMinimumWidth(140)
-    usd.setToolTip("The amount in $ (before the commission): the shares follow it, as many as it buys")
-    shares_row = QWidget()
-    lay = QHBoxLayout(shares_row)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.addWidget(shares)
-    free = None if owned is None else max(int(owned - in_orders), 0)
-    if selling and free:
-        all_btn = QPushButton("All")
-        all_btn.setToolTip(f"All {free:,} owned" + (f" (less {in_orders:,} in sell orders)" if in_orders else ""))
-        all_btn.clicked.connect(lambda: (shares.setValue(free), shares.valueChanged.emit(free)))
-        lay.addWidget(all_btn)
-    lay.addStretch()
     duration = QComboBox()
     duration.addItem("GTC (good till canceled)", "GOOD_TILL_CANCEL")
     duration.addItem("Day", "DAY")
+    box = PriceBox(start, reset_tip=f"Back to {fmt_price(start)}, the chart's price where it was right-clicked")
+
+    def price():
+        return box.price()
+
+    def default_shares():
+        if selling:
+            return free or 0
+        p = price()
+        return int(usd_start / p + 1e-9) if p > 0 and usd_start > 0 else 0
+
+    def default_usd():
+        return (free or 0) * price() if selling else usd_start
+
+    def shares_step():
+        return 1000 if price() < 1 else 10
+    usd = AmountBox("usd", default_usd, lambda: 10,
+                    ("Back to all the shares' $ at the price" if selling else
+                     f"Back to ${usd_start:,.2f}, the last buy's" if usd_start else "Back to 0"),
+                    "Up / down $10")
+    shares = AmountBox("shares", default_shares, shares_step,
+                       (f"Back to all {free or 0:,} owned" + (f" (less {in_orders:,} in sell orders)" if in_orders else "")
+                        if selling else "Back to the shares the default $ buys at the price"),
+                       "Up / down 1,000 shares under $1, else 10")
+    usd.setToolTip("The amount in $ (before the commission): the shares follow it, as many as it buys")
+    shares.setToolTip("The amount of shares: the $ follows it")
     total = QLabel()
     total_name = "$ less the commission" if selling else "$ with the commission"
     rows = [("Ticker", ticker), ("Order", (side, BUY_COLOR if side == "BUY" else SELL_COLOR)),
             ("Type", kind), ("Duration", duration), ("Price", PRICE_ROW), ("Amount in $", usd),
-            ("Shares", shares_row), (total_name + (" (usual)" if usual else ""), total)]
+            ("Shares", shares), (total_name + (" (usual)" if usual else ""), total)]
     if selling:
         rows.insert(2, ("Owned", "-" if owned is None else f"{owned:,}" + (f" ({in_orders:,} in sell orders)"
                                                                             if in_orders else "")))
@@ -1017,13 +1082,10 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         rows.append(("Note", (note, "#f0a020")))
     dlg, title_label, _values, send = _order_dialog(parent, account_name, f"{side} {ticker}", rows,
                                                     side.title(), BUY_COLOR if side == "BUY" else SELL_COLOR, box)
-    state = {"last": "shares", "busy": False}
-
-    def price():
-        return box.price()
+    state = {"last": None, "busy": False}
 
     def update():
-        p, n = price(), shares.value()
+        p, n = price(), int(shares.value())
         market = kind.currentData() == "MARKET"
         send.setEnabled(n > 0 and (p > 0 or market))
         amount = n * p
@@ -1037,31 +1099,29 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         title_label.setText(f"<b>{what.strip()}?</b>" if n else f"<b>{side} {ticker}</b>")
         dlg.setWindowTitle(what.strip() if n else f"{side} {ticker}")
 
-    def from_shares():
+    def sync(source):
+        """The one typed last stays (the $ or the shares), the other follows it; both at their
+        defaults (white) until either is typed over."""
         if state["busy"]:
             return
-        state["last"] = "shares"
         state["busy"] = True
-        usd.setValue(shares.value() * price())
-        state["busy"] = False
-        update()
-
-    def from_usd():
-        if state["busy"]:
-            return
-        state["last"] = "usd"
-        state["typed_usd"] = True
+        if source in ("usd", "shares"):
+            state["last"] = source
         p = price()
-        state["busy"] = True
-        shares.setValue(int(usd.value() / p + 1e-9) if p > 0 else 0)
+        usd.refresh()
+        shares.refresh()
+        if state["last"] == "usd":
+            if usd.edit.text() and p > 0:
+                shares.set_value(int(usd.value() / p + 1e-9))
+            elif not usd.edit.text():
+                shares.edit.clear()
+        elif state["last"] == "shares":
+            if shares.edit.text():
+                usd.set_value(int(shares.value()) * p)
+            else:
+                usd.edit.clear()
         state["busy"] = False
         update()
-
-    def price_changed(*_):
-        # the side typed last stays: the shares kept (the $ follows), or the $ kept (the shares follow)
-        last = state["last"]
-        (from_usd if last == "usd" else from_shares)()
-        state["last"] = last
 
     def kind_changed(*_):
         market = kind.currentData() == "MARKET"
@@ -1070,30 +1130,25 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
             duration.setCurrentIndex(duration.findData("DAY"))
         duration.setEnabled(not market)
         update()
-    shares.valueChanged.connect(from_shares)
-    usd.valueChanged.connect(from_usd)
-    box.price_changed.connect(price_changed)
+    usd.value_changed.connect(lambda _v: sync("usd"))
+    shares.value_changed.connect(lambda _v: sync("shares"))
+    box.price_changed.connect(lambda _v: sync("price"))
     kind.currentIndexChanged.connect(kind_changed)
     update()
-    if selling and free:
-        shares.setValue(free)           # all the shares owned (not in sell orders yet)
-    elif not selling and usd_start > 0:
-        usd.setValue(usd_start)         # the $ typed the last time
-    state["typed_usd"] = False
-    focus = shares if selling else usd
-    focus.setFocus()
-    focus.selectAll()
+    first = (shares if selling else usd).edit
+    QTimer.singleShot(0, lambda: first.setFocus(Qt.FocusReason.OtherFocusReason))     # once it shows
     accepted = dlg.exec() == QDialog.DialogCode.Accepted
-    if remember_usd and state["typed_usd"] and usd.value() > 0:
-        remember_usd(round(usd.value(), 2))
     if not accepted:
         return None
-    box._steps()
+    for b in (box, usd, shares):
+        b._steps()
     market = kind.currentData() == "MARKET"
-    p = price()
-    if shares.value() <= 0 or (not market and p <= 0):
+    p, n = price(), int(shares.value())
+    if n <= 0 or (not market and p <= 0):
         return None
-    return {"shares": shares.value(), "price": None if market else p, "type": kind.currentData(),
+    if remember_usd and usd.value() > 0:
+        remember_usd(round(usd.value(), 2))     # the buy's default $ next time
+    return {"shares": n, "price": None if market else p, "type": kind.currentData(),
             "duration": "DAY" if market else duration.currentData()}
 
 
