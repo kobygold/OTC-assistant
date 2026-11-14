@@ -495,10 +495,8 @@ class CandleChart(QWidget):
             if hi <= lo:
                 pad = abs(hi) * 0.02 or 0.0001
                 lo, hi = lo - pad, hi + pad
+        # the open orders don't stretch the scale: one off it is a tag on the pane's edge
         orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
-        if not self.y_zoom:         # the open orders' prices are on the chart too
-            for o in orders:
-                lo, hi = min(lo, o["price"]), max(hi, o["price"])
         self._scale = (lo, hi)
         top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
         scale = (bot - top) / (hi - lo)
@@ -1037,6 +1035,7 @@ class CandleChart(QWidget):
         p.setFont(f)
         fm = QFontMetrics(f)
         drag = self.order_drag
+        edge_x = {}         # -1 top / 1 bottom: the next off-scale tag's right end there
         for o in orders:
             side, shares, value = o["side"], o["shares"], o["price"]
             color = ORDER_UP if side == "BUY" else ORDER_DOWN
@@ -1050,22 +1049,35 @@ class CandleChart(QWidget):
                     p.drawLine(QPointF(price.left() + 1, y0), QPointF(price.right() - 1, y0))
                 value = drag["to"]
             y = round(py(value)) + 0.5
-            if not price.top() < y < price.bottom():
-                continue
-            p.setPen(QPen(color, 1, Qt.PenStyle.SolidLine if o.get("atm") else Qt.PenStyle.DashLine))
-            p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
-            if dragged:
-                self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
-                               arrow="axis")
-                p.setFont(f)
-            text = f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT"
+            # off the scale (above or below): as in thinkorswim, no line, just a tag on that edge of
+            # the pane with a small pointer toward the price; side by side when there are a few
+            off = -1 if y < price.top() + 9 else 1 if y > price.bottom() - 9 else 0
+            if not off:
+                p.setPen(QPen(color, 1, Qt.PenStyle.SolidLine if o.get("atm") else Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
+                if dragged:
+                    self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
+                                   arrow="axis")
+                    p.setFont(f)
+            text = (f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT" if not off
+                    else f"{'+' if side == 'BUY' else '-'}{shares} LMT")
             tw = fm.horizontalAdvance(text)
             w = tw + 30
-            r = QRectF(price.left() + price.width() * 0.62 - w / 2, y - 8, w, 16)
+            cx = price.left() + price.width() * 0.62
+            if off:
+                cx = edge_x.get(off, cx + w / 2) - w / 2
+                edge_x[off] = cx - w / 2 - 6        # the next one on this edge, to its left
+                y = price.top() + 14 if off < 0 else price.bottom() - 14
+            r = QRectF(cx - w / 2, y - 8, w, 16)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(QPen(color, 1))
             p.setBrush(color.darker(230))
             p.drawRoundedRect(r, 8, 8)
+            if off:     # the pointer, out of the tag's edge toward the price
+                tip_y = r.bottom() + 5 if off > 0 else r.top() - 5
+                base = r.bottom() - 0.5 if off > 0 else r.top() + 0.5
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawPolygon(QPolygonF([QPointF(cx - 5, base), QPointF(cx + 5, base), QPointF(cx, tip_y)]))
             p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             p.setPen(QColor("#ffffff"))
             p.drawText(QRectF(r.left() + 8, r.top(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
@@ -1074,6 +1086,7 @@ class CandleChart(QWidget):
             tip = (f"{'Buy' if side == 'BUY' else 'Sell'} {shares:,} @ {fmt_price(value)}, limit, "
                    f"{o.get('duration') or 'GTC'} "
                    + ("(an ATM trade, Schwab tab)." if o.get("atm") else "(a Schwab order, not an ATM trade).")
+                   + (f"\nIts price is {'above' if off < 0 else 'below'} the chart's scale." if off else "")
                    + "\nDrag it to change its price. The x cancels it.")
             self._order_tags.append((x.adjusted(-3, -3, 3, 3), o["key"], r, tip))
         f.setBold(False)
