@@ -706,20 +706,158 @@ def fee_rows(fee, total, sell=False):
     return [("Fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
 
 
+PRICE_ROW = object()    # in confirm_price_order's rows: the row of the editable price
+
+
+class PriceBox(QWidget):
+    """An editable price, styled as the checklist's: the box, + above -, and a reset arrow back to
+    `start`. The price shows as the box's white placeholder until changed (then orange, as a
+    typed-over value). A typed whole number is a count of 0.0001 steps (12 -> 0.0012), as in the
+    checklist. price_changed(float, 0 when not a price)."""
+    price_changed = pyqtSignal(float)
+    STYLE = PANEL_STYLE.replace("#checklist", "#price_box") + "#price_box { background: transparent; }"
+
+    class Edit(CopyLineEdit):
+        def keyPressEvent(self, e):
+            if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.editingFinished.emit()     # takes the typed price; doesn't press a button
+                e.accept()
+                return
+            super().keyPressEvent(e)
+
+    def __init__(self, start, parent=None):
+        super().__init__(parent)
+        self.start = start
+        self.setObjectName("price_box")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(self.STYLE)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self.edit = self.Edit()
+        self.edit.setFixedWidth(84)
+        self.edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,6}(\.\d{0,6})?"), self.edit))
+        pal = self.edit.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f0a020"))
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))
+        self.edit.setPalette(pal)
+        self.edit.setPlaceholderText(fmt_price(start))
+        self.edit.textChanged.connect(lambda _t: self.price_changed.emit(self.price()))
+        self.edit.editingFinished.connect(self._steps)
+        lay.addWidget(self.edit)
+        steps = QWidget()
+        slay = QVBoxLayout(steps)
+        slay.setContentsMargins(0, 0, 0, 0)
+        slay.setSpacing(1)
+        for sign, d in (("+", 1), ("−", -1)):
+            b = QToolButton()
+            b.setObjectName("cl_step")
+            b.setText(sign)
+            b.setFixedSize(18, 12)
+            b.setToolTip(f"{'Up' if d > 0 else 'Down'} one step (0.0001 under $1, else 0.01)")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setAutoRepeat(True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(lambda _c=False, s=d: self.step(s))
+            slay.addWidget(b)
+        lay.addWidget(steps)
+        reset = QToolButton()
+        reset.setObjectName("cl_reset")
+        reset.setIcon(reset_icon())
+        reset.setFixedSize(18, 25)
+        reset.setToolTip(f"Back to {fmt_price(start)}, where it was dragged to")
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        reset.clicked.connect(self.edit.clear)
+        lay.addWidget(reset)
+        self.reset_btn = reset
+        lay.addStretch()
+
+    def price(self):
+        try:
+            v = float(self.edit.shown())
+        except ValueError:
+            return 0.0
+        return v if v > 0 else 0.0
+
+    def set_price(self, value: Decimal):
+        self.edit.setText(format(value.normalize(), "f"))
+
+    def step(self, direction):
+        try:
+            base = Decimal(self.edit.shown().strip())
+        except InvalidOperation:
+            return
+        size = PRICE_STEP if base < 1 else Decimal("0.01")
+        new = (base + direction * size).quantize(size)
+        if new > 0:
+            self.set_price(new)
+
+    def _steps(self):
+        try:
+            typed = Decimal(self.edit.text().strip())
+        except InvalidOperation:
+            return
+        if typed >= 1 and "." not in self.edit.text():
+            self.set_price(typed * PRICE_STEP)
+
+
+def confirm_price_order(parent, account_name, start, make, action, color=BUY_COLOR):
+    """confirm_order with an editable price: make(price) -> (title, rows) for a price, rows with
+    (label, PRICE_ROW) where the price box goes; the title and rows follow the price as it's
+    changed. start: the price it opens with. The price chosen, or None when canceled."""
+    box = PriceBox(start)
+    title, rows = make(start)
+    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, action, color, box)
+
+    def changed(price):
+        ok = price > 0
+        send.setEnabled(ok)
+        if not ok:
+            return
+        t, new_rows = make(price)
+        title_label.setText(f"<b>{t}</b>")
+        dlg.setWindowTitle(t)
+        for label, (_k, v) in zip(values, new_rows):
+            if label is not None:
+                label.setText(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
+    box.price_changed.connect(changed)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    box._steps()            # a whole number typed and sent at once
+    return box.price() or None
+
+
 def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
     """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
     account_name: the account it goes to, shown first for checking (it is chosen on the Schwab
     tab). color: the send button's. True when approved."""
+    dlg = _order_dialog(parent, account_name, title, rows, action, color)[0]
+    return dlg.exec() == QDialog.DialogCode.Accepted
+
+
+def _order_dialog(parent, account_name, title, rows, action, color, price_box=None):
+    """The order dialog: (dialog, its title label, the value labels of rows (None at PRICE_ROW),
+    the send button)."""
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     lay = QVBoxLayout(dlg)
-    lay.addWidget(QLabel(f"<b>{title}</b>"))
+    title_label = QLabel(f"<b>{title}</b>")
+    lay.addWidget(title_label)
     form = QGridLayout()
     form.setHorizontalSpacing(14)
     rows = [("Account", (account_name, ORDER_COLOR))] + rows
+    values = []
     for i, (k, v) in enumerate(rows):
         form.addWidget(QLabel(f"<span style='color:#a8a8a8'>{k}</span>"), i, 0)
-        form.addWidget(QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>"), i, 1)
+        if v is PRICE_ROW:
+            form.addWidget(price_box, i, 1)
+            values.append(None)
+        else:
+            label = QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
+            form.addWidget(label, i, 1)
+            values.append(label)
+    values = values[1:]         # the rows', without the account's
     form.itemAtPosition(0, 1).widget().setToolTip("Chosen on the Schwab tab")
     lay.addLayout(form)
     buttons = QHBoxLayout()
@@ -740,7 +878,7 @@ def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
     cancel.setFocus()
     if parent is not None:
         parent.dialog = dlg             # for tests
-    return dlg.exec() == QDialog.DialogCode.Accepted
+    return dlg, title_label, values, send
 
 
 # ------------------------------------------------------------ ATM trades ---
@@ -1045,15 +1183,18 @@ class AtmTrades(QObject):
         if not order_id:
             QMessageBox.warning(parent, "Change the order", "The order's number isn't known. Change it in Schwab.")
             return
-        total = shares * price
-        rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
-                ("Limit price now", fmt_price(old)), ("New limit price", (fmt_price(price), ORDER_COLOR)),
-                ("Total", f"${total:,.2f}")] + (fee_rows(fee, total, sell=side == "SELL") if e is not None else [])
+        def make(p):
+            """The dialog's title and rows for the new price p (editable in it)."""
+            total = shares * p
+            rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
+                    ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW),
+                    ("Total", f"${total:,.2f}")] + (fee_rows(fee, total, sell=side == "SELL") if e is not None else [])
+            return f"Change the {side.lower()} of {shares:,} {ticker} from {fmt_price(old)} to {fmt_price(p)}?", rows
         if self.fee_reader:
             self.fee_reader.load_accounts()
-        if not confirm_order(parent, self.account_name(account), f"Change the {side.lower()} of {shares:,} {ticker} "
-                             f"from {fmt_price(old)} to {fmt_price(price)}?", rows, f"Change {side} order",
-                             BUY_COLOR if side == "BUY" else SELL_COLOR):
+        price = confirm_price_order(parent, self.account_name(account), price, make, f"Change {side} order",
+                                    BUY_COLOR if side == "BUY" else SELL_COLOR)
+        if price is None:
             return
         busy_key = e["id"] if e is not None else key
         self.sending.add(busy_key)
