@@ -702,8 +702,8 @@ def fee_rows(fee, total, sell=False):
     else:
         shown = f"${fee:.2f}"
     if sell:
-        return [("Fee (from Schwab)", shown), ("You get, less the fee", f"${total - fee:,.2f}")]
-    return [("Fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
+        return [("Commission fee (from Schwab)", shown), ("You get, less the fee", f"{'-' if total < fee else ''}${abs(total - fee):,.2f}")]
+    return [("Commission fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
 
 
 PRICE_ROW = object()    # in confirm_price_order's rows: the row of the editable price
@@ -781,7 +781,8 @@ class PriceBox(QWidget):
         return v if v > 0 else 0.0
 
     def set_price(self, value: Decimal):
-        self.edit.setText(format(value.normalize(), "f"))
+        """Shown as everywhere in the app: 4 decimals under $1 (0.0300), 2 from $1."""
+        self.edit.setText(fmt_price(float(value)).replace(",", ""))
 
     def step(self, direction):
         try:
@@ -799,7 +800,9 @@ class PriceBox(QWidget):
         except InvalidOperation:
             return
         if typed >= 1 and "." not in self.edit.text():
-            self.set_price(typed * PRICE_STEP)
+            typed *= PRICE_STEP
+        if typed > 0:
+            self.set_price(typed)           # 0.031 -> 0.0310
 
 
 def confirm_price_order(parent, account_name, start, make, action, color=BUY_COLOR):
@@ -896,6 +899,7 @@ class AtmTrades(QObject):
         super().__init__()
         self.path, self.settings, self.save_settings = path, settings, save_settings
         self.fee_reader, self.trader = fee_reader, trader
+        self.fee_of = lambda ticker: None   # Schwab's fee for a ticker, if read (set by the panel)
         self.entries = self._read()
         self.sending = set()        # tickers with a buy on its way, entry ids with a sell on its way
         self.pending = {}           # the same keys -> what was sent
@@ -1183,12 +1187,20 @@ class AtmTrades(QObject):
         if not order_id:
             QMessageBox.warning(parent, "Change the order", "The order's number isn't known. Change it in Schwab.")
             return
+        # the commission: Schwab's for the ticker as read now, else the trade's, else the usual one
+        read = self.fee_of(ticker)
+        fee = read if read is not None else fee
+        estimated = fee is None
+        fee = FEE_USD if estimated else fee
+
         def make(p):
             """The dialog's title and rows for the new price p (editable in it)."""
             total = shares * p
             rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
                     ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW),
-                    ("Total", f"${total:,.2f}")] + (fee_rows(fee, total, sell=side == "SELL") if e is not None else [])
+                    ("Total", f"${total:,.2f}")] + fee_rows(fee, total, sell=side == "SELL")
+            if estimated:       # not read from Schwab: say so
+                rows[-2] = ("Commission fee (usual, not read)", f"${fee:.2f}")
             return f"Change the {side.lower()} of {shares:,} {ticker} from {fmt_price(old)} to {fmt_price(p)}?", rows
         if self.fee_reader:
             self.fee_reader.load_accounts()
@@ -1511,6 +1523,7 @@ class ChecklistPanel(QWidget):
         self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
         # The ATM trades (atm.json), shared with the Schwab tab and the chart
         self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
+        self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
         self.atm.changed.connect(self.refresh)
         self.price_tools = {}   # price key -> (its +/- buttons, its reset button)
         if self.fee_reader:
