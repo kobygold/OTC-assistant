@@ -60,7 +60,7 @@ GOLD = "#e3b23c"
 BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis, and the Level II's
 ASK_TAG = QColor("#9c2a35")
 TAG_H = 16                  # the right axis tags' height
-TAG_SEP = " × "         # between a Level II tag's price and shares, drawn small and white
+TAG_SEP = " x "         # between a Level II tag's price and shares, drawn white
 INFO_X = RISK_SIZE + 8       # where the info bar's boxes start, after the risk sign
 SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
@@ -622,7 +622,7 @@ class CandleChart(QWidget):
                                          bg, QColor(GOLD), arrow="inside")
                     self._tag_points.append((tip.x(), tip.y(), value, 1))
             tags = []
-            for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)):
+            for k, label, bg in (("ask", "Ask", ASK_TAG), ("bid", "Bid", BID_TAG)):
                 value = self.live.get(k)
                 if not value:
                     continue
@@ -1085,15 +1085,12 @@ class CandleChart(QWidget):
         else:
             r = QRectF(x, y - h / 2, max(tw, RIGHT_W - 6), h)
             p.drawRoundedRect(r, 2, 2)
-        if arrow == "inside":   # [A: |B: ]price[ × shares]: the A:/B: white, the × small and white
+        if arrow == "inside":   # [Ask: |Bid: ]price[ x shares]: the Ask:/Bid: and the x white
             left, sep, right = text.partition(TAG_SEP)
             white = QColor("#ffffff")
-            small = QFont(f)
-            small.setPointSizeF(f.pointSizeF() * 0.85)
-            small.setBold(True)
             label, _, left = left.rpartition(": ")
             parts = ([(label + ": ", f, white)] if label else []) + [(left, f, fg)] + (
-                [(TAG_SEP, small, white), (right, f, fg)] if sep else [])
+                [(TAG_SEP, f, white), (right, f, fg)] if sep else [])
             widths = [QFontMetrics(pf).horizontalAdvance(t) for t, pf, _ in parts]
             tx = r.left() + (r.width() - sum(widths)) / 2
             for (t, pf, color), w in zip(parts, widths):
