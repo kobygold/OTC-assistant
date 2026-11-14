@@ -103,6 +103,18 @@ def fmt_volume(v) -> str:
     return "-" if v is None else f"{math.floor(v + 0.5):,}"
 
 
+def fmt_shares(v) -> str:
+    """A Level II size, short: 850, 12.5K, 70K, 1.25M."""
+    v = float(v or 0)
+    if v >= 1e6:
+        return f"{v / 1e6:.2f}".rstrip("0").rstrip(".") + "M"
+    if v >= 1e4:
+        return f"{v / 1e3:.0f}K"
+    if v >= 1e3:
+        return f"{v / 1e3:.1f}".rstrip("0").rstrip(".") + "K"
+    return f"{v:.0f}"
+
+
 def fmt_compact(v: float) -> str:
     if v >= 1e9:
         return f"{v / 1e9:g}B"
@@ -214,7 +226,9 @@ class CandleChart(QWidget):
         self.v_zoom = None          # the top of the volume axis zoomed by its ruler; None = fit the bars
         self._scale = (0.0, 1.0)    # the price axis's (low, high) and the volume axis's top as last drawn
         self._vmax = 1.0
-        self._tag_points = []       # the Bid and Ask tags' triangle points as last drawn: (x, y, price)
+        self._tag_points = []       # the Bid/Ask and Level II tags' triangle points as last drawn:
+                                    # (x, y, price, rank): rank 0 for the Bid and Ask, 1 for the others
+        self.book = ("", [], [])    # the Level II: ticker, bids, asks as (mm, price, size, level)
         # ticker -> [(side, shares, price)]: the open orders, drawn as lines as in thinkorswim
         self.order_lines = None
         self._order_tags = []       # (the x's rect, side, the tag's rect, tooltip) as last drawn
@@ -269,7 +283,8 @@ class CandleChart(QWidget):
         database's last day, or replacing that day if the database has it already."""
         q = q or {}
         live = {k: q[f] for k, f in (("price", "LAST_PRICE"), ("volume", "TOTAL_VOLUME"), ("open", "OPEN_PRICE"),
-                                     ("bid", "BID_PRICE"), ("ask", "ASK_PRICE"))
+                                     ("bid", "BID_PRICE"), ("ask", "ASK_PRICE"),
+                                     ("bid_size", "BID_SIZE"), ("ask_size", "ASK_SIZE"))
                 if q.get(f) is not None}
         bar = None if self.intraday else self._live_candle(q)     # 1D: the minute candles come from Schwab
         changed = live != self.live or bar != self.live_bar
@@ -282,6 +297,25 @@ class CandleChart(QWidget):
         self.live = live
         if changed:
             self.update()
+
+    def set_book(self, ticker="", bids=(), asks=()):
+        """The Level II of the ticker (rows of (mm, price, size, level)), or nothing to drop it:
+        each price gets a tag on the right, the market makers at one price together."""
+        book = (ticker, list(bids), list(asks))
+        if book != self.book:
+            self.book = book
+            if ticker == self.ticker or not ticker:
+                self.update()
+
+    @staticmethod
+    def _levels(rows):
+        """{price: (total size, market makers)} of Level II rows."""
+        levels = {}
+        for mm, price, size, *_ in rows:
+            if price:
+                total, n = levels.get(price, (0, 0))
+                levels[price] = (total + (size or 0), n + 1)
+        return levels
 
     def _live_candle(self, q):
         """(date, open, high, low, close, volume, None) for the quote's trading day, or None if
@@ -568,8 +602,30 @@ class CandleChart(QWidget):
         last = len(self.dates) - 1
         self._tag_points = []
         if self.show_bid_ask_tags:
-            tags = [(py(self.live[k]), f"{label}: {fmt_axis(self.live[k])}", bg, self.live[k])
-                    for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)) if self.live.get(k)]
+            # The Level II's other prices first, so the Bid and Ask tags are drawn over them: one tag
+            # a price, its market makers together (their shares, and how many when more than one)
+            book = self.book if self.book[0] == self.ticker else ("", [], [])
+            levels = {"bid": self._levels(book[1]), "ask": self._levels(book[2])}
+
+            def amount(total, n):
+                return fmt_shares(total) + (f" ({n})" if n > 1 else "")
+            for k, bg in (("ask", ASK_TAG), ("bid", BID_TAG)):
+                for value, (total, n) in sorted(levels[k].items(), reverse=k == "bid"):
+                    y = py(value)
+                    if value == self.live.get(k) or not price.top() <= y <= price.bottom():
+                        continue
+                    tip = self._axis_tag(p, price.right() - 2, y, f"{fmt_axis(value)} · {amount(total, n)}",
+                                         bg, QColor("#ffffff"), arrow="inside")
+                    self._tag_points.append((tip.x(), tip.y(), value, 1))
+            tags = []
+            for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)):
+                value = self.live.get(k)
+                if not value:
+                    continue
+                # the shares at the price: the Level II's market makers there, else the quote's size
+                total, n = levels[k].get(value, (self.live.get(f"{k}_size") or 0, 1))
+                text = f"{label}: {fmt_axis(value)}" + (f" · {amount(total, n)}" if total else "")
+                tags.append((py(value), text, bg, value))
             tags = [t for t in tags if price.top() <= t[0] <= price.bottom()]
             if len(tags) == 2 and tags[1][0] - tags[0][0] < TAG_H + 1:
                 mid = (tags[0][0] + tags[1][0]) / 2
@@ -577,7 +633,7 @@ class CandleChart(QWidget):
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
             for y, text, bg, value in tags:
                 tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow="inside")
-                self._tag_points.append((tip.x(), tip.y(), value))
+                self._tag_points.append((tip.x(), tip.y(), value, 0))
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
             color = self._color(last)
@@ -649,10 +705,11 @@ class CandleChart(QWidget):
         is within SNAP_PX of its tag's triangle point, with the point's own slot (a fraction: it isn't on
         a candle), so the measuring line can start or end right there. Else the hovered candle's high,
         low, open or close nearest to y within SNAP_PX, with slot None (the candle's own)."""
-        near = [(math.hypot(tx - x, ty - y), value, tx) for tx, ty, value in self._tag_points]
+        # the nearest point; the Bid's or Ask's when as near as a Level II one
+        near = [(round(math.hypot(tx - x, ty - y)), rank, value, tx) for tx, ty, value, rank in self._tag_points]
         near = [n for n in near if n[0] <= SNAP_PX]
         if near:
-            _, value, tx = min(near)
+            _, _, value, tx = min(near)
             return value, self.first + (tx - price.left()) / self._bar_w(price) - 0.5
         if not 0 <= i < len(self.dates):
             return None, None

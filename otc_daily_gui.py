@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.9"
+APP_VERSION = "0.9.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -964,6 +964,7 @@ class MainWindow(QMainWindow):
         self.checklist_btn.toggled.connect(self.on_checklist_toggled)
         self.level2.live_quote.connect(self.checklist.set_quote)
         self.level2.book_changed.connect(self.checklist.set_book)
+        self.level2.book_changed.connect(self.chart.set_book)      # its prices' tags on the chart
         root.addWidget(self.checklist_split, 1)
         return tab
 
@@ -1640,6 +1641,7 @@ class MainWindow(QMainWindow):
             self.level2.disconnect_feed()     # off: no Schwab stream at all, so another PC can have it
             self.last_quote = ("", None)
             self.chart.set_live()       # no more live quotes: back to the last candle's
+            self.chart.set_book()
             self.checklist.clear_live()
 
     def on_checklist_toggled(self, checked):
