@@ -10,6 +10,7 @@ import json
 import math
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -502,11 +503,15 @@ class SchwabTrader(QObject):
     threads, through the FeeReader's login (one client, one call at a time). Each request has a
     key (whose it is), given back with the answer in the GUI thread:
     placed(key, side, order id or None, message), checked(key, side, order or None, message),
-    canceled(key, side, error or ""), quotes({ticker: Schwab quote}). side is "BUY" or "SELL"."""
+    canceled(key, side, error or ""), quotes({ticker: Schwab quote}),
+    orders(account tail, [order_info()] or None, error), replaced(key, side, new order id or None,
+    price, error or ""). side is "BUY" or "SELL"."""
     placed = pyqtSignal(str, str, object, str)
     checked = pyqtSignal(str, str, object, str)
     canceled = pyqtSignal(str, str, str)
     quotes = pyqtSignal(object)
+    orders = pyqtSignal(str, object, str)
+    replaced = pyqtSignal(str, str, object, float, str)
 
     def __init__(self, session: FeeReader):
         super().__init__()
@@ -528,16 +533,37 @@ class SchwabTrader(QObject):
     def read_quotes(self, tickers):
         self._start(self._quotes, list(tickers))
 
+    def read_orders(self, account):
+        """The account's orders of the last 60 days (Schwab's limit), as order_info()."""
+        self._start(self._orders, account)
+
+    def replace(self, key, ticker, side, order_id, shares, price, account, duration=None, session=None):
+        """Changes an open limit order's price, as thinkorswim does: Schwab replaces it with a new
+        order (the old one becomes REPLACED). duration / session: the old order's (GTC, NORMAL
+        when not given)."""
+        self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session)
+
+    @staticmethod
+    def _limit_order(ticker, side, shares, price, duration=None, session=None):
+        from schwab.orders.common import Duration, Session
+        from schwab.orders.equities import equity_buy_limit, equity_sell_limit
+        make = equity_buy_limit if side == "BUY" else equity_sell_limit
+        try:
+            duration = Duration(duration) if duration else Duration.GOOD_TILL_CANCEL
+        except ValueError:
+            duration = Duration.GOOD_TILL_CANCEL
+        try:
+            session = Session(session) if session else Session.NORMAL
+        except ValueError:
+            session = Session.NORMAL
+        return make(ticker, int(shares), limit_text(price)).set_duration(duration).set_session(session).build()
+
     def _place(self, key, ticker, side, shares, price, account_tail):
         try:
-            from schwab.orders.common import Duration, Session
-            from schwab.orders.equities import equity_buy_limit, equity_sell_limit
             from schwab.utils import Utils
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                make = equity_buy_limit if side == "BUY" else equity_sell_limit
-                order = (make(ticker, int(shares), limit_text(price))
-                         .set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL).build())
+                order = self._limit_order(ticker, side, shares, price)
                 r = client.place_order(account, order)
                 if r.status_code not in (200, 201):
                     self.placed.emit(key, side, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
@@ -574,6 +600,37 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.canceled.emit(key, side, f"{type(e).__name__}: {e}")
 
+    def _orders(self, account_tail):
+        try:
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                r = client.get_orders_for_account(account)
+            if r.status_code != 200:
+                self.orders.emit(account_tail, None, f"HTTP {r.status_code}")
+                return
+            self.orders.emit(account_tail, [o for o in map(order_info, r.json() or []) if o], "")
+        except Exception as e:
+            self.orders.emit(account_tail, None, f"{type(e).__name__}: {e}")
+
+    def _replace(self, key, ticker, side, order_id, shares, price, account_tail, duration, session):
+        try:
+            from schwab.utils import Utils
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                order = self._limit_order(ticker, side, shares, price, duration, session)
+                r = client.replace_order(account, order_id, order)
+                if r.status_code not in (200, 201):
+                    self.replaced.emit(key, side, None, price,
+                                       f"Schwab refused the change: HTTP {r.status_code} {r.text[:300]}")
+                    return
+                try:
+                    new_id = Utils(client, account).extract_order_id(r)
+                except ValueError:
+                    new_id = None       # found among the account's orders at the next check
+            self.replaced.emit(key, side, new_id, price, "")
+        except Exception as e:
+            self.replaced.emit(key, side, None, price, f"{type(e).__name__}: {e}")
+
     def _quotes(self, tickers):
         try:
             with self.session._lock:
@@ -583,6 +640,36 @@ class SchwabTrader(QObject):
                 self.quotes.emit({t: v.get("quote", {}) for t, v in r.json().items() if isinstance(v, dict)})
         except Exception:
             pass        # the next check tries again
+
+
+OPEN_GONE = {"CANCELED", "REPLACED"}     # an open order that may have been changed in thinkorswim
+
+
+def order_info(o):
+    """A Schwab order, short: {"id", "ticker", "side" ("BUY" or "SELL"), "shares" (left to fill),
+    "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type"};
+    None for an order that isn't a one-leg stock order."""
+    try:
+        legs = o.get("orderLegCollection") or []
+        if len(legs) != 1:
+            return None
+        leg = legs[0]
+        instruction = leg.get("instruction", "")
+        side = "BUY" if instruction.startswith("BUY") else "SELL" if instruction.startswith("SELL") else None
+        if side is None:
+            return None
+        quantity = int(o.get("quantity") or leg.get("quantity") or 0)
+        filled = int(o.get("filledQuantity") or 0)
+        status = o.get("status", "")
+        return {"id": str(o.get("orderId")), "ticker": leg.get("instrument", {}).get("symbol", ""),
+                "side": side, "quantity": quantity, "filled": filled,
+                "shares": int(o.get("remainingQuantity") or (quantity - filled)),
+                "price": o.get("price"), "status": status,
+                "open": status not in ORDER_DONE and status not in ("PENDING_CANCEL", "PENDING_REPLACE"),
+                "entered": o.get("enteredTime", ""), "duration": o.get("duration"),
+                "session": o.get("session"), "type": o.get("orderType")}
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def tint(value) -> str:
@@ -670,12 +757,18 @@ class AtmTrades(QObject):
         self.pending = {}           # the same keys -> what was sent
         self.canceling = set()      # entry ids whose order is being canceled
         self.market = {}            # ticker -> {"bid": [price, size], "ask": [...], "bids": [[mm, price, size]], "asks"}
+        self.schwab_orders = {}     # account tail -> its orders of the last 60 days, as order_info()
+        self.orders_time = {}       # account tail -> when they were read (time.time())
+        self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
+        self.app_canceled = set()   # order ids the app canceled
         self._migrate()
         if trader:
             trader.placed.connect(self._placed)
             trader.checked.connect(self._checked)
             trader.canceled.connect(self._canceled)
             trader.quotes.connect(self._quotes)
+            trader.orders.connect(self._orders)
+            trader.replaced.connect(self._replaced)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check)
         self.timer.start(ORDER_CHECK_S * 1000)
@@ -831,8 +924,209 @@ class AtmTrades(QObject):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.canceling.add(e["id"])
+        self.cancel_ids[e["id"]] = str(order_id)
+        self.app_canceled.add(str(order_id))
         self.changed.emit()
         self.trader.cancel(e["id"], side, order_id, e.get("account"))
+
+    # ---- the account's other orders (sent from thinkorswim), and changing orders from the chart ----
+    def chosen_account(self):
+        return self.settings.get("schwab_account") or ""
+
+    def tracked_ids(self):
+        """The order ids the ATM trades follow, now or before."""
+        ids = set()
+        for e in self.entries:
+            for k in ("order_id", "sell_id"):
+                if e.get(k):
+                    ids.add(str(e[k]))
+            ids.update(str(x) for x in e.get("replaced_ids", []))
+        return ids
+
+    def other_orders(self, ticker, account=None):
+        """The open limit orders of the ticker in the account (the chosen one) that aren't an ATM
+        trade's: sent from thinkorswim."""
+        tracked = self.tracked_ids()
+        return [o for o in self.schwab_orders.get(account or self.chosen_account(), [])
+                if o["ticker"] == ticker and o["open"] and o["price"] and o["shares"] > 0
+                and o["id"] not in tracked]
+
+    def chart_orders(self, ticker):
+        """The ticker's open orders for the chart: the ATM trade's, then the account's others.
+        [{"key", "side", "shares", "price", "atm", "duration"}]."""
+        out = []
+        e = self.active(ticker)
+        if e and e.get("state") == "buy_open" and not e.get("gone"):
+            out.append({"key": f"atm:{e['id']}:BUY", "side": "BUY", "atm": True, "duration": "GTC",
+                        "shares": e["shares"] - (e.get("filled") or 0), "price": e["entry"]})
+        elif e and e.get("state") == "sell_open" and e.get("sell_price") and not e.get("gone"):
+            out.append({"key": f"atm:{e['id']}:SELL", "side": "SELL", "atm": True, "duration": "GTC",
+                        "shares": self.remaining(e) - (e.get("sell_filled") or 0), "price": e["sell_price"]})
+        for o in self.other_orders(ticker):
+            duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration"))
+            out.append({"key": f"schwab:{o['id']}", "side": o["side"], "atm": False, "duration": duration,
+                        "shares": o["shares"], "price": o["price"]})
+        return out
+
+    def _order_of_key(self, key):
+        """(entry or None, side, the order: order_info() or None) of a chart order's key."""
+        kind, _, rest = key.partition(":")
+        if kind == "atm":
+            eid, _, side = rest.rpartition(":")
+            return self.find(eid), side, None
+        account = self.chosen_account()
+        o = next((o for o in self.schwab_orders.get(account, []) if o["id"] == rest), None)
+        return None, (o or {}).get("side", ""), o
+
+    def ask_cancel_key(self, parent, key):
+        """The x on a chart order's tag: cancels it, after asking."""
+        e, side, o = self._order_of_key(key)
+        if e is not None:
+            self.ask_cancel(parent, e, side)
+            return
+        if o is None or self.trader is None or key in self.canceling:
+            return
+        text = (f"Cancel the {side.lower()} order of {o['shares']:,} {o['ticker']} at {fmt_price(o['price'])}?\n"
+                f"(A Schwab order, not an ATM trade.)")
+        answer = QMessageBox.question(parent, f"Cancel {side.title()}", text,
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.canceling.add(key)
+        self.cancel_ids[key] = o["id"]
+        self.app_canceled.add(o["id"])
+        self.changed.emit()
+        self.trader.cancel(key, side, o["id"], self.chosen_account())
+
+    def ask_move(self, parent, key, price):
+        """A chart order's tag was dragged to `price`: after the dialog, Schwab replaces the order
+        with one of the same amount of shares at that price."""
+        e, side, o = self._order_of_key(key)
+        if self.trader is None or not price or price <= 0:
+            return
+        if e is not None:
+            if self.busy(e):
+                return
+            if side == "BUY" and e.get("state") == "buy_open":
+                order_id, old, shares, done = e.get("order_id"), e["entry"], e["shares"], e.get("filled") or 0
+            elif side == "SELL" and e.get("state") == "sell_open":
+                order_id, old, shares, done = (e.get("sell_id"), e.get("sell_price"), self.remaining(e),
+                                               e.get("sell_filled") or 0)
+            else:
+                return
+            if done:
+                QMessageBox.warning(parent, "Change the order", f"{done:,} of the {shares:,} were already "
+                                    f"{'bought' if side == 'BUY' else 'sold'}: change it in thinkorswim.")
+                return
+            ticker, account, fee, duration, session = e["ticker"], e.get("account"), e.get("fee"), None, None
+            what = "an ATM trade"
+        elif o is not None:
+            if key in self.canceling or key in self.sending:
+                return
+            order_id, old, shares, ticker = o["id"], o["price"], o["shares"], o["ticker"]
+            account, fee, duration, session = self.chosen_account(), None, o.get("duration"), o.get("session")
+            if o.get("filled"):
+                QMessageBox.warning(parent, "Change the order", f"{o['filled']:,} were already filled: "
+                                    "change it in thinkorswim.")
+                return
+            what = "a Schwab order, not an ATM trade"
+        else:
+            return
+        if not order_id:
+            QMessageBox.warning(parent, "Change the order", "The order's number isn't known. Change it in Schwab.")
+            return
+        total = shares * price
+        rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
+                ("Limit price now", fmt_price(old)), ("New limit price", (fmt_price(price), ORDER_COLOR)),
+                ("Total", f"${total:,.2f}")] + (fee_rows(fee, total, sell=side == "SELL") if e is not None else [])
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        if not confirm_order(parent, self.account_name(account), f"Change the {side.lower()} of {shares:,} {ticker} "
+                             f"from {fmt_price(old)} to {fmt_price(price)}?", rows, f"Change {side} order",
+                             BUY_COLOR if side == "BUY" else SELL_COLOR):
+            return
+        busy_key = e["id"] if e is not None else key
+        self.sending.add(busy_key)
+        self.pending[busy_key] = {"old_id": str(order_id), "key": key}
+        self.changed.emit()
+        self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session)
+
+    def _replaced(self, key, side, new_id, price, error):
+        self.sending.discard(key)
+        pending = self.pending.pop(key, {})
+        if error:
+            QMessageBox.warning(QApplication.activeWindow(), f"{side.title()} order not changed", error)
+            self.changed.emit()
+            return
+        e = self.find(key)
+        if e is not None:
+            self._adopt(e, side, {"id": str(new_id) if new_id else None, "price": price},
+                        pending.get("old_id"), 0, "Changed from the chart")
+        self.check()            # the account's orders again: the new one, and its number if not known
+        self.changed.emit()
+
+    def _adopt(self, e, side, new, old_id, old_filled, how):
+        """The ATM trade follows its order's replacement `new` (order_info(), or {"id", "price"}):
+        the new order's number and price, kept in atm.json (the checklist and the Schwab tab show
+        it, the chart draws it). old_filled: what the old order filled (a sell's)."""
+        price = new["price"]
+        if old_id:
+            e.setdefault("replaced_ids", []).append(str(old_id))
+        e.pop("gone", None)
+        e.pop("status", None)
+        if side == "BUY":
+            e.setdefault("entry-original", e["entry"])
+            old = e["entry"]
+            e.update(entry=price, usd=round(e["shares"] * price, 2), note=f"{how}: the buy price "
+                     f"{fmt_price(old)} -> {fmt_price(price)}.")
+            if new.get("id"):
+                e["order_id"] = new["id"]
+        else:
+            if old_filled:
+                e["sold"] = (e.get("sold") or 0) + old_filled
+                e["proceeds"] = (e.get("proceeds") or 0.0) + old_filled * (e.get("sell_price") or 0)
+            old = e.get("sell_price")
+            e.update(sell_price=price, sell_filled=0, note=f"{how}: the sell price "
+                     f"{fmt_price(old) if old else NA} -> {fmt_price(price)}.")
+            if new.get("id"):
+                e["sell_id"] = new["id"]
+            e["sell_at"] = price
+            if self.active(e["ticker"]) is e:     # the checklist's exit follows
+                self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
+                self.save_settings(self.settings)
+        self.save()
+        self.update_live(e["ticker"])
+
+    def _replacement(self, e, side, old_id, shares):
+        """The order that took the place of the trade's old order in thinkorswim: open, the same
+        ticker, side and amount of shares, newer, not followed by another trade. None if none."""
+        tracked = self.tracked_ids()
+        found = [o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
+                 if o["open"] and o["ticker"] == e["ticker"] and o["side"] == side and o["price"]
+                 and o["quantity"] == shares and o["id"] != str(old_id) and o["id"] not in tracked]
+        return max(found, key=lambda o: o["entered"]) if found else None
+
+    def _orders(self, account, orders, error):
+        if orders is None:
+            return                  # tried again at the next check
+        self.schwab_orders[account] = orders
+        self.orders_time[account] = time.time()
+        # trades whose order was canceled or replaced outside the app: follow the new one, or, once
+        # the orders read after it show none, take it as canceled
+        for e in list(self.entries):
+            gone = e.get("gone")
+            if not gone or (e.get("account") or self.chosen_account()) != account:
+                continue
+            gone["reads"] = gone.get("reads", 0) + 1
+            new = self._replacement(e, gone["side"], gone["old_id"], gone["shares"])
+            if new is not None:
+                self._adopt(e, gone["side"], new, gone["old_id"], gone.get("filled", 0), "Changed in thinkorswim")
+            elif gone["reads"] >= 2:        # the second read since is surely after the change
+                e.pop("gone", None)
+                self._done(e, gone["side"], gone["status"], gone.get("filled", 0))
+                self.save()
+        self.changed.emit()
 
     def set_sell_at(self, e, price):
         """The price Sell ATM sells at (starts as the planned exit). The checklist's exit follows."""
@@ -877,6 +1171,12 @@ class AtmTrades(QObject):
         tickers = self.open_tickers()
         if tickers:
             self.trader.read_quotes(tickers)
+        # the accounts' orders: the chosen one's are drawn on the chart; an open trade's show a
+        # change made in thinkorswim
+        accounts = {self.chosen_account()} | {e.get("account") for e in self.entries
+                                               if e.get("state") in ("buy_open", "sell_open")}
+        for account in sorted(a for a in accounts if a):
+            self.trader.read_orders(account)
 
     # ---- answers from Schwab ----
     def _placed(self, key, side, order_id, message):
@@ -909,7 +1209,9 @@ class AtmTrades(QObject):
 
     def _canceled(self, key, side, error):
         self.canceling.discard(key)
+        order_id = self.cancel_ids.pop(key, None)
         if error:
+            self.app_canceled.discard(order_id)
             QMessageBox.warning(QApplication.activeWindow(), f"{side.title()} order not canceled", error)
         else:
             e = self.find(key)
@@ -920,14 +1222,40 @@ class AtmTrades(QObject):
 
     def _checked(self, key, side, info, message):
         e = self.find(key)
-        if info is None or e is None:
-            return                  # tried again at the next check
+        if info is None or e is None or key in self.sending:
+            return                  # tried again at the next check; or the order is being changed
         if e.get("state") != ("buy_open" if side == "BUY" else "sell_open"):
             return                  # an older answer
-        if side == "SELL" and str(info.get("orderId", e.get("sell_id"))) != str(e.get("sell_id")):
-            return                  # about an older sell order
+        current = e.get("order_id" if side == "BUY" else "sell_id")
+        old_id = str(info.get("orderId", current))
+        if old_id != str(current):
+            return                  # about an older order
         status = info.get("status", "")
         filled = int(info.get("filledQuantity") or 0)
+        if e.get("gone"):
+            return                  # waiting for the account's orders: changed in thinkorswim?
+        # canceled or replaced, not by the app, before anything was bought (a sell: at any point):
+        # maybe changed in thinkorswim. Followed if the account's orders show a new order of the
+        # same kind and amount; else taken as canceled once they are read again.
+        if status in OPEN_GONE and old_id not in self.app_canceled and (side == "SELL" or not filled):
+            shares = e["shares"] if side == "BUY" else self.remaining(e) - filled
+            new = self._replacement(e, side, old_id, shares)
+            if new is not None:
+                self._adopt(e, side, new, old_id, filled, "Changed in thinkorswim")
+            else:
+                e["gone"] = {"side": side, "old_id": old_id, "status": status, "filled": filled,
+                             "shares": shares, "since": datetime.now().isoformat(timespec="seconds")}
+                e["note"] = f"The {side.lower()} order was {status.lower()} in Schwab: looking for a new one..."
+                self.save()
+                self.trader.read_orders(e.get("account") or self.chosen_account())
+            self.changed.emit()
+            return
+        self._done(e, side, status, filled)
+        self.save()
+        self.changed.emit()
+
+    def _done(self, e, side, status, filled):
+        """The trade's order's status from Schwab: what it did to the trade."""
         now = datetime.now().isoformat(timespec="seconds")
         e["status"] = status
         if side == "BUY":
@@ -952,8 +1280,6 @@ class AtmTrades(QObject):
                 else:               # Sell ATM can send it again
                     e.update(state="bought", note=f"The sell order was {status.lower()}"
                                                   + (f" after {filled:,} were sold." if filled else "."))
-        self.save()
-        self.changed.emit()
 
     # ---- the live exit and safety net, kept in atm.json beside the planned ones ----
     def update_live(self, ticker):

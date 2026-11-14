@@ -200,7 +200,8 @@ ORDER_UP, ORDER_DOWN = QColor("#1f9d1f"), QColor("#d83a3a")    # open buy / sell
 
 
 class CandleChart(QWidget):
-    cancel_order = pyqtSignal(str)      # "BUY" or "SELL": the x on an open order's tag was clicked
+    cancel_order = pyqtSignal(str)          # an open order's key: the x on its tag was clicked
+    move_order = pyqtSignal(str, float)     # an open order's key, and the price its tag was dragged to
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -234,9 +235,11 @@ class CandleChart(QWidget):
         self._tag_points = []       # the Bid/Ask and Level II tags' triangle points as last drawn:
                                     # (x, y, price, rank): rank 0 for the Bid and Ask, 1 for the others
         self.book = ("", [], [])    # the Level II: ticker, bids, asks as (mm, price, size, level)
-        # ticker -> [(side, shares, price)]: the open orders, drawn as lines as in thinkorswim
+        # ticker -> the open orders, drawn as lines as in thinkorswim: [{"key", "side" ("BUY" or
+        # "SELL"), "shares", "price", "atm" (an ATM trade's, else another Schwab order)}]
         self.order_lines = None
-        self._order_tags = []       # (the x's rect, side, the tag's rect, tooltip) as last drawn
+        self._order_tags = []       # (the x's rect, key, the tag's rect, tooltip) as last drawn
+        self.order_drag = None      # a tag being dragged: {"key", "price" (its own), "to" (now)}
         # Shift is caught for the whole app: the chart rarely has the keyboard focus
         QApplication.instance().installEventFilter(self)
 
@@ -494,8 +497,8 @@ class CandleChart(QWidget):
                 lo, hi = lo - pad, hi + pad
         orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
         if not self.y_zoom:         # the open orders' prices are on the chart too
-            for _, _, value in orders:
-                lo, hi = min(lo, value), max(hi, value)
+            for o in orders:
+                lo, hi = min(lo, o["price"]), max(hi, o["price"])
         self._scale = (lo, hi)
         top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
         scale = (bot - top) / (hi - lo)
@@ -657,7 +660,7 @@ class CandleChart(QWidget):
 
         # Crosshair
         y_value_text = None
-        if self.mouse is not None and self.drag is None:
+        if self.mouse is not None and self.drag is None and self.order_drag is None:
             mx, my = self.mouse.x(), self.mouse.y()
             in_price, in_vol = price.contains(self.mouse), vol.contains(self.mouse)
             if in_price or in_vol:
@@ -1023,7 +1026,9 @@ class CandleChart(QWidget):
 
     def _draw_orders(self, p, price, py, orders):
         """Each open order: a line at its price across the chart, and a tag on it as in thinkorswim,
-        "BUY +4225 LMT x" (green), "SELL -4225 LMT x" (red). The x cancels it."""
+        "BUY +4225 LMT x" (green), "SELL -4225 LMT x" (red). The x cancels it; dragging the tag
+        moves it (and a price tag on the right axis) to another price. An ATM trade's order has a
+        solid line, another Schwab order (sent from thinkorswim) a dashed one."""
         self._order_tags = []
         if not orders:
             return
@@ -1031,13 +1036,28 @@ class CandleChart(QWidget):
         f.setBold(True)
         p.setFont(f)
         fm = QFontMetrics(f)
-        for side, shares, value in orders:
+        drag = self.order_drag
+        for o in orders:
+            side, shares, value = o["side"], o["shares"], o["price"]
+            color = ORDER_UP if side == "BUY" else ORDER_DOWN
+            dragged = drag is not None and drag["key"] == o["key"]
+            if dragged:     # its own price stays as a faint dotted line
+                y0 = round(py(value)) + 0.5
+                if price.top() < y0 < price.bottom():
+                    faint = QColor(color)
+                    faint.setAlpha(110)
+                    p.setPen(QPen(faint, 1, Qt.PenStyle.DotLine))
+                    p.drawLine(QPointF(price.left() + 1, y0), QPointF(price.right() - 1, y0))
+                value = drag["to"]
             y = round(py(value)) + 0.5
             if not price.top() < y < price.bottom():
                 continue
-            color = ORDER_UP if side == "BUY" else ORDER_DOWN
-            p.setPen(QPen(color, 1))
+            p.setPen(QPen(color, 1, Qt.PenStyle.SolidLine if o.get("atm") else Qt.PenStyle.DashLine))
             p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
+            if dragged:
+                self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
+                               arrow="axis")
+                p.setFont(f)
             text = f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT"
             tw = fm.horizontalAdvance(text)
             w = tw + 30
@@ -1051,15 +1071,37 @@ class CandleChart(QWidget):
             p.drawText(QRectF(r.left() + 8, r.top(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
             x = QRectF(r.right() - 18, r.top(), 14, r.height())
             p.drawText(x, Qt.AlignmentFlag.AlignCenter, "×")
-            tip = (f"{'Buy' if side == 'BUY' else 'Sell'} {shares:,} @ {fmt_price(value)}, limit, GTC "
-                   f"(an ATM trade, Schwab tab).\nThe x cancels it.")
-            self._order_tags.append((x.adjusted(-3, -3, 3, 3), side, r, tip))
+            tip = (f"{'Buy' if side == 'BUY' else 'Sell'} {shares:,} @ {fmt_price(value)}, limit, "
+                   f"{o.get('duration') or 'GTC'} "
+                   + ("(an ATM trade, Schwab tab)." if o.get("atm") else "(a Schwab order, not an ATM trade).")
+                   + "\nDrag it to change its price. The x cancels it.")
+            self._order_tags.append((x.adjusted(-3, -3, 3, 3), o["key"], r, tip))
         f.setBold(False)
         p.setFont(f)
 
     def _order_x_at(self, pos):
-        """The side of the open order whose x is under pos, else None."""
-        return next((side for x, side, _, _ in self._order_tags if x.contains(pos)), None)
+        """The key of the open order whose x is under pos, else None."""
+        return next((key for x, key, _, _ in self._order_tags if x.contains(pos)), None)
+
+    def _order_tag_at(self, pos):
+        """The open order whose tag (not its x) is under pos: {"key", "price"}, else None."""
+        for x, key, r, _ in self._order_tags:
+            if r.contains(pos) and not x.contains(pos):
+                orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
+                o = next((o for o in orders if o["key"] == key), None)
+                return {"key": key, "price": o["price"]} if o else None
+        return None
+
+    def _price_at_y(self, y):
+        """The price at a height in the price pane, as last drawn, on the order tick: 0.0001 under $1,
+        else 0.01."""
+        price, _ = self._layout()
+        lo, hi = self._scale
+        top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
+        y = min(max(y, price.top() + 2), price.bottom() - 2)       # kept on the chart
+        value = hi - (y - top) / (bot - top) * (hi - lo)
+        tick = 0.0001 if value < 1 else 0.01
+        return max(tick, round(round(value / tick) * tick, 4))
 
     def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=None):
         """A tag centered on y. Plain: starts at x, on the right axis. arrow: with a triangle point
@@ -1275,8 +1317,13 @@ class CandleChart(QWidget):
             self._drag_ruler(e.position())
             self.update()
             return
+        if self.order_drag is not None:
+            self.order_drag["to"] = self._price_at_y(e.position().y())
+            self.update()
+            return
         if self.drag is None:
             self.setCursor(Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
+                           Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
                            self._ruler_cursor(self._ruler_at(e.position())))
         if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.measure = None
@@ -1294,9 +1341,14 @@ class CandleChart(QWidget):
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton or not self.dates:
             return
-        side = self._order_x_at(e.position())
-        if side:
-            self.cancel_order.emit(side)
+        key = self._order_x_at(e.position())
+        if key:
+            self.cancel_order.emit(key)
+            return
+        tag = self._order_tag_at(e.position())
+        if tag:
+            self.order_drag = {**tag, "to": tag["price"]}
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
             return
         axis = self._ruler_at(e.position())
         if axis:
@@ -1308,6 +1360,11 @@ class CandleChart(QWidget):
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseReleaseEvent(self, e):
+        drag, self.order_drag = self.order_drag, None
+        if drag is not None:
+            self.update()
+            if abs(drag["to"] - drag["price"]) > 1e-9:
+                self.move_order.emit(drag["key"], drag["to"])     # asks before changing it
         self.drag = self.ruler = None
         self.setCursor(self._ruler_cursor(self._ruler_at(e.position())))
         self.update()
