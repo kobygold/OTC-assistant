@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2301,7 +2301,7 @@ class MainWindow(QMainWindow):
         self.schwab_status.setWordWrap(True)
         lay.addWidget(self.schwab_status)
         root.addWidget(box)
-        trades = self.atm_box = QGroupBox("ATM trades (atm.json)")
+        trades = self.atm_box = QGroupBox("ATM Trades")
         tlay = QVBoxLayout(trades)
         self.trades_table = AtmTable(self.checklist.atm)
         self.trades_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
@@ -2316,14 +2316,14 @@ class MainWindow(QMainWindow):
         split.setChildrenCollapsible(False)
         split.addWidget(trades)
         # the account's other orders (sent from thinkorswim): change or cancel them here too
-        others = self.orders_box = QGroupBox("Other orders")
+        others = self.orders_box = QGroupBox("Other Orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         olay.addWidget(self.orders_table)
         split.addWidget(others)
         # the stocks owned in the account: sell them on the bid or the ask
-        owned = self.owned_box = QGroupBox("Stocks owned")
+        owned = self.owned_box = QGroupBox("Portfolio")
         play = QVBoxLayout(owned)
         self.owned_table = PositionsTable(self.checklist.atm)
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
@@ -2331,7 +2331,11 @@ class MainWindow(QMainWindow):
         split.addWidget(owned)
         split.setSizes(self.settings.get("schwab_split", [300, 200, 200]))
         root.addWidget(split, 1)
-        self.checklist.atm.changed.connect(self.update_orders_title)
+        # the three titles: larger, in colour (the account is the one chosen at the top)
+        for box, name, color in ((trades, "atm_box", "#e3b23c"), (others, "orders_box", "#4fc3f7"),
+                                 (owned, "owned_box", "#1db31d")):
+            box.setObjectName(name)
+            box.setStyleSheet(f"QGroupBox#{name} {{ font-size: 13pt; font-weight: bold; color: {color}; }}")
         self.schwab_accounts_read = False
         reader = self.checklist.fee_reader
         if reader:
@@ -2382,14 +2386,11 @@ class MainWindow(QMainWindow):
         for tail in tails:
             combo.addItem(reader.kind(tail), tail)
         combo.setCurrentIndex(max(0, combo.findData(saved)) if saved else 0)
-        if hasattr(self, "trades_table"):   # the trades of this account only
-            self.atm_box.setTitle(f"ATM trades of account ...{saved} (atm.json)" if saved else
-                                  "ATM trades of all the accounts (atm.json): choose an account above")
+        if hasattr(self, "trades_table"):   # the trades, orders and stocks of this account only
             self.trades_table.rebuild()
-        if hasattr(self, "orders_table"):   # and its other orders
+        if hasattr(self, "orders_table"):
             self.orders_table.rebuild()
             self.owned_table.rebuild()
-            self.update_orders_title()
         if error:
             self.schwab_status.setText(f"Can't read the accounts: {error}")
         elif not accounts:
@@ -2398,29 +2399,6 @@ class MainWindow(QMainWindow):
             self.schwab_status.setText(f"BUY and SELL orders go to {reader.kind(saved)}.")
         else:
             self.schwab_status.setText("Choose the account the BUY and SELL orders go to.")
-
-    def update_orders_title(self):
-        atm = self.checklist.atm
-        saved = self.settings.get("schwab_account", "")
-        if not saved:
-            title = "Other orders: choose an account above"
-        elif not atm.orders_read(saved):
-            title = f"Other orders of account ...{saved} (not ATM trades): reading them from Schwab..."
-        else:
-            n = len(atm.other_orders(account=saved))
-            title = (f"Other orders of account ...{saved} (not ATM trades, e.g. from thinkorswim): "
-                     + (f"{n} open" if n else "none open") + ", read every 15 seconds")
-        self.orders_box.setTitle(title)
-        if not saved:
-            title = "Stocks owned: choose an account above"
-        elif not atm.positions_read(saved):
-            title = f"Stocks owned in account ...{saved}: reading them from Schwab..."
-        else:
-            n = len(atm.owned(saved))
-            title = (f"Stocks owned in account ...{saved}: " + (f"{n} stock{'s' if n > 1 else ''}" if n else "none")
-                     + ", read every 15 seconds. Sell on Bid / Ask: a limit sell, not an ATM trade "
-                     "(it shows with the other orders)")
-        self.owned_box.setTitle(title)
 
     def on_schwab_account(self, index):
         tail = self.schwab_account.itemData(index)

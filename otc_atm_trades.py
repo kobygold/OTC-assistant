@@ -787,6 +787,7 @@ class SchwabOrdersTable(AtmTable):
 # (title, tooltip)
 POS_COLUMNS = [
     ("Ticker", "Double-click: its chart"),
+    ("ATM", "An ATM trade's stocks (its state as on the ATM Trades list); sell those with its Sell ATM"),
     ("Shares", "The shares owned in the account"),
     ("In sell orders", "Of them, those in open sell orders already (an ATM trade's or others')"),
     ("Avg cost", "Schwab's average cost a share"),
@@ -804,7 +805,8 @@ PCOL = {title: i for i, (title, _) in enumerate(POS_COLUMNS)}
 
 
 class PositionsTable(AtmTable):
-    """The stocks owned in the account chosen on the Schwab tab, from Schwab, with the market now:
+    """The portfolio: every stock owned in the account chosen on the Schwab tab (an ATM trade's too,
+    marked), from Schwab, with the market now:
     Sell on Bid / Sell on Ask open the sell dialog (amount, price, Day or GTC, the $ with the fee)."""
 
     MARKET_SORTS = ("Bid now", "Ask now", "Value at bid", "P/L at bid", "P/L %")
@@ -860,10 +862,18 @@ class PositionsTable(AtmTable):
         return {"bid": bid, "ask": ask, "cost": cost, "value": value, "pl": pl, "fee": fee, "fee_read": read is not None,
                 "pct": pl / cost * 100 if pl is not None and cost else None}
 
+    def atm_entry(self, ticker):
+        """The ATM trade of the ticker in the chosen account that owns stocks or has an order working."""
+        chosen = self.atm.chosen_account()
+        return next((e for e in reversed(self.atm.entries) if e.get("ticker") == ticker
+                     and e.get("state") in ("buy_open", "bought", "sell_open")
+                     and (e.get("account") or chosen) == chosen), None)
+
     def sort_value(self, col, p):
         title = POS_COLUMNS[col][0]
         f = self.figures(p)
-        return {"Ticker": p["ticker"], "Shares": p["shares"], "In sell orders": self.atm.in_sell_orders(p["ticker"]),
+        e = self.atm_entry(p["ticker"])
+        return {"Ticker": p["ticker"], "ATM": 1 if e else 0, "Shares": p["shares"], "In sell orders": self.atm.in_sell_orders(p["ticker"]),
                 "Avg cost": p.get("avg"), "Cost": f["cost"], "Bid now": f["bid"], "Ask now": f["ask"],
                 "Value at bid": f["value"], "P/L at bid": f["pl"], "P/L %": f["pct"],
                 "Day P/L": p.get("day_pl")}.get(title)
@@ -872,7 +882,8 @@ class PositionsTable(AtmTable):
         rows = self.sorted_rows(sorted(self.atm.owned(), key=lambda p: p["ticker"]))
         busy = sorted(k for k in self.atm.sending if str(k).startswith("sell:"))
         in_orders = [self.atm.in_sell_orders(p["ticker"]) for p in rows]
-        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, busy, self.sort_state()],
+        atm = [(self.atm_entry(p["ticker"]) or {}).get("state") for p in rows]
+        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, atm, busy, self.sort_state()],
                                sort_keys=True, default=str)
         if signature == self.signature:
             return
@@ -894,6 +905,13 @@ class PositionsTable(AtmTable):
         sending = f"sell:{ticker}" in self.atm.sending
         in_orders = self.atm.in_sell_orders(ticker)
         self.cell(row, PCOL["Ticker"], ticker, "#ffffff", bold=True)
+        e = self.atm_entry(ticker)
+        if e is not None:       # an ATM trade's: in its state's colours
+            name, bg, fg = STATES.get(e["state"], (e["state"], DIM, "#ffffff"))
+            self.cell(row, PCOL["ATM"], "ATM", fg, bold=True, bg=bg, align=Qt.AlignmentFlag.AlignCenter,
+                      tip=f"An ATM trade: {name}")
+        else:
+            self.cell(row, PCOL["ATM"], "", align=Qt.AlignmentFlag.AlignCenter)
         self.cell(row, PCOL["Shares"], f"{p['shares']:,}", bold=True)
         self.cell(row, PCOL["In sell orders"], f"{in_orders:,}" if in_orders else "-",
                   YELLOW if in_orders else DIM)
