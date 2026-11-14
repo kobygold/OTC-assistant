@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2349,8 +2349,13 @@ class MainWindow(QMainWindow):
         self.owned_table = PositionsTable(self.checklist.atm)
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         play.addWidget(self.owned_table)
-        split.addWidget(owned)
-        split.setSizes(self.settings.get("schwab_split", [300, 200, 200]))
+        split.insertWidget(0, owned)        # the portfolio first
+        # the heights, in the order shown (saved before as ATM trades, other orders, portfolio)
+        sizes = self.settings.get("schwab_sizes")
+        if not sizes and len(self.settings.get("schwab_split") or []) == 3:
+            old = self.settings["schwab_split"]
+            sizes = [old[2], old[0], old[1]]
+        split.setSizes(sizes or [200, 300, 200])
         root.addWidget(split, 1)
         # the three titles: larger, in colour (the account is the one chosen at the top)
         for box, name, color in ((trades, "atm_box", "#e3b23c"), (others, "orders_box", "#4fc3f7"),
@@ -3072,7 +3077,8 @@ class MainWindow(QMainWindow):
             self.settings["checklist_split"] = self.checklist_split.sizes()
             save_settings(self.settings)
         if all(self.schwab_split.sizes()):  # the Schwab tab's three lists (once it was shown)
-            self.settings["schwab_split"] = self.schwab_split.sizes()
+            self.settings["schwab_sizes"] = self.schwab_split.sizes()
+            self.settings.pop("schwab_split", None)
             save_settings(self.settings)
         event.accept()
 
