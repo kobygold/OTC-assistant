@@ -10,6 +10,8 @@ favorites.json
 favorites.tmp
 atm.json
 atm.tmp
+drawings.json
+drawings.tmp
 otc_daily.db
 otc_daily.db-wal
 otc_daily.db-shm

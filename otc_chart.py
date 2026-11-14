@@ -18,6 +18,7 @@ from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QToolTip, QWidget
 
+from otc_drawings import DrawingsMixin
 from otc_zones import dollar_price
 
 BG = QColor("#000000")
@@ -199,7 +200,7 @@ def expiration_days(first: date, last: date):
 ORDER_UP, ORDER_DOWN = QColor("#1f9d1f"), QColor("#d83a3a")    # open buy / sell order lines
 
 
-class CandleChart(QWidget):
+class CandleChart(DrawingsMixin, QWidget):
     cancel_order = pyqtSignal(str)          # an open order's key: the x on its tag was clicked
     move_order = pyqtSignal(str, float)     # an open order's key, and the price its tag was dragged to
 
@@ -240,6 +241,7 @@ class CandleChart(QWidget):
         self.order_lines = None
         self._order_tags = []       # (the x's rect, key, the tag's rect, tooltip) as last drawn
         self.order_drag = None      # a tag being dragged: {"key", "price" (its own), "to" (now)}
+        self._init_drawings()       # trendlines, price levels, notes... (otc_drawings)
         # Shift is caught for the whole app: the chart rarely has the keyboard focus
         QApplication.instance().installEventFilter(self)
 
@@ -343,6 +345,8 @@ class CandleChart(QWidget):
     def set_data(self, ticker: str, rows, months: float = 12, label: str = "1Y",
                  message: str = ""):
         """rows: list of (YYYY-MM-DD, open, high, low, close, volume[, vwap]), oldest first."""
+        if ticker != self.ticker or self.intraday:
+            self._reset_drawing_state()
         self.ticker = ticker
         self.intraday = False
         self._set_rows(rows)
@@ -356,6 +360,8 @@ class CandleChart(QWidget):
         same = keep_view and self.intraday and ticker == self.ticker and bool(self.dates)
         view = (self.first, self.count, len(self.dates)) if same else None
         live, zoom = self.live, (self.y_zoom, self.v_zoom)
+        if not same:
+            self._reset_drawing_state()
         self.ticker = ticker
         self.intraday = True
         self._set_rows(rows)
@@ -599,6 +605,7 @@ class CandleChart(QWidget):
                 self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}",
                              above=False, pane=price)
 
+        self._draw_drawings(p, price)          # the trendlines, price levels, notes...
         self._draw_orders(p, price, py, orders)
 
         # The last price tag on the right axis: live from Schwab when the Level II panel streams
@@ -779,6 +786,8 @@ class CandleChart(QWidget):
         """Shift down over the price pane starts the measuring line at the crosshair; letting go
         of Shift ends it."""
         t = e.type()
+        if t == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Delete)                 and QApplication.activeWindow() is self.window() and self._drawing_key(e):
+            return True         # Esc stops placing a drawing, Delete removes the selected one
         if t in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and e.key() == Qt.Key.Key_Shift \
                 and not e.isAutoRepeat():
             if t == QEvent.Type.KeyPress:
@@ -1338,10 +1347,13 @@ class CandleChart(QWidget):
             self.order_drag["to"] = self._price_at_y(e.position().y())
             self.update()
             return
+        if self._drawing_move(e):       # a drawing dragged
+            return
         if self.drag is None:
-            self.setCursor(Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
-                           Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
-                           self._ruler_cursor(self._ruler_at(e.position())))
+            self.setCursor(self._drawing_cursor(e.position()) or
+                           (Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
+                            Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
+                            self._ruler_cursor(self._ruler_at(e.position()))))
         if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.measure = None
         if self.drag is not None:
@@ -1358,14 +1370,17 @@ class CandleChart(QWidget):
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton or not self.dates:
             return
-        key = self._order_x_at(e.position())
-        if key:
-            self.cancel_order.emit(key)
-            return
-        tag = self._order_tag_at(e.position())
-        if tag:
-            self.order_drag = {**tag, "to": tag["price"]}
-            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        if self.placing is None:
+            key = self._order_x_at(e.position())
+            if key:
+                self.cancel_order.emit(key)
+                return
+            tag = self._order_tag_at(e.position())
+            if tag:
+                self.order_drag = {**tag, "to": tag["price"]}
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+                return
+        if self._drawing_press(e):      # placing a drawing, or one grabbed
             return
         axis = self._ruler_at(e.position())
         if axis:
@@ -1377,6 +1392,10 @@ class CandleChart(QWidget):
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseReleaseEvent(self, e):
+        if self._drawing_release(e):
+            self.setCursor(self._drawing_cursor(e.position()) or self._ruler_cursor(self._ruler_at(e.position())))
+            self.update()
+            return
         drag, self.order_drag = self.order_drag, None
         if drag is not None:
             self.update()
@@ -1387,7 +1406,10 @@ class CandleChart(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):
-        """On the price or volume ruler: that axis fits itself again; elsewhere the whole view resets."""
+        """On the price or volume ruler: that axis fits itself again; on a text note: edits it; elsewhere
+        the whole view resets."""
+        if self._drawing_double_click(e):
+            return
         axis = self._ruler_at(e.position())
         if axis == "price":
             self.y_zoom = None

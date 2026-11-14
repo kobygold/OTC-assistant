@@ -56,11 +56,12 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.20"
+APP_VERSION = "0.9.21"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
+DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
 ICON_PATH = APP_DIR / "app_icon.ico"
 
@@ -182,6 +183,21 @@ def save_favorites(favs: dict):
     tmp = FAVORITES_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps({"tickers": favs}, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(FAVORITES_PATH)
+
+
+def load_drawings() -> dict:
+    """{ticker: [drawing]} (otc_drawings)."""
+    try:
+        data = json.loads(DRAWINGS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+    return {t: v for t, v in data.items() if isinstance(v, list)} if isinstance(data, dict) else {}
+
+
+def save_drawings(drawings: dict):
+    tmp = DRAWINGS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(drawings, indent=1, sort_keys=True), encoding="utf-8")
+    tmp.replace(DRAWINGS_PATH)
 
 
 def now_utc_iso() -> str:
@@ -921,6 +937,8 @@ class MainWindow(QMainWindow):
         self.zone_info.hide()
         root.addWidget(self.zone_info)
         self.chart = CandleChart()
+        self.chart.drawing_store = load_drawings()
+        self.chart.drawings_changed = lambda: save_drawings(self.chart.drawing_store)
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
