@@ -900,6 +900,7 @@ class AtmTrades(QObject):
         self.path, self.settings, self.save_settings = path, settings, save_settings
         self.fee_reader, self.trader = fee_reader, trader
         self.fee_of = lambda ticker: None   # Schwab's fee for a ticker, if read (set by the panel)
+        self.read_fee = lambda ticker: None     # asks Schwab for it, once a session (set by the panel)
         self.entries = self._read()
         self.sending = set()        # tickers with a buy on its way, entry ids with a sell on its way
         self.pending = {}           # the same keys -> what was sent
@@ -1537,6 +1538,7 @@ class ChecklistPanel(QWidget):
         # The ATM trades (atm.json), shared with the Schwab tab and the chart
         self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
         self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
+        self.atm.read_fee = self.read_fee
         self.atm.changed.connect(self.refresh)
         self.price_tools = {}   # price key -> (its +/- buttons, its reset button)
         if self.fee_reader:
@@ -1972,15 +1974,18 @@ class ChecklistPanel(QWidget):
         self.atm.ask_sell(self, e, p["exit"] or e.get("sell_at"), self.fees.get(self.ticker, (None, ""))[0])
 
     # ---- the fee from Schwab, once per ticker a session ----
-    def read_fee(self):
-        if self.fee_reader and self.ticker and self.ticker not in self.fees:
-            self.fees[self.ticker] = (None, "Reading the fee from Schwab...")
-            self.fee_reader.request(self.ticker)
+    def read_fee(self, ticker=None):
+        """Asks Schwab for the ticker's fee (the checklist's ticker), once a session."""
+        ticker = ticker or self.ticker
+        if self.fee_reader and ticker and ticker not in self.fees:
+            self.fees[ticker] = (None, "Reading the fee from Schwab...")
+            self.fee_reader.request(ticker)
 
     def fee_read(self, ticker, fee, details):
         self.fees[ticker] = (fee, details)
         if ticker == self.ticker:
             self.refresh()
+        self.atm.market_changed.emit(ticker)        # the Schwab tab's orders show it
 
     # ---- data in ----
     def set_chart(self, ticker, rows, market_days, rng, period):

@@ -14,7 +14,7 @@ from PyQt6.QtGui import QBrush, QColor, QFont, QRegularExpressionValidator
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QPushButton,
                              QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
-from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
+from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            AtmTrades, red_x_icon, reset_icon, usd_signed)
 
 
@@ -438,7 +438,8 @@ ORDER_COLUMNS = [
     ("Duration", "GTC: good till canceled. Day: for the day only."),
     ("Shares", "The shares left to fill (and those filled)"),
     ("Limit", "The order's limit price"),
-    ("$", "Shares left x limit"),
+    ("$", "Shares left x limit, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
+          "get). Follows the New limit as it's changed (orange)."),
     ("Bid now", "Read every 15 seconds (live while Level II streams the ticker)"),
     ("Ask now", "Read every 15 seconds (live while Level II streams the ticker)"),
     ("New limit", "A new limit price for Change: typed, or +/- (0.0001 up / down). A whole number is a count "
@@ -539,7 +540,7 @@ class SchwabOrdersTable(AtmTable):
         filled = o.get("filled") or 0
         self.cell(row, OCOL["Shares"], f"{o['shares']:,}" + (f" ({filled:,} filled)" if filled else ""), bold=True)
         self.cell(row, OCOL["Limit"], fmt_price(o["price"]), ORDER_COLOR, bold=True)
-        self.cell(row, OCOL["$"], f"${o['shares'] * o['price']:,.2f}", bold=True)
+        self.atm.read_fee(o["ticker"])      # Schwab's commission for it, once a session
 
         # the new limit: + / - and back to the order's limit, then Change
         edit = SelectAllEdit()
@@ -565,6 +566,7 @@ class SchwabOrdersTable(AtmTable):
             edit.setStyleSheet(f"QLineEdit {{ background: #1b1e21; color: {ORDER_COLOR if same else CHANGED};"
                                " font-weight: bold; border: 1px solid #3a4046; }")
             change.setEnabled(ready and not filled and bool(new) and not same)
+            self.fill_dollars(row, o, self.box_price(edit))
         edit.textChanged.connect(tint)
         edit.editingFinished.connect(lambda w=edit: self.typed_price(w))
         edit.setEnabled(ready)
@@ -633,6 +635,40 @@ class SchwabOrdersTable(AtmTable):
         m = self.atm.market.get(o["ticker"], {})
         for k, col in (("bid", OCOL["Bid now"]), ("ask", OCOL["Ask now"])):
             self.cell(row, col, quote_text(m.get(k)), bold=True)
+        edit = self.edits.get(f"schwab:{o['id']}")      # the fee may have been read meanwhile
+        self.fill_dollars(row, o, self.box_price(edit) if edit else None)
+
+    @staticmethod
+    def box_price(edit):
+        """The New limit box's price as typed (a whole number: that many 0.0001 steps), else None."""
+        text = edit.text().strip()
+        try:
+            v = float(text)
+        except ValueError:
+            return None
+        if v >= 1 and "." not in text:
+            v = float(Decimal(text) * PRICE_STEP)
+        return v if v > 0 else None
+
+    def fill_dollars(self, row, o, price=None):
+        """Shares x the limit (the New limit, while changed) with the commission: "$101.00 + $6.95 =
+        $107.95" for a buy, "$101.00 - $6.95 = $94.05" for a sell."""
+        price = price or o["price"]
+        read = self.atm.fee_of(o["ticker"])
+        fee = FEE_USD if read is None else read
+        total = o["shares"] * price
+        if o["side"] == "BUY":
+            text = f"${total:,.2f} + ${fee:.2f} = ${total + fee:,.2f}"
+        else:
+            net = total - fee
+            text = f"${total:,.2f} - ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
+        changed = abs(price - o["price"]) > 1e-9
+        tip = (f"{o['shares']:,} x {fmt_price(price)}" + (" (the New limit)" if changed else "")
+               + (f", Schwab's commission ${fee:.2f}" if read is not None else
+                  f", the usual commission ${fee:.2f} (Schwab's not read yet)")
+               + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))
+        self.cell(row, OCOL["$"], text, CHANGED if changed else YELLOW if read and read > FEE_HIGH else None,
+                  bold=True, tip=tip)
 
     def update_market(self):
         dirty, self.dirty = self.dirty, set()
