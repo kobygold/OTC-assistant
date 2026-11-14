@@ -40,7 +40,7 @@ COLUMNS = [
               " · Transaction Canceled: the buy was canceled before anything was bought"),
     ("Sent", "When the Buy ATM was sent"),
     ("Shares", "Step 1: the amount ordered. Steps 2-3: the amount owned. Step 4: the amount sold."),
-    ("$", "Amount of stocks x entry"),
+    ("$", "Amount of stocks x entry, + the buy's commission = what the buy costs"),
     ("Entry", "The buy order's limit price"),
     ("Exit plan", "The exit price planned at the buy"),
     ("Safety Net", "The safety net (stop) planned at the buy"),
@@ -222,7 +222,14 @@ class AtmTable(QTableWidget):
         else:
             shares = f"{left:,}" + (f" ({e['sell_filled']:,} sold)" if e.get("sell_filled") else "")
         self.cell(row, COL["Shares"], shares, bold=True)
-        self.cell(row, COL["$"], f"${e['usd']:,.2f}" if e.get("usd") else "-", bold=True)
+        if e.get("usd"):        # as the other orders': amount + commission = total
+            fee = FEE_USD if e.get("fee") is None else e["fee"]
+            self.cell(row, COL["$"], f"${e['usd']:,.2f} + ${fee:.2f} = ${e['usd'] + fee:,.2f}", YELLOW, bold=True,
+                      tip=f"{e['shares']:,} x {fmt_price(e.get('entry'))} + "
+                          + (f"Schwab's commission ${fee:.2f}" if e.get("fee") is not None else
+                             f"the usual commission ${fee:.2f} (Schwab's wasn't read at the buy)"))
+        else:
+            self.cell(row, COL["$"], "-", bold=True)
         self.cell(row, COL["Entry"], fmt_price(e.get("entry")), ORDER_COLOR, bold=True)
         self.cell(row, COL["Exit plan"], fmt_price(e.get("exit")), GREEN, bold=True)
         self.cell(row, COL["Safety Net"], fmt_price(e.get("safety-net")), RED, bold=True)
@@ -667,7 +674,7 @@ class SchwabOrdersTable(AtmTable):
                + (f", Schwab's commission ${fee:.2f}" if read is not None else
                   f", the usual commission ${fee:.2f} (Schwab's not read yet)")
                + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))
-        self.cell(row, OCOL["$"], text, CHANGED if changed else YELLOW if read and read > FEE_HIGH else None,
+        self.cell(row, OCOL["$"], text, CHANGED if changed else YELLOW,
                   bold=True, tip=tip)
 
     def update_market(self):
