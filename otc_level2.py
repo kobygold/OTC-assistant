@@ -112,6 +112,8 @@ class Level2Feed(QObject):
     quote = pyqtSignal(str, dict)          # ticker, Level 1 fields so far (stream names)
     status = pyqtSignal(str)               # what the connection is doing
     login_needed = pyqtSignal(str)         # why
+    order_event = pyqtSignal(str, str)     # the account activity stream: an event type, its Schwab order id
+    activity = pyqtSignal(bool)            # the account activity stream is on (True) or off
 
     def __init__(self, app_key: str, app_secret: str, token_path: Path):
         super().__init__()
@@ -202,9 +204,17 @@ class Level2Feed(QObject):
         stream.add_nasdaq_book_handler(lambda m: self._on_book("NASDAQ_BOOK", m))
         stream.add_nyse_book_handler(lambda m: self._on_book("NYSE_BOOK", m))
         stream.add_level_one_equity_handler(self._on_level1)
+        stream.add_account_activity_handler(self._on_activity)
         self._current = None
         self._symbols = set()
         try:
+            # the account's order events (placed, changed, canceled, filled) as they happen: the
+            # app checks its orders at once, instead of waiting for the next regular check
+            try:
+                await stream.account_activity_sub()
+                self.activity.emit(True)
+            except Exception:
+                self.activity.emit(False)       # the regular checks do it all, as before
             while not self._stop.is_set():
                 with self._lock:
                     want, extra = self._want, set(self._extra)
@@ -216,6 +226,7 @@ class Level2Feed(QObject):
                 except asyncio.TimeoutError:
                     pass
         finally:
+            self.activity.emit(False)
             try:
                 await asyncio.wait_for(stream.logout(), timeout=3)
             except Exception:
@@ -275,6 +286,17 @@ class Level2Feed(QObject):
                     self.quote.emit(want, dict(self._l1[want]))
                 self._emit_book(want)
 
+    def _on_activity(self, msg):
+        for c in msg.get("content", []):
+            kind = c.get("MESSAGE_TYPE") or ""
+            if not kind or kind == "SUBSCRIBED":
+                continue
+            try:
+                order_id = str(json.loads(c.get("MESSAGE_DATA") or "{}").get("SchwabOrderID") or "")
+            except (ValueError, AttributeError):
+                order_id = ""
+            self.order_event.emit(kind, order_id)
+
     def _on_level1(self, msg):
         for c in msg.get("content", []):
             key = c.get("key")
@@ -328,6 +350,8 @@ class Level2Panel(QWidget):
     any_quote = pyqtSignal(str, dict)             # the same for every ticker streamed (the ATM trades' too)
     any_book = pyqtSignal(str, list, list)
     logged_in = pyqtSignal()                      # a new browser login was saved to the token file
+    order_event = pyqtSignal(str, str)            # the account activity stream's event type, Schwab order id
+    activity_live = pyqtSignal(bool)              # the account activity stream is on / off
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -474,6 +498,8 @@ class Level2Panel(QWidget):
             self.feed.quote.connect(self.on_quote)
             self.feed.status.connect(self.set_status)
             self.feed.login_needed.connect(self.on_login_needed)
+            self.feed.order_event.connect(self.order_event)
+            self.feed.activity.connect(self.activity_live)
             self.feed.set_extra(self.extra)
 
     def on_quote(self, ticker, q):
@@ -492,12 +518,13 @@ class Level2Panel(QWidget):
         self.follow("")
         if self.feed:
             feed, self.feed = self.feed, None
-            for signal in (feed.book, feed.quote, feed.status, feed.login_needed):
+            for signal in (feed.book, feed.quote, feed.status, feed.login_needed, feed.order_event, feed.activity):
                 try:
                     signal.disconnect()
                 except TypeError:
                     pass
             feed.stop()         # its thread logs out and ends by itself
+            self.activity_live.emit(False)
         self.login_btn.hide()
         self.set_status("Off · not connected to Schwab")
 

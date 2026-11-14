@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -998,6 +998,9 @@ class MainWindow(QMainWindow):
         atm_trades = self.checklist.atm
         atm_trades.buy_sent.connect(lambda ticker: self.set_fav(ticker, 1))
         self.level2.any_quote.connect(atm_trades.on_quote)
+        # the stream's account activity: an order event checks the orders at once
+        self.level2.order_event.connect(atm_trades.order_event)
+        self.level2.activity_live.connect(atm_trades.set_activity_live)
         self.level2.any_book.connect(atm_trades.on_book)
         atm_trades.changed.connect(self.on_atm_changed)
         self.chart.order_lines = self.chart_orders

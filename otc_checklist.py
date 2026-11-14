@@ -50,6 +50,8 @@ LOCKED_INDENT = 8         # px: the fixed cells' left padding, for the values be
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
 ORDER_CHECK_S = 15          # how often open orders are checked at Schwab, in seconds
+ORDER_BACKSTOP_S = 60       # the orders' check while the account activity stream is on (it tells at once)
+ORDER_EVENT_DELAY_MS = 700  # an order event's check waits this long: the events come a few together
 ORDERS_BACK_DAYS = 180      # how far back the account's orders are read
 # Schwab order statuses after which an order no longer works
 ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
@@ -1291,8 +1293,17 @@ class AtmTrades(QObject):
             trader.replaced.connect(self._replaced)
             trader.positions.connect(self._positions)
             trader.sent.connect(self._sent)
+        # Every ORDER_CHECK_S: the quotes, and the orders and positions. While the stream's account
+        # activity is on, an order event checks the orders at once, so the regular check of them is
+        # only a backstop every ORDER_BACKSTOP_S (events missed while reconnecting)
+        self.activity_live = False
+        self.orders_checked = 0.0
+        self.event_timer = QTimer(self)
+        self.event_timer.setSingleShot(True)
+        self.event_timer.setInterval(ORDER_EVENT_DELAY_MS)
+        self.event_timer.timeout.connect(lambda: self.check(quotes=False))
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.check)
+        self.timer.timeout.connect(self.tick)
         self.timer.start(ORDER_CHECK_S * 1000)
         QTimer.singleShot(3000, self.check)
 
@@ -1837,10 +1848,32 @@ class AtmTrades(QObject):
         self.save()
         self.changed.emit()
 
-    def check(self):
-        """Asks Schwab about every open order, and for the quotes of the open trades' tickers."""
+    def tick(self):
+        """The regular check: the quotes always; the orders too, unless the account activity stream
+        is on and they were checked less than ORDER_BACKSTOP_S ago."""
+        due = not self.activity_live or time.time() - self.orders_checked >= ORDER_BACKSTOP_S - 1
+        self.check(orders=due)
+
+    def order_event(self, kind, order_id):
+        """An event of the account activity stream (OrderCreated, ChangeAccepted, a fill...): the
+        orders and positions checked in a moment (one check for a few events together)."""
+        self.event_timer.start()
+
+    def set_activity_live(self, live):
+        if live and not self.activity_live:
+            self.orders_checked = time.time()       # (checked by the regular ticks until now)
+        self.activity_live = bool(live)
+
+    def check(self, orders=True, quotes=True):
+        """Asks Schwab about every open order, and for the quotes of the open trades' tickers.
+        orders / quotes: False leaves those out."""
         if self.trader is None:
             return
+        if quotes:
+            self._check_quotes()
+        if not orders:
+            return
+        self.orders_checked = time.time()
         for e in self.entries:
             if e["id"] in self.sending:
                 continue
@@ -1848,11 +1881,6 @@ class AtmTrades(QObject):
                 self.trader.check(e["id"], "BUY", e["order_id"], e.get("account"))
             elif e.get("state") == "sell_open" and e.get("sell_id"):
                 self.trader.check(e["id"], "SELL", e["sell_id"], e.get("account"))
-        # the open trades' tickers, and the chosen account's other orders' (the Schwab tab's bid / ask)
-        tickers = sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()}
-                         | {p["ticker"] for p in self.owned()})
-        if tickers:
-            self.trader.read_quotes(tickers)
         # the accounts' orders: the chosen one's are drawn on the chart; an open trade's show a
         # change made in thinkorswim
         accounts = {self.chosen_account()} | {e.get("account") for e in self.entries
@@ -1861,6 +1889,13 @@ class AtmTrades(QObject):
             self.trader.read_orders(account)
         if self.chosen_account():       # the stocks owned there (the Schwab tab's list)
             self.trader.read_positions(self.chosen_account())
+
+    def _check_quotes(self):
+        # the open trades' tickers, and the chosen account's other orders' (the Schwab tab's bid / ask)
+        tickers = sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()}
+                         | {p["ticker"] for p in self.owned()})
+        if tickers:
+            self.trader.read_quotes(tickers)
 
     # ---- answers from Schwab ----
     def _placed(self, key, side, order_id, message):
