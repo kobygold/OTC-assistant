@@ -203,6 +203,7 @@ ORDER_UP, ORDER_DOWN = QColor("#1f9d1f"), QColor("#d83a3a")    # open buy / sell
 class CandleChart(DrawingsMixin, QWidget):
     cancel_order = pyqtSignal(str)          # an open order's key: the x on its tag was clicked
     move_order = pyqtSignal(str, float)     # an open order's key, and the price its tag was dragged to
+    new_order = pyqtSignal(str, float)      # the right-click menu's BUY / SELL, and the price where clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)

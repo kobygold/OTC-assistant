@@ -21,7 +21,7 @@ from PyQt6.QtCore import QObject, QPointF, QTimer, QRect, QRectF, QRegularExpres
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                             QPushButton, QScrollArea, QSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW
@@ -550,9 +550,11 @@ class SchwabTrader(QObject):
         """The stocks owned in the account, as position_info()."""
         self._start(self._positions, account)
 
-    def send(self, key, ticker, side, shares, price, account, duration=None):
-        """A limit order of the stocks owned list (not an ATM trade); the answer comes as sent()."""
-        self._start(self._send, key, ticker, side, shares, price, account, duration)
+    def send(self, key, ticker, side, shares, price, account, duration=None, order_type="LIMIT"):
+        """An order that isn't an ATM trade (the stocks owned list, the chart's BUY / SELL): a limit
+        order, or a market one (order_type "MARKET": price not used, always Day). The answer comes
+        as sent()."""
+        self._start(self._send, key, ticker, side, shares, price, account, duration, order_type)
 
     def _positions(self, account_tail):
         try:
@@ -567,12 +569,14 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.positions.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
-    def _send(self, key, ticker, side, shares, price, account_tail, duration):
+    def _send(self, key, ticker, side, shares, price, account_tail, duration, order_type="LIMIT"):
         try:
             from schwab.utils import Utils
+            order = (self._market_order(ticker, side, shares) if order_type == "MARKET"
+                     else self._limit_order(ticker, side, shares, price, duration))
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                r = client.place_order(account, self._limit_order(ticker, side, shares, price, duration))
+                r = client.place_order(account, order)
                 if r.status_code not in (200, 201):
                     self.sent.emit(key, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
                     return
@@ -583,6 +587,14 @@ class SchwabTrader(QObject):
             self.sent.emit(key, order_id, "")
         except Exception as e:
             self.sent.emit(key, None, f"{type(e).__name__}: {e}")
+
+    @staticmethod
+    def _market_order(ticker, side, shares):
+        """A market order: Day only (Schwab takes no GTC market orders), the normal session."""
+        from schwab.orders.common import Duration, Session
+        from schwab.orders.equities import equity_buy_market, equity_sell_market
+        make = equity_buy_market if side == "BUY" else equity_sell_market
+        return make(ticker, int(shares)).set_duration(Duration.DAY).set_session(Session.NORMAL).build()
 
     @staticmethod
     def _limit_order(ticker, side, shares, price, duration=None, session=None):
@@ -782,7 +794,7 @@ class PriceBox(QWidget):
                 return
             super().keyPressEvent(e)
 
-    def __init__(self, start, parent=None):
+    def __init__(self, start, parent=None, reset_tip=None):
         super().__init__(parent)
         self.start = start
         self.setObjectName("price_box")
@@ -822,7 +834,7 @@ class PriceBox(QWidget):
         reset.setObjectName("cl_reset")
         reset.setIcon(reset_icon())
         reset.setFixedSize(18, 25)
-        reset.setToolTip(f"Back to {fmt_price(start)}, where it was dragged to")
+        reset.setToolTip(reset_tip or f"Back to {fmt_price(start)}, where it was dragged to")
         reset.setCursor(Qt.CursorShape.PointingHandCursor)
         reset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         reset.clicked.connect(self.edit.clear)
@@ -948,6 +960,128 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
     box._steps()
     price = box.price()
     return (amount.value(), price, duration.currentData()) if price and free > 0 else None
+
+
+def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note=""):
+    """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, the price (from the
+    chart's y where right-clicked: +/- and back to it), the shares and the $ (each follows the
+    other), GTC (the default) or Day, and the $ with the commission in yellow: "$101.00 + $6.95 =
+    $107.95" (a sell: less it). owned / in_orders: a sell's stocks owned (None: none known).
+    {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
+    selling = side == "SELL"
+    usual = fee is None
+    fee = FEE_USD if usual else fee
+    kind = QComboBox()
+    kind.addItem("Limit", "LIMIT")
+    kind.addItem("Market", "MARKET")
+    kind.setToolTip("Market: at the market's price now, Day only (Schwab takes no GTC market orders)")
+    box = PriceBox(start, reset_tip=f"Back to {fmt_price(start)}, the chart's price where it was right-clicked")
+    shares = QSpinBox()
+    shares.setRange(0, 2_000_000_000)
+    shares.setGroupSeparatorShown(True)
+    shares.setMinimumWidth(140)
+    shares.setToolTip("The amount of shares: the $ follows it")
+    usd = QDoubleSpinBox()
+    usd.setRange(0, 100_000_000)
+    usd.setDecimals(2)
+    usd.setPrefix("$ ")
+    usd.setGroupSeparatorShown(True)
+    usd.setMinimumWidth(140)
+    usd.setToolTip("The amount in $ (before the commission): the shares follow it, as many as it buys")
+    shares_row = QWidget()
+    lay = QHBoxLayout(shares_row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.addWidget(shares)
+    free = None if owned is None else max(int(owned - in_orders), 0)
+    if selling and free:
+        all_btn = QPushButton("All")
+        all_btn.setToolTip(f"All {free:,} owned" + (f" (less {in_orders:,} in sell orders)" if in_orders else ""))
+        all_btn.clicked.connect(lambda: (shares.setValue(free), shares.valueChanged.emit(free)))
+        lay.addWidget(all_btn)
+    lay.addStretch()
+    duration = QComboBox()
+    duration.addItem("GTC (good till canceled)", "GOOD_TILL_CANCEL")
+    duration.addItem("Day", "DAY")
+    total = QLabel()
+    total_name = "$ less the commission" if selling else "$ with the commission"
+    rows = [("Ticker", ticker), ("Order", (f"{side} · not an ATM trade", BUY_COLOR if side == "BUY" else SELL_COLOR)),
+            ("Type", kind), ("Price", PRICE_ROW), ("Shares", shares_row), ("Amount in $", usd),
+            ("Duration", duration), (total_name + (" (usual)" if usual else ""), total)]
+    if selling:
+        rows.insert(2, ("Owned", "-" if owned is None else f"{owned:,}" + (f" ({in_orders:,} in sell orders)"
+                                                                            if in_orders else "")))
+    if note:
+        rows.append(("Note", (note, "#f0a020")))
+    dlg, title_label, _values, send = _order_dialog(parent, account_name, f"{side} {ticker}", rows,
+                                                    side.title(), BUY_COLOR if side == "BUY" else SELL_COLOR, box)
+    state = {"last": "shares", "busy": False}
+
+    def price():
+        return box.price()
+
+    def update():
+        p, n = price(), shares.value()
+        market = kind.currentData() == "MARKET"
+        send.setEnabled(n > 0 and (p > 0 or market))
+        amount = n * p
+        net = amount - fee if selling else amount + fee
+        sign = "-" if selling else "+"
+        about = "≈ " if market else ""
+        total.setText(f"<b style='color:#e3b23c'>{about}${amount:,.2f} {sign} ${fee:.2f} = "
+                      f"{'-' if net < 0 else ''}${abs(net):,.2f}</b>")
+        total.setToolTip("At the price above: a market order's price is the market's when it fills" if market else "")
+        what = f"{side} {n:,} {ticker} " + ("at the market" if market else f"at {fmt_price(p)}" if p else "")
+        title_label.setText(f"<b>{what.strip()}?</b>" if n else f"<b>{side} {ticker}</b>")
+        dlg.setWindowTitle(what.strip() if n else f"{side} {ticker}")
+
+    def from_shares():
+        if state["busy"]:
+            return
+        state["last"] = "shares"
+        state["busy"] = True
+        usd.setValue(shares.value() * price())
+        state["busy"] = False
+        update()
+
+    def from_usd():
+        if state["busy"]:
+            return
+        state["last"] = "usd"
+        p = price()
+        state["busy"] = True
+        shares.setValue(int(usd.value() / p + 1e-9) if p > 0 else 0)
+        state["busy"] = False
+        update()
+
+    def price_changed(*_):
+        # the side typed last stays: the shares kept (the $ follows), or the $ kept (the shares follow)
+        last = state["last"]
+        (from_usd if last == "usd" else from_shares)()
+        state["last"] = last
+
+    def kind_changed(*_):
+        market = kind.currentData() == "MARKET"
+        box.setEnabled(not market)
+        if market:
+            duration.setCurrentIndex(duration.findData("DAY"))
+        duration.setEnabled(not market)
+        update()
+    shares.valueChanged.connect(from_shares)
+    usd.valueChanged.connect(from_usd)
+    box.price_changed.connect(price_changed)
+    kind.currentIndexChanged.connect(kind_changed)
+    update()
+    shares.setFocus()
+    shares.selectAll()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    box._steps()
+    market = kind.currentData() == "MARKET"
+    p = price()
+    if shares.value() <= 0 or (not market and p <= 0):
+        return None
+    return {"shares": shares.value(), "price": None if market else p, "type": kind.currentData(),
+            "duration": "DAY" if market else duration.currentData()}
 
 
 def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
@@ -1279,6 +1413,44 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.send(key, ticker, "SELL", shares, price, self.chosen_account(), duration)
 
+    def ask_order(self, parent, ticker, side, price):
+        """The chart's BUY / SELL: the order dialog, then a limit or market order of the account
+        chosen on the Schwab tab (not an ATM trade: it shows with the other orders)."""
+        if not ticker:
+            return
+        if self.trader is None:
+            QMessageBox.warning(parent, f"{side} {ticker}", "No Schwab login: orders can't be sent.")
+            return
+        key = f"{side.lower()}:{ticker}"
+        if key in self.sending:
+            QMessageBox.information(parent, f"{side} {ticker}", f"A {side} order of {ticker} is being sent: "
+                                    "wait for it a moment.")
+            return
+        self.read_fee(ticker)
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        if not self.chosen_account():
+            QMessageBox.warning(parent, f"{side} {ticker}", "Choose the account the orders go to first "
+                                "(next to the tabs).")
+            return
+        owned, in_orders = None, 0
+        if side == "SELL" and self.chosen_account() in self.positions:
+            pos = next((p for p in self.owned() if p["ticker"] == ticker), None)
+            owned = pos["shares"] if pos else 0
+            in_orders = self.in_sell_orders(ticker) if pos else 0
+        e = self.active(ticker)
+        note = ""
+        if e and (e.get("account") or self.chosen_account()) == self.chosen_account():
+            note = f"{ticker} has an ATM trade: this order is separate from it."
+        res = order_dialog(parent, self.account_name(self.chosen_account()), ticker, side, price,
+                           self.fee_of(ticker), owned, in_orders, note)
+        if res is None:
+            return
+        self.sending.add(key)
+        self.changed.emit()
+        self.trader.send(key, ticker, side, res["shares"], res["price"], self.chosen_account(), res["duration"],
+                         res["type"])
+
     def _positions(self, account, positions, error):
         if positions is None:
             return              # tried again at the next check
@@ -1292,7 +1464,8 @@ class AtmTrades(QObject):
     def _sent(self, key, order_id, message):
         self.sending.discard(key)
         if order_id is None and message:
-            QMessageBox.warning(QApplication.activeWindow(), f"{key.partition(':')[2]} sell order not sent", message)
+            side, _, ticker = key.partition(":")
+            QMessageBox.warning(QApplication.activeWindow(), f"{ticker} {side} order not sent", message)
         self.changed.emit()
         QTimer.singleShot(1500, self.check)     # the new order in the Other orders list
 

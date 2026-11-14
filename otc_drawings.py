@@ -84,6 +84,19 @@ def tool_icon(kind, color: QColor) -> QIcon:
     return QIcon(pix)
 
 
+def _dot_icon(color):
+    """A small round dot of `color`: the BUY / SELL lines of the right-click menu."""
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(QPointF(8, 8), 5, 5)
+    p.end()
+    return QIcon(pm)
+
+
 def _tick(v):
     """A price on the order tick: 0.0001 under $1, else 0.01."""
     tick = 0.0001 if v < 1 else 0.01
@@ -703,9 +716,17 @@ class DrawingsMixin:
             menu.addAction(f"Delete {NAMES[d['kind']].lower()}").triggered.connect(
                 lambda _c=False, i=d["id"]: self._remove(i))
             menu.addSeparator()
+        tools = menu.addMenu("Add a drawing")
         for kind, name, _ in TOOLS:
-            menu.addAction(tool_icon(kind, color), name).triggered.connect(
+            tools.addAction(tool_icon(kind, color), name).triggered.connect(
                 lambda _c=False, k=kind: self.start_tool(k, at))
+        # a buy or a sell order (not an ATM trade), its price from where it was right-clicked
+        menu.addSeparator()
+        start = _tick(at[1]) if at is not None and at[1] > 0 else (self.c[-1] if self.c else 0.0)
+        for side, dot in (("BUY", "#1f9d1f"), ("SELL", "#d83a3a")):
+            act = menu.addAction(_dot_icon(dot), f"{side}...")
+            act.setToolTip(f"A {side} order of {self.ticker} at {start}")
+            act.triggered.connect(lambda _c=False, s=side: self.new_order.emit(s, float(start)))
         n = len(self.drawing_store.get(self.ticker, []))
         menu.addSeparator()
         clear = menu.addAction(f"Remove all drawings of {self.ticker}" + (f" ({n})" if n else ""))

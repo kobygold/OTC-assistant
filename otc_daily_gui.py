@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -997,6 +997,8 @@ class MainWindow(QMainWindow):
         self.level2.my_orders = atm_trades.chart_orders     # their green rows in Level II
         self.chart.cancel_order.connect(self.cancel_chart_order)
         self.chart.move_order.connect(self.move_chart_order)
+        self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(self, self.chart.ticker, side,
+                                                                                     price))
         self.level2.watch(atm_trades.open_tickers())
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
