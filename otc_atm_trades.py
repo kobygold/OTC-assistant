@@ -119,7 +119,48 @@ def book_html(title, bids, asks):
             f"<td>&nbsp;&nbsp;</td><td valign=top><b>Asks</b><table>{side(asks)}</table></td></tr></table>")
 
 
-class AtmTable(QTableWidget):
+class SortMixin:
+    """Sorting by a column: a click on its title sorts by it, highest first; another click, lowest
+    first. The rows are sorted when the table is (re)built, so the live updates keep the order.
+    The table gives sort_value(col, row object): a number or text, or None (last)."""
+
+    def init_sorting(self, sortable):
+        self.sort_col, self.sort_desc = None, True
+        self.sortable = set(sortable)
+        head = self.horizontalHeader()
+        head.setSectionsClickable(True)
+        head.setSortIndicatorShown(False)
+        head.sectionClicked.connect(self.header_clicked)
+        for col in self.sortable:
+            item = self.horizontalHeaderItem(col)
+            item.setToolTip((item.toolTip() + "\n" if item.toolTip() else "") + "Click: sort by it (highest first)")
+
+    def header_clicked(self, col):
+        if col not in self.sortable:
+            return
+        if col == self.sort_col:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_col, self.sort_desc = col, True
+        head = self.horizontalHeader()
+        head.setSortIndicatorShown(True)
+        head.setSortIndicator(col, Qt.SortOrder.DescendingOrder if self.sort_desc else Qt.SortOrder.AscendingOrder)
+        self.signature = None
+        self.rebuild()
+
+    def sorted_rows(self, items):
+        if self.sort_col is None:
+            return list(items)
+        keyed = [(self.sort_value(self.sort_col, x), x) for x in items]
+        have = [k for k in keyed if k[0] is not None]
+        have.sort(key=lambda k: k[0], reverse=self.sort_desc)
+        return [x for _, x in have] + [x for v, x in keyed if v is None]
+
+    def sort_state(self):
+        return [self.sort_col, self.sort_desc]
+
+
+class AtmTable(SortMixin, QTableWidget):
     open_chart = pyqtSignal(str)    # a ticker was double-clicked
 
     def __init__(self, atm: AtmTrades, parent=None):
@@ -151,7 +192,37 @@ class AtmTable(QTableWidget):
         atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
+        self.init_sorting([i for i, (t, _) in enumerate(COLUMNS)
+                           if t not in ("Bids now (L2)", "Asks now (L2)", "Order", "")])
         self.rebuild()
+
+    MARKET_SORTS = ("Bid now", "Ask now", "P/L")
+
+    def sort_value(self, col, e):
+        title = COLUMNS[col][0]
+        m = self.atm.market.get(e["ticker"], {})
+        first = lambda pair: (list(pair or []) + [None])[0]
+        if title == "Ticker":
+            return e["ticker"]
+        if title == "State":
+            return list(STATES).index(e.get("state")) if e.get("state") in STATES else None
+        if title == "Sent":
+            return e.get("time")
+        if title == "Shares":
+            return e.get("shares")
+        if title == "$":
+            return e.get("usd")
+        if title in ("Entry", "Exit plan", "Safety Net", "Fee"):
+            return e.get({"Entry": "entry", "Exit plan": "exit", "Safety Net": "safety-net", "Fee": "fee"}[title])
+        if title in ("Bid then", "Ask then"):
+            return first(e.get("bid" if title == "Bid then" else "ask"))
+        if title in ("Bid now", "Ask now"):
+            return first(m.get("bid" if title == "Bid now" else "ask"))
+        if title == "P/L":
+            return AtmTrades.profit(e, first(m.get("bid")))
+        if title == "Sell at":
+            return e.get("sell_price") or e.get("exit-live") or e.get("sell_at") or e.get("exit")
+        return None
 
     def double_clicked(self, row, col):
         if col == COL["Ticker"] and self.item(row, col):
@@ -176,11 +247,12 @@ class AtmTable(QTableWidget):
     def rebuild(self):
         # only the trades of the account chosen at the top of the Schwab tab (all while none is)
         account = self.atm.settings.get("schwab_account", "")
-        entries = [e for e in reversed(self.atm.entries) if not account or e.get("account") == account]
+        entries = self.sorted_rows(e for e in reversed(self.atm.entries) if not account or e.get("account") == account)
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries],
-                                sorted(self.atm.sending), sorted(self.atm.canceling)], sort_keys=True, default=str)
+                                sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state()],
+                               sort_keys=True, default=str)
         if signature == self.signature:
             self.sync_sell_at()
             return
@@ -314,6 +386,8 @@ class AtmTable(QTableWidget):
             self.market_timer.start()
 
     def update_market(self):
+        if self.sort_col is not None and COLUMNS[self.sort_col][0] in self.MARKET_SORTS:
+            self.rebuild()          # sorted by the market: the rows may move
         dirty, self.dirty = self.dirty, set()
         for row, eid in enumerate(self.ids):
             e = self.atm.find(eid)
@@ -495,7 +569,27 @@ class SchwabOrdersTable(AtmTable):
         atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
+        self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Entered", "Duration", "Shares", "Limit", "$",
+                                              "Bid now", "Ask now")])
         self.rebuild()
+
+    MARKET_SORTS = ("Bid now", "Ask now")
+
+    def sort_value(self, col, o):
+        title = ORDER_COLUMNS[col][0]
+        m = self.atm.market.get(o["ticker"], {})
+        if title in ("Ticker", "Side", "Status", "Entered", "Duration"):
+            return o.get({"Ticker": "ticker", "Side": "side", "Status": "status", "Entered": "entered",
+                          "Duration": "duration"}[title])
+        if title == "Shares":
+            return o["shares"]
+        if title == "Limit":
+            return o["price"]
+        if title == "$":
+            return o["shares"] * o["price"]
+        if title in ("Bid now", "Ask now"):
+            return (list(m.get("bid" if title == "Bid now" else "ask") or []) + [None])[0]
+        return None
 
     def double_clicked(self, row, col):
         if col == OCOL["Ticker"] and self.item(row, col):
@@ -507,12 +601,13 @@ class SchwabOrdersTable(AtmTable):
                                       if col in (OCOL["Ticker"], OCOL["Side"], OCOL["Status"]) else None))
 
     def orders(self):
-        return sorted(self.atm.other_orders(), key=lambda o: o.get("entered") or "", reverse=True)
+        return self.sorted_rows(sorted(self.atm.other_orders(), key=lambda o: o.get("entered") or "", reverse=True))
 
     def rebuild(self):
         orders = self.orders()
         busy = sorted(k for k in self.atm.sending | self.atm.canceling if str(k).startswith("schwab:"))
-        signature = json.dumps([self.atm.chosen_account(), orders, busy], sort_keys=True, default=str)
+        signature = json.dumps([self.atm.chosen_account(), orders, busy, self.sort_state()], sort_keys=True,
+                               default=str)
         if signature == self.signature:
             return
         focused = QApplication.focusWidget()
@@ -678,9 +773,162 @@ class SchwabOrdersTable(AtmTable):
                   bold=True, tip=tip)
 
     def update_market(self):
+        if self.sort_col is not None and ORDER_COLUMNS[self.sort_col][0] in self.MARKET_SORTS:
+            self.rebuild()
         dirty, self.dirty = self.dirty, set()
         orders = {f"schwab:{o['id']}": o for o in self.orders()}
         for row, key in enumerate(self.keys):
             o = orders.get(key)
             if o is not None and o["ticker"] in dirty:
                 self.fill_market(row, o)
+
+
+# ---------------------------------------------------------------- the stocks owned ---
+# (title, tooltip)
+POS_COLUMNS = [
+    ("Ticker", "Double-click: its chart"),
+    ("Shares", "The shares owned in the account"),
+    ("In sell orders", "Of them, those in open sell orders already (an ATM trade's or others')"),
+    ("Avg cost", "Schwab's average cost a share"),
+    ("Cost", "Shares x average cost"),
+    ("Bid now", "Read every 15 seconds (live while Level II streams the ticker)"),
+    ("Ask now", "Read every 15 seconds (live while Level II streams the ticker)"),
+    ("Value at bid", "Shares x the bid now"),
+    ("P/L at bid", "If all were sold at the bid now: the value less the cost and the sell's commission"),
+    ("P/L %", "P/L at bid / cost"),
+    ("Day P/L", "Schwab's P/L of today"),
+    ("Sell on Bid", ""),
+    ("Sell on Ask", ""),
+]
+PCOL = {title: i for i, (title, _) in enumerate(POS_COLUMNS)}
+
+
+class PositionsTable(AtmTable):
+    """The stocks owned in the account chosen on the Schwab tab, from Schwab, with the market now:
+    Sell on Bid / Sell on Ask open the sell dialog (amount, price, Day or GTC, the $ with the fee)."""
+
+    MARKET_SORTS = ("Bid now", "Ask now", "Value at bid", "P/L at bid", "P/L %")
+
+    def __init__(self, atm: AtmTrades, parent=None):
+        self.tickers = []
+        QTableWidget.__init__(self, 0, len(POS_COLUMNS), parent)
+        self.atm = atm
+        self.edits = {}
+        self.signature = None
+        self.dirty = set()
+        self.setHorizontalHeaderLabels([t for t, _ in POS_COLUMNS])
+        for i, (_, tip) in enumerate(POS_COLUMNS):
+            self.horizontalHeaderItem(i).setToolTip(tip)
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWordWrap(False)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.bold = QFont(self.font())
+        self.bold.setBold(True)
+        self.market_timer = QTimer(self)
+        self.market_timer.setSingleShot(True)
+        self.market_timer.setInterval(500)
+        self.market_timer.timeout.connect(self.update_market)
+        atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
+        atm.market_changed.connect(self.market_changed)
+        self.cellDoubleClicked.connect(self.double_clicked)
+        self.init_sorting([i for i, (t, _) in enumerate(POS_COLUMNS) if not t.startswith("Sell on")])
+        self.rebuild()
+
+    def double_clicked(self, row, col):
+        if col == PCOL["Ticker"] and self.item(row, col):
+            self.open_chart.emit(self.item(row, col).text())
+
+    def cell(self, row, col, text, color=None, bold=False, bg=None, tip="", align=None):
+        return super().cell(row, col, text, color, bold, bg, tip,
+                            align or (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                                      if col == PCOL["Ticker"] else Qt.AlignmentFlag.AlignRight
+                                      | Qt.AlignmentFlag.AlignVCenter))
+
+    def figures(self, p):
+        """{bid, ask, cost, value, pl, pct, fee} of a position, with the market now."""
+        m = self.atm.market.get(p["ticker"], {})
+        bid = (m.get("bid") or [None])[0]
+        ask = (m.get("ask") or [None])[0]
+        read = self.atm.fee_of(p["ticker"])
+        fee = FEE_USD if read is None else read
+        cost = p["shares"] * p["avg"] if p.get("avg") else None
+        value = p["shares"] * bid if bid else None
+        pl = value - cost - fee if value is not None and cost is not None else None
+        return {"bid": bid, "ask": ask, "cost": cost, "value": value, "pl": pl, "fee": fee, "fee_read": read is not None,
+                "pct": pl / cost * 100 if pl is not None and cost else None}
+
+    def sort_value(self, col, p):
+        title = POS_COLUMNS[col][0]
+        f = self.figures(p)
+        return {"Ticker": p["ticker"], "Shares": p["shares"], "In sell orders": self.atm.in_sell_orders(p["ticker"]),
+                "Avg cost": p.get("avg"), "Cost": f["cost"], "Bid now": f["bid"], "Ask now": f["ask"],
+                "Value at bid": f["value"], "P/L at bid": f["pl"], "P/L %": f["pct"],
+                "Day P/L": p.get("day_pl")}.get(title)
+
+    def rebuild(self):
+        rows = self.sorted_rows(sorted(self.atm.owned(), key=lambda p: p["ticker"]))
+        busy = sorted(k for k in self.atm.sending if str(k).startswith("sell:"))
+        in_orders = [self.atm.in_sell_orders(p["ticker"]) for p in rows]
+        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, busy, self.sort_state()],
+                               sort_keys=True, default=str)
+        if signature == self.signature:
+            return
+        self.signature = signature
+        self.tickers = [p["ticker"] for p in rows]
+        self.setRowCount(len(rows))
+        for row, p in enumerate(rows):
+            self.fill(row, p)
+            self.fill_market(row, p)
+            self.fit_row(row)
+
+    def fit_row(self, row):
+        self.resizeRowToContents(row)
+        self.setRowHeight(row, self.rowHeight(row) + 6)
+
+    def fill(self, row, p):
+        ticker = p["ticker"]
+        self.atm.read_fee(ticker)           # for the P/L and the sell dialog, once a session
+        sending = f"sell:{ticker}" in self.atm.sending
+        in_orders = self.atm.in_sell_orders(ticker)
+        self.cell(row, PCOL["Ticker"], ticker, "#ffffff", bold=True)
+        self.cell(row, PCOL["Shares"], f"{p['shares']:,}", bold=True)
+        self.cell(row, PCOL["In sell orders"], f"{in_orders:,}" if in_orders else "-",
+                  YELLOW if in_orders else DIM)
+        self.cell(row, PCOL["Avg cost"], fmt_price(p.get("avg")), ORDER_COLOR, bold=True)
+        day = p.get("day_pl")
+        self.cell(row, PCOL["Day P/L"], "-" if day is None else usd_signed(day),
+                  None if day is None else GREEN if day >= 0 else RED, bold=True)
+        free = p["shares"] - in_orders
+        for title, where, color in (("Sell on Bid", "bid", SELL_COLOR), ("Sell on Ask", "ask", SELL_COLOR)):
+            b = button("Sending ..." if sending else title, color)
+            b.setToolTip(f"Sell {ticker} with a limit at the {where} now: the dialog asks the amount (up to "
+                         f"{max(free, 0):,}), the price and Day or GTC")
+            b.setEnabled(not sending and free > 0 and self.atm.trader is not None)
+            b.clicked.connect(lambda _c=False, t=ticker, w=where: self.atm.ask_sell_position(self, t, w))
+            self.setCellWidget(row, PCOL[title], centered(b))
+
+    def fill_market(self, row, p):
+        f = self.figures(p)
+        m = self.atm.market.get(p["ticker"], {})
+        self.cell(row, PCOL["Bid now"], quote_text(m.get("bid")), bold=True)
+        self.cell(row, PCOL["Ask now"], quote_text(m.get("ask")), bold=True)
+        self.cell(row, PCOL["Cost"], "-" if f["cost"] is None else f"${f['cost']:,.2f}", bold=True)
+        self.cell(row, PCOL["Value at bid"], "-" if f["value"] is None else f"${f['value']:,.2f}", bold=True)
+        tip = (f"${f['value']:,.2f} - ${f['cost']:,.2f} - ${f['fee']:.2f} "
+               + ("(Schwab's commission)" if f["fee_read"] else "(the usual commission)")) if f["pl"] is not None else ""
+        self.cell(row, PCOL["P/L at bid"], "-" if f["pl"] is None else usd_signed(f["pl"]),
+                  None if f["pl"] is None else GREEN if f["pl"] >= 0 else RED, bold=True, tip=tip)
+        self.cell(row, PCOL["P/L %"], "-" if f["pct"] is None else f"{f['pct']:+.1f}%",
+                  None if f["pct"] is None else GREEN if f["pct"] >= 0 else RED, bold=True)
+
+    def update_market(self):
+        if self.sort_col is not None and POS_COLUMNS[self.sort_col][0] in self.MARKET_SORTS:
+            self.rebuild()
+        dirty, self.dirty = self.dirty, set()
+        rows = {p["ticker"]: p for p in self.atm.owned()}
+        for row, ticker in enumerate(self.tickers):
+            if ticker in dirty and ticker in rows:
+                self.fill_market(row, rows[ticker])

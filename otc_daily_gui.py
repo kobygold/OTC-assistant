@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 import otc_atm as atm
-from otc_atm_trades import AtmTable, SchwabOrdersTable
+from otc_atm_trades import AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
 import otc_daily as core
 import otc_zones as zones
@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2311,14 +2311,26 @@ class MainWindow(QMainWindow):
         note.setStyleSheet("color: #8a8a8a;")
         note.setWordWrap(True)
         tlay.addWidget(note)
-        root.addWidget(trades, 3)
+        # the three lists one over the other, their heights set by dragging between them
+        split = self.schwab_split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(trades)
         # the account's other orders (sent from thinkorswim): change or cancel them here too
         others = self.orders_box = QGroupBox("Other orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         olay.addWidget(self.orders_table)
-        root.addWidget(others, 2)
+        split.addWidget(others)
+        # the stocks owned in the account: sell them on the bid or the ask
+        owned = self.owned_box = QGroupBox("Stocks owned")
+        play = QVBoxLayout(owned)
+        self.owned_table = PositionsTable(self.checklist.atm)
+        self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
+        play.addWidget(self.owned_table)
+        split.addWidget(owned)
+        split.setSizes(self.settings.get("schwab_split", [300, 200, 200]))
+        root.addWidget(split, 1)
         self.checklist.atm.changed.connect(self.update_orders_title)
         self.schwab_accounts_read = False
         reader = self.checklist.fee_reader
@@ -2376,6 +2388,7 @@ class MainWindow(QMainWindow):
             self.trades_table.rebuild()
         if hasattr(self, "orders_table"):   # and its other orders
             self.orders_table.rebuild()
+            self.owned_table.rebuild()
             self.update_orders_title()
         if error:
             self.schwab_status.setText(f"Can't read the accounts: {error}")
@@ -2398,6 +2411,16 @@ class MainWindow(QMainWindow):
             title = (f"Other orders of account ...{saved} (not ATM trades, e.g. from thinkorswim): "
                      + (f"{n} open" if n else "none open") + ", read every 15 seconds")
         self.orders_box.setTitle(title)
+        if not saved:
+            title = "Stocks owned: choose an account above"
+        elif not atm.positions_read(saved):
+            title = f"Stocks owned in account ...{saved}: reading them from Schwab..."
+        else:
+            n = len(atm.owned(saved))
+            title = (f"Stocks owned in account ...{saved}: " + (f"{n} stock{'s' if n > 1 else ''}" if n else "none")
+                     + ", read every 15 seconds. Sell on Bid / Ask: a limit sell, not an ATM trade "
+                     "(it shows with the other orders)")
+        self.owned_box.setTitle(title)
 
     def on_schwab_account(self, index):
         tail = self.schwab_account.itemData(index)
@@ -3046,6 +3069,9 @@ class MainWindow(QMainWindow):
             save_settings(self.settings)
         if self.checklist_btn.isChecked():   # the chart / checklist split
             self.settings["checklist_split"] = self.checklist_split.sizes()
+            save_settings(self.settings)
+        if all(self.schwab_split.sizes()):  # the Schwab tab's three lists (once it was shown)
+            self.settings["schwab_split"] = self.schwab_split.sizes()
             save_settings(self.settings)
         event.accept()
 

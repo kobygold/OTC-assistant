@@ -20,8 +20,8 @@ from statistics import median
 from PyQt6.QtCore import QObject, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
-from PyQt6.QtWidgets import (QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QToolButton, QToolTip,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                             QPushButton, QScrollArea, QSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW
@@ -513,6 +513,8 @@ class SchwabTrader(QObject):
     quotes = pyqtSignal(object)
     orders = pyqtSignal(str, object, str)
     replaced = pyqtSignal(str, str, object, float, str)
+    positions = pyqtSignal(str, object, str)    # account tail, [position_info()] or None, error
+    sent = pyqtSignal(str, object, str)         # a sell from the stocks owned: key, order id or None, message
 
     def __init__(self, session: FeeReader):
         super().__init__()
@@ -543,6 +545,44 @@ class SchwabTrader(QObject):
         order (the old one becomes REPLACED). duration / session: the old order's (GTC, NORMAL
         when not given)."""
         self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session)
+
+    def read_positions(self, account):
+        """The stocks owned in the account, as position_info()."""
+        self._start(self._positions, account)
+
+    def send(self, key, ticker, side, shares, price, account, duration=None):
+        """A limit order of the stocks owned list (not an ATM trade); the answer comes as sent()."""
+        self._start(self._send, key, ticker, side, shares, price, account, duration)
+
+    def _positions(self, account_tail):
+        try:
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                r = client.get_account(account, fields=[client.Account.Fields.POSITIONS])
+            if r.status_code != 200:
+                self.positions.emit(account_tail, None, f"HTTP {r.status_code}")
+                return
+            raw = (r.json() or {}).get("securitiesAccount", {}).get("positions", []) or []
+            self.positions.emit(account_tail, [p for p in map(position_info, raw) if p], "")
+        except Exception as e:
+            self.positions.emit(account_tail, None, f"{type(e).__name__}: {e}")
+
+    def _send(self, key, ticker, side, shares, price, account_tail, duration):
+        try:
+            from schwab.utils import Utils
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                r = client.place_order(account, self._limit_order(ticker, side, shares, price, duration))
+                if r.status_code not in (200, 201):
+                    self.sent.emit(key, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
+                    return
+                try:
+                    order_id = Utils(client, account).extract_order_id(r)
+                except ValueError:
+                    order_id = None
+            self.sent.emit(key, order_id, "")
+        except Exception as e:
+            self.sent.emit(key, None, f"{type(e).__name__}: {e}")
 
     @staticmethod
     def _limit_order(ticker, side, shares, price, duration=None, session=None):
@@ -649,6 +689,23 @@ class SchwabTrader(QObject):
 
 
 OPEN_GONE = {"CANCELED", "REPLACED"}     # an open order that may have been changed in thinkorswim
+
+
+def position_info(p):
+    """A Schwab position, short: {"ticker", "shares" (owned), "avg" (cost a share), "value" (Schwab's
+    market value), "day_pl" (today's P/L), "type"}; None unless stocks are owned (not cash, options...)."""
+    try:
+        inst = p.get("instrument") or {}
+        kind = inst.get("assetType", "")
+        shares = float(p.get("longQuantity") or 0)
+        if kind not in ("EQUITY", "COLLECTIVE_INVESTMENT") or shares <= 0 or not inst.get("symbol"):
+            return None
+        avg = p.get("averageLongPrice") or p.get("averagePrice") or p.get("taxLotAverageLongPrice")
+        return {"ticker": inst["symbol"], "shares": int(shares) if shares == int(shares) else shares,
+                "avg": float(avg) if avg else None, "value": p.get("marketValue"),
+                "day_pl": p.get("currentDayProfitLoss"), "type": kind}
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def order_info(o):
@@ -831,6 +888,68 @@ def confirm_price_order(parent, account_name, start, make, action, color=BUY_COL
     return box.price() or None
 
 
+def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, where, note=""):
+    """Selling stocks owned (not an ATM trade): the amount (all those not in sell orders yet), the
+    limit price (from the bid or ask: `where`), Day or GTC, and the $ with the commission, in yellow:
+    "$101.00 - $6.95 = $94.05". (shares, price, duration) or None when canceled."""
+    free = max(int(owned - in_orders), 0)
+    amount = QSpinBox()
+    amount.setRange(1, max(free, 1))
+    amount.setValue(max(free, 1))
+    amount.setGroupSeparatorShown(True)
+    amount.setMinimumWidth(120)
+    amount.setToolTip(f"Up to {free:,}: the {owned:,} owned" + (f", less {in_orders:,} in sell orders" if in_orders else ""))
+    all_btn = QPushButton("All")
+    all_btn.setToolTip(f"All {free:,}")
+    all_btn.clicked.connect(lambda: amount.setValue(free))
+    amount_row = QWidget()
+    lay = QHBoxLayout(amount_row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.addWidget(amount)
+    lay.addWidget(all_btn)
+    lay.addStretch()
+    duration = QComboBox()
+    duration.addItem("GTC (good till canceled)", "GOOD_TILL_CANCEL")
+    duration.addItem("Day", "DAY")
+    box = PriceBox(start)
+    usual = fee is None
+    fee = FEE_USD if usual else fee
+
+    def make(shares, price):
+        total = shares * price
+        net = total - fee
+        dollars = f"${total:,.2f} - ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
+        rows = [("Ticker", ticker), ("Order", "SELL · Limit · from the stocks owned"),
+                ("Owned", f"{owned:,}" + (f" ({in_orders:,} in sell orders)" if in_orders else "")),
+                ("Amount of stocks", amount_row), ("Limit price", PRICE_ROW), ("Duration", duration),
+                ("$ less the commission" + (" (usual)" if usual else ""), (dollars, "#e3b23c"))]
+        if note:
+            rows.append(("Note", (note, "#f0a020")))
+        return f"Sell {shares:,} {ticker} at {fmt_price(price)} (on the {where})?", rows
+    title, rows = make(amount.value(), start)
+    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, "Sell", SELL_COLOR, box)
+
+    def changed(*_):
+        price = box.price()
+        send.setEnabled(price > 0 and free > 0)
+        if price <= 0:
+            return
+        t, new_rows = make(amount.value(), price)
+        title_label.setText(f"<b>{t}</b>")
+        dlg.setWindowTitle(t)
+        for label, (_k, v) in zip(values, new_rows):
+            if label is not None:
+                label.setText(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
+    box.price_changed.connect(changed)
+    amount.valueChanged.connect(changed)
+    changed()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    box._steps()
+    price = box.price()
+    return (amount.value(), price, duration.currentData()) if price and free > 0 else None
+
+
 def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
     """Asks before an order goes out. rows: [(label, value)], a value can be (text, its colour).
     account_name: the account it goes to, shown first for checking (it is chosen on the Schwab
@@ -855,6 +974,9 @@ def _order_dialog(parent, account_name, title, rows, action, color, price_box=No
         form.addWidget(QLabel(f"<span style='color:#a8a8a8'>{k}</span>"), i, 0)
         if v is PRICE_ROW:
             form.addWidget(price_box, i, 1)
+            values.append(None)
+        elif isinstance(v, QWidget):        # a box of its own (the amount, the duration...)
+            form.addWidget(v, i, 1)
             values.append(None)
         else:
             label = QLabel(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
@@ -910,6 +1032,7 @@ class AtmTrades(QObject):
         self.orders_time = {}       # account tail -> when they were read (time.time())
         self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
         self.app_canceled = set()   # order ids the app canceled
+        self.positions = {}         # account tail -> [position_info()]: the stocks owned, read with each check
         self._migrate()
         if trader:
             trader.placed.connect(self._placed)
@@ -918,6 +1041,8 @@ class AtmTrades(QObject):
             trader.quotes.connect(self._quotes)
             trader.orders.connect(self._orders)
             trader.replaced.connect(self._replaced)
+            trader.positions.connect(self._positions)
+            trader.sent.connect(self._sent)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check)
         self.timer.start(ORDER_CHECK_S * 1000)
@@ -1099,6 +1224,77 @@ class AtmTrades(QObject):
         return [o for o in self.schwab_orders.get(account or self.chosen_account(), [])
                 if (ticker is None or o["ticker"] == ticker) and o["open"] and o["price"] and o["shares"] > 0
                 and o["id"] not in tracked]
+
+    # ---- the stocks owned (the Schwab tab's list) ----
+    def owned(self, account=None):
+        """The stocks owned in the account (the chosen one), as last read: [position_info()]."""
+        return self.positions.get(account or self.chosen_account(), [])
+
+    def positions_read(self, account=None):
+        return (account or self.chosen_account()) in self.positions
+
+    def in_sell_orders(self, ticker, account=None):
+        """The ticker's shares already in open sell orders in the account: others' and an ATM trade's."""
+        account = account or self.chosen_account()
+        n = sum(o["shares"] for o in self.other_orders(ticker, account) if o["side"] == "SELL")
+        for e in self.entries:
+            if e.get("ticker") == ticker and e.get("state") == "sell_open" and                     (e.get("account") or self.chosen_account()) == account:
+                n += self.remaining(e) - (e.get("sell_filled") or 0)
+        return n
+
+    def ask_sell_position(self, parent, ticker, where="bid"):
+        """Sell on the Bid / Ask of the stocks owned list: the dialog (amount, price, duration), then
+        a limit sell order (not an ATM trade: it shows with the other orders)."""
+        if self.trader is None:
+            return
+        key = f"sell:{ticker}"
+        if key in self.sending:
+            return
+        pos = next((p for p in self.owned() if p["ticker"] == ticker), None)
+        if pos is None:
+            return
+        in_orders = self.in_sell_orders(ticker)
+        if in_orders >= pos["shares"]:
+            QMessageBox.information(parent, f"Sell {ticker}", f"All {pos['shares']:,} {ticker} are in sell orders "
+                                    "already: change or cancel them in the Other orders list.")
+            return
+        m = self.market.get(ticker, {})
+        start = (m.get(where) or [None])[0] or (m.get("bid") or [None])[0] or pos.get("avg")
+        if not start:
+            QMessageBox.warning(parent, f"Sell {ticker}", f"No {where} for {ticker} yet: try again in a moment.")
+            return
+        self.read_fee(ticker)
+        atm = next((e for e in self.entries if e.get("ticker") == ticker and e.get("state") == "bought"
+                    and (e.get("account") or self.chosen_account()) == self.chosen_account()), None)
+        note = (f"{self.remaining(atm):,} of these are an ATM trade's: Sell ATM sells them as the ATM trade."
+                if atm else "")
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        res = sell_dialog(parent, self.account_name(self.chosen_account()), ticker, pos["shares"], in_orders,
+                          start, self.fee_of(ticker), where.title(), note)
+        if res is None:
+            return
+        shares, price, duration = res
+        self.sending.add(key)
+        self.changed.emit()
+        self.trader.send(key, ticker, "SELL", shares, price, self.chosen_account(), duration)
+
+    def _positions(self, account, positions, error):
+        if positions is None:
+            return              # tried again at the next check
+        self.positions[account] = positions
+        if account == self.chosen_account() and self.trader is not None:
+            new = sorted({p["ticker"] for p in positions} - set(self.market))
+            if new:
+                self.trader.read_quotes(new)
+        self.changed.emit()
+
+    def _sent(self, key, order_id, message):
+        self.sending.discard(key)
+        if order_id is None and message:
+            QMessageBox.warning(QApplication.activeWindow(), f"{key.partition(':')[2]} sell order not sent", message)
+        self.changed.emit()
+        QTimer.singleShot(1500, self.check)     # the new order in the Other orders list
 
     def orders_read(self, account=None):
         """True once the account's (the chosen one's) orders were read from Schwab."""
@@ -1344,7 +1540,8 @@ class AtmTrades(QObject):
             elif e.get("state") == "sell_open" and e.get("sell_id"):
                 self.trader.check(e["id"], "SELL", e["sell_id"], e.get("account"))
         # the open trades' tickers, and the chosen account's other orders' (the Schwab tab's bid / ask)
-        tickers = sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()})
+        tickers = sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()}
+                         | {p["ticker"] for p in self.owned()})
         if tickers:
             self.trader.read_quotes(tickers)
         # the accounts' orders: the chosen one's are drawn on the chart; an open trade's show a
@@ -1353,6 +1550,8 @@ class AtmTrades(QObject):
                                                if e.get("state") in ("buy_open", "sell_open")}
         for account in sorted(a for a in accounts if a):
             self.trader.read_orders(account)
+        if self.chosen_account():       # the stocks owned there (the Schwab tab's list)
+            self.trader.read_positions(self.chosen_account())
 
     # ---- answers from Schwab ----
     def _placed(self, key, side, order_id, message):
