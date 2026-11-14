@@ -1024,7 +1024,7 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
 
 
 def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
-                 remember_usd=None):
+                 remember_usd=None, quotes=None):
     """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, GTC (the default)
     or Day, and three boxes alike (+/-, reset, the whole text selected on entering): the price (from
     the chart's y where right-clicked), the $ and the shares, each of these two following the other.
@@ -1032,7 +1032,9 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     The defaults (the resets): a buy's $ is usd_start (the last one bought with) and its shares
     what it buys; a sell's shares are all those owned not in sell orders yet (owned less in_orders;
     owned None: none known) and its $ what they come to. remember_usd($): called with a buy's $
-    when it is sent. {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
+    when it is sent. quotes(): {"bid", "ask", "current"} now (None when not known), for the quick
+    price buttons over the price (with "Clicked": start), read again every second.
+    {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
     selling = side == "SELL"
     usual = fee is None
     fee = FEE_USD if usual else fee
@@ -1068,12 +1070,51 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
                        (f"Back to all {free or 0:,} owned" + (f" (less {in_orders:,} in sell orders)" if in_orders else "")
                         if selling else "Back to the shares the default $ buys at the price"),
                        "Up / down 1,000 shares under $1, else 10")
+    # the quick prices: a click puts it in the price box
+    quick = QWidget()
+    qlay = QHBoxLayout(quick)
+    qlay.setContentsMargins(0, 0, 0, 0)
+    qlay.setSpacing(4)
+    quick_buttons = {}
+    for key, name, color in (("bid", "Bid", "#1c6e3a"), ("ask", "Ask", "#9c2a35"), ("current", "Current", "#4a5560"),
+                             ("clicked", "Clicked", "#3b5f8a")):
+        b = QPushButton(name)
+        b.setStyleSheet(f"QPushButton {{ background: {color}; color: #ffffff; border: 1px solid {color}; border-radius: 3px;"
+                        f" padding: 3px 8px; }} QPushButton:hover {{ background: {QColor(color).lighter(130).name()}; }}"
+                        " QPushButton:disabled { background: #2a2f34; color: #6c7176; border-color: #2a2f34; }")
+        b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        qlay.addWidget(b)
+        quick_buttons[key] = (b, name)
+    qlay.addStretch()
+
+    def quick_prices():
+        q = dict(quotes() if quotes else {})
+        q["clicked"] = start
+        return q
+
+    def refresh_quick():
+        q = quick_prices()
+        market = kind.currentData() == "MARKET"
+        for key, (b, name) in quick_buttons.items():
+            v = q.get(key)
+            b.setText(f"{name} {fmt_price(v)}" if v else name)
+            b.setEnabled(bool(v) and not market)
+            b.setToolTip(f"The price: the {name.lower()} " + ("where the chart was right-clicked" if key == "clicked"
+                                                               else "now") if v else f"No {name.lower()} known")
+
+    def use_quick(key):
+        v = quick_prices().get(key)
+        if v:
+            box.set_price(Decimal(str(v)))
+    for key, (b, _n) in quick_buttons.items():
+        b.clicked.connect(lambda _c=False, k=key: use_quick(k))
     usd.setToolTip("The amount in $ (before the commission): the shares follow it, as many as it buys")
     shares.setToolTip("The amount of shares: the $ follows it")
     total = QLabel()
     total_name = "$ less the commission" if selling else "$ with the commission"
     rows = [("Ticker", ticker), ("Order", (side, BUY_COLOR if side == "BUY" else SELL_COLOR)),
-            ("Type", kind), ("Duration", duration), ("Price", PRICE_ROW), ("Amount in $", usd),
+            ("Type", kind), ("Duration", duration), ("Quick price", quick), ("Price", PRICE_ROW), ("Amount in $", usd),
             ("Shares", shares), (total_name + (" (usual)" if usual else ""), total)]
     if selling:
         rows.insert(2, ("Owned", "-" if owned is None else f"{owned:,}" + (f" ({in_orders:,} in sell orders)"
@@ -1129,11 +1170,16 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         if market:
             duration.setCurrentIndex(duration.findData("DAY"))
         duration.setEnabled(not market)
+        refresh_quick()
         update()
     usd.value_changed.connect(lambda _v: sync("usd"))
     shares.value_changed.connect(lambda _v: sync("shares"))
     box.price_changed.connect(lambda _v: sync("price"))
     kind.currentIndexChanged.connect(kind_changed)
+    refresh_quick()
+    quick_timer = QTimer(dlg)
+    quick_timer.timeout.connect(refresh_quick)
+    quick_timer.start(1000)
     update()
     first = (shares if selling else usd).edit
     QTimer.singleShot(0, lambda: first.setFocus(Qt.FocusReason.OtherFocusReason))     # once it shows
@@ -1481,9 +1527,11 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.send(key, ticker, "SELL", shares, price, self.chosen_account(), duration)
 
-    def ask_order(self, parent, ticker, side, price):
+    def ask_order(self, parent, ticker, side, price, quotes=None):
         """The chart's BUY / SELL: the order dialog, then a limit or market order of the account
-        chosen on the Schwab tab (not an ATM trade: it shows with the other orders)."""
+        chosen on the Schwab tab (not an ATM trade: it shows with the other orders). quotes(): the
+        chart's {"bid", "ask", "current"} for the quick price buttons (the bid / ask read here when
+        the chart has none)."""
         if not ticker:
             return
         if self.trader is None:
@@ -1510,10 +1558,19 @@ class AtmTrades(QObject):
         note = ""
         if e and (e.get("account") or self.chosen_account()) == self.chosen_account():
             note = f"{ticker} has an ATM trade: this order is separate from it."
+        if quotes is not None and not (self.market.get(ticker, {}).get("bid") or quotes().get("bid")):
+            self.trader.read_quotes([ticker])       # the bid and ask, for the quick prices
+
+        def now():
+            q = dict(quotes() if quotes else {})
+            m = self.market.get(ticker, {})
+            for k in ("bid", "ask"):
+                q[k] = q.get(k) or (m.get(k) or [None])[0]
+            return q
         res = order_dialog(parent, self.account_name(self.chosen_account()), ticker, side, price,
                            self.fee_of(ticker), owned, in_orders, note,
                            self.settings.get("order_usd_buy", 0.0) if side == "BUY" else 0.0,
-                           self._remember_usd(side) if side == "BUY" else None)
+                           self._remember_usd(side) if side == "BUY" else None, now)
         if res is None:
             return
         self.sending.add(key)

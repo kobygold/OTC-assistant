@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1003,8 +1003,8 @@ class MainWindow(QMainWindow):
         self.level2.my_orders = atm_trades.chart_orders     # their green rows in Level II
         self.chart.cancel_order.connect(self.cancel_chart_order)
         self.chart.move_order.connect(self.move_chart_order)
-        self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(self, self.chart.ticker, side,
-                                                                                     price))
+        self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(
+            self, self.chart.ticker, side, price, self.chart_quotes))
         self.level2.watch(atm_trades.open_tickers())
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
@@ -2386,6 +2386,13 @@ class MainWindow(QMainWindow):
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""
         return self.checklist.atm.chart_orders(ticker)
+
+    def chart_quotes(self):
+        """The chart's bid, ask and last price now (its live quote; the last candle's close for the
+        price when there's none), for the order dialog's quick prices."""
+        live = self.chart.live
+        return {"bid": live.get("bid"), "ask": live.get("ask"),
+                "current": live.get("price") or (self.chart.c[-1] if self.chart.c else None)}
 
     def cancel_chart_order(self, key):
         self.checklist.atm.ask_cancel_key(self, key)
