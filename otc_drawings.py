@@ -2,8 +2,8 @@
 otc_drawings.py - Drawings on the chart, as thinkorswim's "Add a drawing": a trendline, a price
 level, a vertical line, a text note, an arrow, an ellipse and a rectangle.
 
-Right-click the chart for the tools, then click on the chart to place one: one click for a price
-level, a vertical line or a text note; two for the others (or press, drag and let go). Points
+Right-click the chart for the tools: the point right-clicked places a price level, a vertical line
+or a text note, and is the first point of the others (then click the second, or drag to it). Points
 snap to a candle's open, high, low or close near the mouse; hold Ctrl to place them freely.
 Click a drawing to select it, drag it (or its end points) to move it, press Delete or right-click
 it to remove it. Esc stops placing. Double-click a text note to edit it.
@@ -34,6 +34,7 @@ HIT_PX = 6          # a click this close to a drawing selects it
 HANDLE_PX = 7       # an end point's square
 DRAG_PX = 6         # a press dragged this far draws a two-point drawing at once
 NOTE_PT = 10        # a text note's font size
+NOTE_MARK = 7       # the small triangle left of a note, pointing left at its point
 
 
 def tool_icon(kind, color: QColor) -> QIcon:
@@ -235,15 +236,16 @@ class DrawingsMixin:
     def _note_font(self, p_font):
         f = QFont(p_font)
         f.setPointSizeF(NOTE_PT)
-        f.setBold(True)
         return f
 
     def _note_rect(self, d, pt):
+        """The note's text, right of its small triangle, whose point is the note's point."""
         fm = QFontMetrics(self._note_font(self.font()))
         lines = (d.get("text") or "").split("\n")
         w = max(fm.horizontalAdvance(t) for t in lines) + 6
         h = fm.height() * len(lines) + 2
-        return QRectF(pt.x(), pt.y() - h / 2, w, h)
+        # the triangle points at the first line; more lines go below it
+        return QRectF(pt.x() + NOTE_MARK + 1, pt.y() - fm.height() / 2 - 1, w, h)
 
     def _draw_drawings(self, p, price):
         """Every drawing of this view, the one being placed, and the price levels' axis tags."""
@@ -294,8 +296,15 @@ class DrawingsMixin:
                     p.drawEllipse(r)
             elif kind == "text":
                 r = self._note_rect(d, sp[0])
+                pt = sp[0]
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(DRAW_COLOR)
+                p.drawPolygon(QPolygonF([pt, QPointF(pt.x() + NOTE_MARK, pt.y() - 4.5),
+                                         QPointF(pt.x() + NOTE_MARK, pt.y() + 4.5)]))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(DRAW_COLOR, 1.5))
                 p.setFont(self._note_font(p.font()))
-                p.drawText(r.adjusted(3, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                p.drawText(r.adjusted(2, 1, 0, 0), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
                            d.get("text") or "")
                 if selected:
                     p.setPen(QPen(DRAW_COLOR, 1, Qt.PenStyle.DashLine))
@@ -346,7 +355,7 @@ class DrawingsMixin:
             elif kind == "vline":
                 near = abs(pos.x() - sp[0].x()) <= HIT_PX
             elif kind == "text":
-                near = self._note_rect(d, sp[0]).adjusted(-2, -2, 2, 2).contains(pos)
+                near = self._note_rect(d, sp[0]).adjusted(-NOTE_MARK - 3, -2, 2, 2).contains(pos)
             elif kind == "rect":
                 r = QRectF(sp[0], sp[1]).normalized()
                 corners = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
@@ -364,10 +373,17 @@ class DrawingsMixin:
         return None
 
     # ---- placing ----
-    def start_tool(self, kind):
+    def start_tool(self, kind, at=None):
+        """Starts placing a drawing. at: the (slot, price) right-clicked for the menu: it places a
+        one-point drawing at once, and is the first point of a two-point one."""
         self.placing = {"kind": kind, "points": [], "cur": None, "press": None}
         self.selected = None
         self.setCursor(Qt.CursorShape.CrossCursor)
+        if at is not None:
+            self.placing["points"].append(at)
+            self.placing["cur"] = at
+            if len(self.placing["points"]) >= POINTS[kind]:
+                self._finish_placing()
         self.update()
 
     def _finish_placing(self):
@@ -375,8 +391,7 @@ class DrawingsMixin:
         self.placing = None
         text = ""
         if kind == "text":
-            text, ok = QInputDialog.getText(self, "Text note", "Text:")
-            text = text.strip()
+            text, ok = self._ask_note("")
             if not ok or not text:
                 self.update()
                 return
@@ -389,7 +404,7 @@ class DrawingsMixin:
         if text:
             d["text"] = text
         self.drawing_store.setdefault(self.ticker, []).append(d)
-        self.selected = d["id"]
+        self.selected = None        # not selected: a click on it later selects it to move it
         self._changed()
 
     # ---- the mouse and keys (called by CandleChart's handlers; True when used) ----
@@ -508,10 +523,16 @@ class DrawingsMixin:
             return True
         return False
 
+    def _ask_note(self, text):
+        """The note's text, several lines allowed (Enter: a new line). (text, ok)"""
+        text, ok = QInputDialog.getMultiLineText(self, "Text note", "Text (Enter starts a new line):", text)
+        lines = [t.rstrip() for t in text.strip("\n").split("\n")]
+        return "\n".join(lines).strip("\n"), ok
+
     def _edit_note(self, d):
-        text, ok = QInputDialog.getText(self, "Text note", "Text:", text=d.get("text", ""))
+        text, ok = self._ask_note(d.get("text", ""))
         if ok and text.strip():
-            d["text"] = text.strip()
+            d["text"] = text
             self._changed()
 
     def _remove(self, did):
@@ -533,6 +554,10 @@ class DrawingsMixin:
             return
         pos = QPointF(e.pos())
         hit = self._hit_drawing(pos)
+        # the point right-clicked: where the chosen drawing goes (its first point)
+        price, _ = self._layout()
+        free = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        at = self._point_at(pos, free) if price.contains(pos) else None
         menu = QMenu(self)
         color = menu.palette().color(menu.foregroundRole())
         if hit is not None:
@@ -546,7 +571,7 @@ class DrawingsMixin:
             menu.addSeparator()
         for kind, name, _ in TOOLS:
             menu.addAction(tool_icon(kind, color), name).triggered.connect(
-                lambda _c=False, k=kind: self.start_tool(k))
+                lambda _c=False, k=kind: self.start_tool(k, at))
         n = len(self.drawing_store.get(self.ticker, []))
         menu.addSeparator()
         clear = menu.addAction(f"Remove all drawings of {self.ticker}" + (f" ({n})" if n else ""))
