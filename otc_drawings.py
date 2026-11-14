@@ -2,8 +2,9 @@
 otc_drawings.py - Drawings on the chart, as thinkorswim's "Add a drawing": a trendline, a price
 level, a vertical line, a text note, an arrow, an ellipse and a rectangle.
 
-Right-click the chart for the tools: the point right-clicked places a price level, a vertical line
-or a text note, and is the first point of the others (then click the second, or drag to it). Points
+Right-click the chart for the tools: the point right-clicked places a vertical line or a text
+note, and is the first point of the others (then click the second, or drag to it). A price level
+is a level line between its two points, at the first one's price. Points
 snap where the crosshair snaps (a candle's open, high, low or close, a Bid/Ask or Level II
 tag's point), when placing and when moving; hold Ctrl (Cmd on a Mac) to place or move them freely.
 Click a drawing to select it, drag it (or its end points) to move it, press Delete or right-click
@@ -11,7 +12,7 @@ it to remove it. Esc stops placing. Double-click a text note to edit it.
 
 The points are kept as (time, price): a date in the day views, a minute (Israel time) in the 1D
 view, so they stay on their candles whatever the zoom. A drawing belongs to the kind of view it was
-made in (days or 1D minutes); a price level shows in both. They are saved per ticker by the app
+made in (days or 1D minutes); an old price level (across the chart, v0.9.21-23) shows in both. They are saved per ticker by the app
 (drawings_changed).
 """
 
@@ -27,7 +28,7 @@ from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QInputDialog, QLine
 
 DRAW_COLOR = QColor(255, 0, 0)      # every drawing for now; colour choices come later
 # (kind, name, points it takes)
-TOOLS = [("trend", "Trendline", 2), ("price", "Price level", 1), ("vline", "Vertical line", 1),
+TOOLS = [("trend", "Trendline", 2), ("price", "Price level", 2), ("vline", "Vertical line", 1),
          ("text", "Text note", 1), ("arrow", "Arrow", 2), ("ellipse", "Ellipse", 2), ("rect", "Rectangle", 2)]
 NAMES = {k: name for k, name, _ in TOOLS}
 POINTS = {k: n for k, _, n in TOOLS}
@@ -79,6 +80,12 @@ def tool_icon(kind, color: QColor) -> QIcon:
         p.drawRect(QRectF(2.5, 4.5, 11, 7))
     p.end()
     return QIcon(pix)
+
+
+def _tick(v):
+    """A price on the order tick: 0.0001 under $1, else 0.01."""
+    tick = 0.0001 if v < 1 else 0.01
+    return max(tick, round(round(v / tick) * tick, 4))
 
 
 def _seg_dist(pt, a, b):
@@ -219,10 +226,11 @@ class DrawingsMixin:
         self.update()
 
     def _screen_points(self, kind, pts, price):
-        """[(x, y)] of (slot, price) points; x None for a price level, y None for a vertical line."""
+        """[(x, y)] of (slot, price) points; x nan for an old price level (across the chart), y nan
+        for a vertical line."""
         out = []
         for slot, value in pts:
-            x = None if kind == "price" or slot is None else self._x(slot, price)
+            x = None if slot is None else self._x(slot, price)
             y = None if kind == "vline" else self._y_of(value, price)
             out.append(QPointF(x if x is not None else math.nan, y if y is not None else math.nan))
         return out
@@ -231,8 +239,11 @@ class DrawingsMixin:
         """The drawing's points as (slot, price); None when a time can't be placed here."""
         out = []
         for key, value in d["points"]:
-            slot = None if d["kind"] == "price" else self._slot_of_key(key)
-            if slot is None and d["kind"] != "price":
+            if d["kind"] == "price" and key is None:    # a price level from v0.9.21-23: across the chart
+                out.append((None, value))
+                continue
+            slot = self._slot_of_key(key)
+            if slot is None:
                 return None
             out.append((slot, value))
         return out
@@ -261,6 +272,8 @@ class DrawingsMixin:
                 pts.append(self.placing["cur"])
             if len(pts) == 1 and POINTS[self.placing["kind"]] == 2:
                 pts.append(pts[0])
+            if self.placing["kind"] == "price":     # level: at the first point's price
+                pts = [(slot, pts[0][1]) for slot, _ in pts]
             items.append(({"id": None, "kind": self.placing["kind"]}, pts))
         p.save()
         p.setClipRect(price.adjusted(1, 1, -1, -1))
@@ -285,9 +298,12 @@ class DrawingsMixin:
                     p.setBrush(DRAW_COLOR)
                     p.drawPolygon(QPolygonF(head))
                     p.setBrush(Qt.BrushStyle.NoBrush)
-            elif kind == "price":
+            elif kind == "price":     # between its two points (an old one: across the chart)
                 y = sp[0].y()
-                p.drawLine(QPointF(price.left(), y), QPointF(price.right(), y))
+                if math.isnan(sp[0].x()):
+                    p.drawLine(QPointF(price.left(), y), QPointF(price.right(), y))
+                else:
+                    p.drawLine(QPointF(sp[0].x(), y), QPointF(sp[1].x(), y))
                 tags.append((y, pts[0][1]))
             elif kind == "vline":
                 x = sp[0].x()
@@ -323,7 +339,7 @@ class DrawingsMixin:
 
     def _draw_handles(self, p, kind, sp, price):
         """The selected drawing's points: small white squares (a line across: one in its middle)."""
-        if kind == "price":
+        if kind == "price" and math.isnan(sp[0].x()):
             sp = [QPointF(price.left() + price.width() * 0.5, sp[0].y())]
         elif kind == "vline":
             sp = [QPointF(sp[0].x(), price.top() + price.height() * 0.5)]
@@ -348,14 +364,15 @@ class DrawingsMixin:
                 continue
             kind = d["kind"]
             sp = self._screen_points(kind, pts, price)
-            if d["id"] == self.selected and kind in ("trend", "arrow", "rect", "ellipse"):
+            if d["id"] == self.selected and kind in ("trend", "arrow", "rect", "ellipse", "price"):
                 for k, pt in enumerate(sp):
                     if abs(pt.x() - pos.x()) <= HANDLE_PX and abs(pt.y() - pos.y()) <= HANDLE_PX:
                         return d, k
             if kind in ("trend", "arrow"):
                 near = _seg_dist(pos, *sp) <= HIT_PX
             elif kind == "price":
-                near = abs(pos.y() - sp[0].y()) <= HIT_PX
+                near = (abs(pos.y() - sp[0].y()) <= HIT_PX if math.isnan(sp[0].x())
+                        else _seg_dist(pos, *sp) <= HIT_PX)
             elif kind == "vline":
                 near = abs(pos.x() - sp[0].x()) <= HIT_PX
             elif kind == "text":
@@ -431,12 +448,10 @@ class DrawingsMixin:
             if not ok or not text:
                 self.update()
                 return
-        d = {"id": uuid.uuid4().hex[:8], "kind": kind, "view": None if kind == "price" else self._view(),
-             "points": [[None if kind == "price" else self._key_of_slot(s), v] for s, v in pts]}
-        if kind == "price":         # on the price tick, like an order
-            v = d["points"][0][1]
-            tick = 0.0001 if v < 1 else 0.01
-            d["points"][0][1] = round(round(v / tick) * tick, 4)
+        if kind == "price":         # one price, the first point's, on the tick like an order
+            pts = [(slot, _tick(pts[0][1])) for slot, _ in pts]
+        d = {"id": uuid.uuid4().hex[:8], "kind": kind, "view": self._view(),
+             "points": [[self._key_of_slot(s), v] for s, v in pts]}
         if text:
             d["text"] = text
         self.drawing_store.setdefault(self.ticker, []).append(d)
@@ -493,7 +508,11 @@ class DrawingsMixin:
         if g["handle"] is not None:
             free = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
             pts = list(orig)
-            pts[g["handle"]] = self._point_at(pos, free)
+            slot, value = self._point_at(pos, free)
+            if kind == "price":     # an end: the price of both, the time of this one
+                value = _tick(value)
+                pts = [(s, value) for s, _ in pts]
+            pts[g["handle"]] = (slot, value)
         else:
             # the point grabbed follows the mouse, snapped as the crosshair: the drawing goes
             # through the candle's high, low... or the Bid/Ask the crosshair snaps to
@@ -504,14 +523,11 @@ class DrawingsMixin:
             else:           # it moves with the mouse, as grabbed
                 ds = round(self._slot_frac(pos.x(), price) - g["press_slot"])
                 dv = self._value_of(pos.y(), price) - g["press_value"]
-            pts = [(None if s is None else s + (0 if kind == "price" else ds),
-                    v if kind == "vline" else round(v + dv, 8)) for s, v in orig]
-            if kind == "price" and snapped:
-                pts = [(None, value)]       # exactly at the price snapped to
-            elif kind == "price":
-                tick = 0.0001 if pts[0][1] < 1 else 0.01
-                pts = [(None, max(tick, round(round(pts[0][1] / tick) * tick, 4)))]
-        d["points"] = [[None if kind == "price" else self._key_of_slot(s), v] for s, v in pts]
+            pts = [(None if s is None else s + ds, v if kind == "vline" else round(v + dv, 8)) for s, v in orig]
+            if kind == "price":     # exactly at the price snapped to, else on the tick
+                level = value if snapped else _tick(pts[0][1])
+                pts = [(s, level) for s, _ in pts]
+        d["points"] = [[None if s is None else self._key_of_slot(s), v] for s, v in pts]
         g["moved"] = True
         self.update()
         return True
