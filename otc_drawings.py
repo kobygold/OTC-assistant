@@ -26,7 +26,9 @@ from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPa
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QInputDialog, QLineEdit, QMenu, QMessageBox,
                              QPlainTextEdit, QTextEdit)
 
-DRAW_COLOR = QColor(255, 0, 0)      # every drawing for now; colour choices come later
+from otc_drawing_dialog import PEN_STYLES, DrawingDialog, look, new_look
+
+DRAW_COLOR = QColor(255, 0, 0)      # the built-in colour (otc_drawing_dialog.BUILT_IN)
 # (kind, name, points it takes)
 TOOLS = [("trend", "Trendline", 2), ("price", "Price level", 2), ("vline", "Vertical line", 1),
          ("text", "Text note", 1), ("arrow", "Arrow", 2), ("ellipse", "Ellipse", 2), ("rect", "Rectangle", 2)]
@@ -248,63 +250,91 @@ class DrawingsMixin:
             out.append((slot, value))
         return out
 
-    def _note_font(self, p_font):
+    def _note_font(self, p_font, d=None):
         f = QFont(p_font)
-        f.setPointSizeF(NOTE_PT)
+        f.setPointSizeF(look(d)["size"] if d else NOTE_PT)
         return f
 
     def _note_rect(self, d, pt):
         """The note's text, right of its small triangle, whose point is the note's point."""
-        fm = QFontMetrics(self._note_font(self.font()))
+        fm = QFontMetrics(self._note_font(self.font(), d))
         lines = (d.get("text") or "").split("\n")
         w = max(fm.horizontalAdvance(t) for t in lines) + 6
         h = fm.height() * len(lines) + 2
         # the triangle points at the first line; more lines go below it
         return QRectF(pt.x() + NOTE_MARK + 1, pt.y() - fm.height() / 2 - 1, w, h)
 
+    @staticmethod
+    def _line_ends(kind, sp, lk, price):
+        """A trendline's or price level's ends as drawn: with its left / right extension (to the
+        chart's edge), an old price level across the chart; other drawings: their points."""
+        a, b = sp[0], sp[-1]
+        if kind == "price":
+            if math.isnan(a.x()):
+                return QPointF(price.left(), a.y()), QPointF(price.right(), a.y())
+            x0, x1 = sorted((a.x(), b.x()))
+            return (QPointF(price.left() if lk["left"] else x0, a.y()),
+                    QPointF(price.right() if lk["right"] else x1, a.y()))
+        if kind != "trend" or a.x() == b.x():
+            return a, b
+        if a.x() > b.x():
+            a, b = b, a
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        far = (price.width() + price.height()) * 4 / math.hypot(dx, dy)     # past any edge
+        if lk["left"]:
+            a = QPointF(a.x() - dx * far, a.y() - dy * far)
+        if lk["right"]:
+            b = QPointF(b.x() + dx * far, b.y() + dy * far)
+        return a, b
+
     def _draw_drawings(self, p, price):
         """Every drawing of this view, the one being placed, and the price levels' axis tags."""
         import otc_chart as ch
         items = [(d, self._slots(d)) for d in self.drawings()]
         if self.placing and (self.placing["points"] or self.placing.get("cur")) and self.placing["kind"] != "text":
+            kind = self.placing["kind"]
             pts = list(self.placing["points"])
-            if self.placing.get("cur") and len(pts) < POINTS[self.placing["kind"]]:
+            if self.placing.get("cur") and len(pts) < POINTS[kind]:
                 pts.append(self.placing["cur"])
-            if len(pts) == 1 and POINTS[self.placing["kind"]] == 2:
+            if len(pts) == 1 and POINTS[kind] == 2:
                 pts.append(pts[0])
-            if self.placing["kind"] == "price":     # level: at the first point's price
+            if kind == "price":     # level: at the first point's price
                 pts = [(slot, pts[0][1]) for slot, _ in pts]
-            items.append(({"id": None, "kind": self.placing["kind"]}, pts))
+            items.append(({"id": None, "kind": kind, **new_look(kind, self.drawing_defaults())}, pts))
         p.save()
         p.setClipRect(price.adjusted(1, 1, -1, -1))
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        tags = []
+        base = QFont(p.font())
+        tags, labels = [], []
         for d, pts in items:
             if pts is None:
                 continue
             kind = d["kind"]
+            lk = look(d)
+            color = QColor(lk["color"])
             sp = self._screen_points(kind, pts, price)
             selected = d["id"] is not None and d["id"] == self.selected
-            p.setPen(QPen(DRAW_COLOR, 1.5))
+            pen = QPen(color, lk["width"] + 0.5, PEN_STYLES.get(lk["style"], Qt.PenStyle.SolidLine))
+            p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            if kind in ("trend", "arrow"):
-                a, b = sp
+            if kind in ("trend", "arrow", "price"):
+                a, b = self._line_ends(kind, sp, lk, price)
                 p.drawLine(a, b)
-                if kind == "arrow" and (a.x(), a.y()) != (b.x(), b.y()):
+                if kind == "arrow" and (sp[0].x(), sp[0].y()) != (sp[1].x(), sp[1].y()):
+                    a, b = sp
                     ang = math.atan2(b.y() - a.y(), b.x() - a.x())
-                    size = 11
+                    size = 9 + 2 * lk["width"]
                     head = [b, QPointF(b.x() - size * math.cos(ang - 0.4), b.y() - size * math.sin(ang - 0.4)),
                             QPointF(b.x() - size * math.cos(ang + 0.4), b.y() - size * math.sin(ang + 0.4))]
-                    p.setBrush(DRAW_COLOR)
+                    p.setPen(QPen(color, 1))
+                    p.setBrush(color)
                     p.drawPolygon(QPolygonF(head))
                     p.setBrush(Qt.BrushStyle.NoBrush)
-            elif kind == "price":     # between its two points (an old one: across the chart)
-                y = sp[0].y()
-                if math.isnan(sp[0].x()):
-                    p.drawLine(QPointF(price.left(), y), QPointF(price.right(), y))
-                else:
-                    p.drawLine(QPointF(sp[0].x(), y), QPointF(sp[1].x(), y))
-                tags.append((y, pts[0][1]))
+                if kind == "price" and lk["show_price"]:
+                    tags.append((sp[0].y(), pts[0][1], color))
+                if kind == "trend" and lk["show_price"]:
+                    for pt, (_, v) in zip(sp, pts):
+                        labels.append((QPointF(pt.x() + 6, pt.y() - 4), ch.fmt_axis(v), color))
             elif kind == "vline":
                 x = sp[0].x()
                 p.drawLine(QPointF(x, price.top()), QPointF(x, price.bottom()))
@@ -318,26 +348,46 @@ class DrawingsMixin:
                 r = self._note_rect(d, sp[0])
                 pt = sp[0]
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(DRAW_COLOR)
+                p.setBrush(color)
                 p.drawPolygon(QPolygonF([pt, QPointF(pt.x() + NOTE_MARK, pt.y() - 4.5),
                                          QPointF(pt.x() + NOTE_MARK, pt.y() + 4.5)]))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.setPen(QPen(DRAW_COLOR, 1.5))
-                p.setFont(self._note_font(p.font()))
+                p.setPen(QPen(color, 1.5))
+                p.setFont(self._note_font(base, d))
                 p.drawText(r.adjusted(2, 1, 0, 0), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
                            d.get("text") or "")
+                p.setFont(base)
                 if selected:
-                    p.setPen(QPen(DRAW_COLOR, 1, Qt.PenStyle.DashLine))
+                    p.setPen(QPen(color, 1, Qt.PenStyle.DashLine))
                     p.drawRect(r)
+            if lk["show_name"] and d.get("name") and kind != "text":
+                labels.append((self._name_spot(kind, sp, price), d["name"], color))
             if selected:
-                self._draw_handles(p, kind, sp, price)
+                self._draw_handles(p, kind, sp, price, color)
+        for at, text, color in labels:      # names and prices, small, above their spot
+            p.setPen(color)
+            p.drawText(at, text)
         p.restore()
-        for y, value in tags:       # on the right axis, as thinkorswim's price level
+        for y, value, color in tags:        # on the right axis, as thinkorswim's price level
             if price.top() <= y <= price.bottom():
-                self._axis_tag(p, price.right() + 1, y, ch.fmt_axis(value), DRAW_COLOR, QColor("#ffffff"),
-                               bold=True, arrow="axis")
+                self._axis_tag(p, price.right() + 1, y, ch.fmt_axis(value), color,
+                               QColor("#000000" if color.lightness() > 150 else "#ffffff"), bold=True, arrow="axis")
 
-    def _draw_handles(self, p, kind, sp, price):
+    @staticmethod
+    def _name_spot(kind, sp, price):
+        """Where a drawing's name goes (its text's left baseline): above its left end, or at the top
+        of a vertical line."""
+        if kind == "vline":
+            return QPointF(sp[0].x() + 4, price.top() + 14)
+        if kind == "price" and math.isnan(sp[0].x()):
+            return QPointF(price.left() + 6, sp[0].y() - 4)
+        if kind in ("rect", "ellipse"):
+            r = QRectF(sp[0], sp[1]).normalized()
+            return QPointF(r.left(), r.top() - 4)
+        left = min(sp, key=lambda q: q.x())
+        return QPointF(max(left.x(), price.left() + 4), left.y() - 5)
+
+    def _draw_handles(self, p, kind, sp, price, color=DRAW_COLOR):
         """The selected drawing's points: small white squares (a line across: one in its middle)."""
         if kind == "price" and math.isnan(sp[0].x()):
             sp = [QPointF(price.left() + price.width() * 0.5, sp[0].y())]
@@ -345,7 +395,7 @@ class DrawingsMixin:
             sp = [QPointF(sp[0].x(), price.top() + price.height() * 0.5)]
         elif kind == "text":
             return
-        p.setPen(QPen(DRAW_COLOR, 1))
+        p.setPen(QPen(color, 1))
         p.setBrush(QColor("#ffffff"))
         h = HANDLE_PX
         for pt in sp:
@@ -368,11 +418,8 @@ class DrawingsMixin:
                 for k, pt in enumerate(sp):
                     if abs(pt.x() - pos.x()) <= HANDLE_PX and abs(pt.y() - pos.y()) <= HANDLE_PX:
                         return d, k
-            if kind in ("trend", "arrow"):
-                near = _seg_dist(pos, *sp) <= HIT_PX
-            elif kind == "price":
-                near = (abs(pos.y() - sp[0].y()) <= HIT_PX if math.isnan(sp[0].x())
-                        else _seg_dist(pos, *sp) <= HIT_PX)
+            if kind in ("trend", "arrow", "price"):
+                near = _seg_dist(pos, *self._line_ends(kind, sp, look(d), price)) <= HIT_PX
             elif kind == "vline":
                 near = abs(pos.x() - sp[0].x()) <= HIT_PX
             elif kind == "text":
@@ -409,7 +456,7 @@ class DrawingsMixin:
             t = max(0.0, min(1.0, ((pos.x() - a.x()) * dx + (pos.y() - a.y()) * dy) / (dx * dx + dy * dy)))
             return QPointF(a.x() + t * dx, a.y() + t * dy)
         if kind in ("trend", "arrow"):
-            return on_seg(*sp)
+            return on_seg(*self._line_ends(kind, sp, look(d), price))
         if kind == "price":
             return QPointF(pos.x(), sp[0].y())
         if kind == "vline":
@@ -452,6 +499,11 @@ class DrawingsMixin:
             pts = [(slot, _tick(pts[0][1])) for slot, _ in pts]
         d = {"id": uuid.uuid4().hex[:8], "kind": kind, "view": self._view(),
              "points": [[self._key_of_slot(s), v] for s, v in pts]}
+        d.update(new_look(kind, self.drawing_defaults()))
+        if kind != "text":      # as thinkorswim's: Price Level1, Trendline2...
+            mine = self.drawing_store.get(self.ticker, [])
+            n = 1 + sum(1 for x in mine if x["kind"] == kind)
+            d["name"] = f"{NAMES[kind].title()}{n}"
         if text:
             d["text"] = text
         self.drawing_store.setdefault(self.ticker, []).append(d)
@@ -554,9 +606,7 @@ class DrawingsMixin:
         hit = self._hit_drawing(e.position()) if self.placing is None else None
         if hit is None:
             return self.placing is not None
-        d, _ = hit
-        if d["kind"] == "text":
-            self._edit_note(d)
+        self.edit_drawing(hit[0])
         return True
 
     def _drawing_cursor(self, pos):
@@ -591,6 +641,28 @@ class DrawingsMixin:
         text, ok = QInputDialog.getMultiLineText(self, "Text note", "Text (Enter starts a new line):", text)
         lines = [t.rstrip() for t in text.strip("\n").split("\n")]
         return "\n".join(lines).strip("\n"), ok
+
+    def drawing_defaults(self):
+        """{kind: look} saved with Save as default in the Properties dialog."""
+        return self.drawing_store.get("_defaults", {})
+
+    def _save_default(self, kind, lk):
+        self.drawing_store.setdefault("_defaults", {})[kind] = dict(lk)
+        if self.drawings_changed:
+            self.drawings_changed()
+
+    def edit_drawing(self, d):
+        """The Properties dialog of a drawing (thinkorswim's): OK keeps the changes."""
+        self.selected = d["id"]
+        self.update()
+        dlg = DrawingDialog(d, f"{NAMES[d['kind']].title()}", self.intraday, self.drawing_defaults(),
+                            self._save_default, self)
+        self.dialog = dlg           # for tests
+        if dlg.exec() != DrawingDialog.DialogCode.Accepted:
+            return
+        d.clear()
+        d.update(dlg.result_drawing())
+        self._changed()
 
     def _edit_note(self, d):
         text, ok = self._ask_note(d.get("text", ""))
@@ -627,8 +699,7 @@ class DrawingsMixin:
             d = hit[0]
             self.selected = d["id"]
             self.update()
-            if d["kind"] == "text":
-                menu.addAction("Edit text...").triggered.connect(lambda _c=False, d=d: self._edit_note(d))
+            menu.addAction("Edit...").triggered.connect(lambda _c=False, d=d: self.edit_drawing(d))
             menu.addAction(f"Delete {NAMES[d['kind']].lower()}").triggered.connect(
                 lambda _c=False, i=d["id"]: self._remove(i))
             menu.addSeparator()

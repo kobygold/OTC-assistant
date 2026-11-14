@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.24"
+APP_VERSION = "0.9.25"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -186,12 +186,14 @@ def save_favorites(favs: dict):
 
 
 def load_drawings() -> dict:
-    """{ticker: [drawing]} (otc_drawings)."""
+    """{ticker: [drawing]} (otc_drawings), and "_defaults": {tool: look} (its Save as default)."""
     try:
         data = json.loads(DRAWINGS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return {}
-    return {t: v for t, v in data.items() if isinstance(v, list)} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    return {t: v for t, v in data.items() if isinstance(v, list) or (t == "_defaults" and isinstance(v, dict))}
 
 
 def save_drawings(drawings: dict):
