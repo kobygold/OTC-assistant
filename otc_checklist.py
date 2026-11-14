@@ -1100,11 +1100,14 @@ class AtmTrades(QObject):
                 and o["id"] not in tracked]
 
     def chart_orders(self, ticker):
-        """The ticker's open orders for the chart: the ATM trade's, then the account's others.
+        """The ticker's open orders in the account chosen on the Schwab tab (one account at a time):
+        its ATM trade's, then the account's others.
         [{"key", "side", "shares", "price", "atm", "duration", "account" (its last 3 digits)}]."""
         out = []
         e = self.active(ticker)
         chosen = self.chosen_account()
+        if e and (e.get("account") or chosen) != chosen:
+            e = None            # an ATM trade of another account: not shown
         if e and e.get("state") == "buy_open" and not e.get("gone"):
             out.append({"key": f"atm:{e['id']}:BUY", "side": "BUY", "atm": True, "duration": "GTC",
                         "shares": e["shares"] - (e.get("filled") or 0), "price": e["entry"],

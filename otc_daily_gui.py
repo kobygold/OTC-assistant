@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2383,7 +2383,8 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         reader = self.checklist.fee_reader
         self.show_schwab_accounts(reader.accounts if reader else [])
-        self.checklist.atm.check()      # its orders on the chart
+        self.on_atm_changed()           # the chart and Level II show only this account's orders, now
+        self.checklist.atm.check()      # and read its orders
 
     def _build_atm_tab(self):
         tab = QWidget()
