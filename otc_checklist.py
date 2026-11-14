@@ -962,11 +962,14 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
     return (amount.value(), price, duration.currentData()) if price and free > 0 else None
 
 
-def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note=""):
+def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
+                 remember_usd=None):
     """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, the price (from the
     chart's y where right-clicked: +/- and back to it), the shares and the $ (each follows the
     other), GTC (the default) or Day, and the $ with the commission in yellow: "$101.00 + $6.95 =
-    $107.95" (a sell: less it). owned / in_orders: a sell's stocks owned (None: none known).
+    $107.95" (a sell: less it). owned / in_orders: a sell's stocks owned (None: none known): a sell
+    starts with all of them not in sell orders yet. usd_start: the $ a buy starts with (the shares
+    follow); remember_usd($): called with a $ typed in, kept for the next time (even if canceled).
     {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
     selling = side == "SELL"
     usual = fee is None
@@ -1004,9 +1007,9 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     duration.addItem("Day", "DAY")
     total = QLabel()
     total_name = "$ less the commission" if selling else "$ with the commission"
-    rows = [("Ticker", ticker), ("Order", (f"{side} · not an ATM trade", BUY_COLOR if side == "BUY" else SELL_COLOR)),
-            ("Type", kind), ("Price", PRICE_ROW), ("Shares", shares_row), ("Amount in $", usd),
-            ("Duration", duration), (total_name + (" (usual)" if usual else ""), total)]
+    rows = [("Ticker", ticker), ("Order", (side, BUY_COLOR if side == "BUY" else SELL_COLOR)),
+            ("Type", kind), ("Duration", duration), ("Price", PRICE_ROW), ("Amount in $", usd),
+            ("Shares", shares_row), (total_name + (" (usual)" if usual else ""), total)]
     if selling:
         rows.insert(2, ("Owned", "-" if owned is None else f"{owned:,}" + (f" ({in_orders:,} in sell orders)"
                                                                             if in_orders else "")))
@@ -1047,6 +1050,7 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         if state["busy"]:
             return
         state["last"] = "usd"
+        state["typed_usd"] = True
         p = price()
         state["busy"] = True
         shares.setValue(int(usd.value() / p + 1e-9) if p > 0 else 0)
@@ -1071,9 +1075,18 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     box.price_changed.connect(price_changed)
     kind.currentIndexChanged.connect(kind_changed)
     update()
-    shares.setFocus()
-    shares.selectAll()
-    if dlg.exec() != QDialog.DialogCode.Accepted:
+    if selling and free:
+        shares.setValue(free)           # all the shares owned (not in sell orders yet)
+    elif not selling and usd_start > 0:
+        usd.setValue(usd_start)         # the $ typed the last time
+    state["typed_usd"] = False
+    focus = shares if selling else usd
+    focus.setFocus()
+    focus.selectAll()
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+    if remember_usd and state["typed_usd"] and usd.value() > 0:
+        remember_usd(round(usd.value(), 2))
+    if not accepted:
         return None
     box._steps()
     market = kind.currentData() == "MARKET"
@@ -1390,7 +1403,7 @@ class AtmTrades(QObject):
         in_orders = self.in_sell_orders(ticker)
         if in_orders >= pos["shares"]:
             QMessageBox.information(parent, f"Sell {ticker}", f"All {pos['shares']:,} {ticker} are in sell orders "
-                                    "already: change or cancel them in the Other orders list.")
+                                    "already: change or cancel them in the Other Pending Orders list.")
             return
         m = self.market.get(ticker, {})
         start = (m.get(where) or [None])[0] or (m.get("bid") or [None])[0] or pos.get("avg")
@@ -1443,13 +1456,24 @@ class AtmTrades(QObject):
         if e and (e.get("account") or self.chosen_account()) == self.chosen_account():
             note = f"{ticker} has an ATM trade: this order is separate from it."
         res = order_dialog(parent, self.account_name(self.chosen_account()), ticker, side, price,
-                           self.fee_of(ticker), owned, in_orders, note)
+                           self.fee_of(ticker), owned, in_orders, note,
+                           self.settings.get("order_usd_buy", 0.0) if side == "BUY" else 0.0,
+                           self._remember_usd(side) if side == "BUY" else None)
         if res is None:
             return
         self.sending.add(key)
         self.changed.emit()
         self.trader.send(key, ticker, side, res["shares"], res["price"], self.chosen_account(), res["duration"],
                          res["type"])
+
+    def _remember_usd(self, side):
+        """Keeps the $ typed in the chart's BUY / SELL dialog: that dialog starts with it next time."""
+        def keep(usd):
+            key = f"order_usd_{side.lower()}"
+            if self.settings.get(key) != usd:
+                self.settings[key] = usd
+                self.save_settings(self.settings)
+        return keep
 
     def _positions(self, account, positions, error):
         if positions is None:
@@ -1467,7 +1491,7 @@ class AtmTrades(QObject):
             side, _, ticker = key.partition(":")
             QMessageBox.warning(QApplication.activeWindow(), f"{ticker} {side} order not sent", message)
         self.changed.emit()
-        QTimer.singleShot(1500, self.check)     # the new order in the Other orders list
+        QTimer.singleShot(1500, self.check)     # the new order in the Other Pending Orders list
 
     def orders_read(self, account=None):
         """True once the account's (the chosen one's) orders were read from Schwab."""

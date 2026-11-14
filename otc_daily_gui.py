@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -72,6 +72,12 @@ PLAN_LIMIT_CONSECUTIVE = 3
 NAMES_REFRESH_DAYS = 7          # refresh company names automatically this often
 
 APP_STYLE = """
+QMenu { background: #2b2f33; color: #e0e0e0; border: 1px solid #44494f; padding: 4px 0; }
+QMenu::item { padding: 5px 24px 5px 10px; background: transparent; }
+QMenu::item:selected { background: #3e444b; }
+QMenu::item:disabled { color: #6c7176; }
+QMenu::separator { height: 1px; background: #44494f; margin: 4px 6px; }
+QMenu::icon { padding-left: 6px; }
 QHeaderView::section {
     background: #1d2125; color: #c8c8c8; border: none;
     border-right: 1px solid #2c3136; border-bottom: 1px solid #2c3136; padding: 4px 3px;
@@ -2339,7 +2345,7 @@ class MainWindow(QMainWindow):
         split.setChildrenCollapsible(False)
         split.addWidget(trades)
         # the account's other orders (sent from thinkorswim): change or cancel them here too
-        others = self.orders_box = QGroupBox("Other Orders")
+        others = self.orders_box = QGroupBox("Other Pending Orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))

@@ -720,6 +720,10 @@ class DrawingsMixin:
         for kind, name, _ in TOOLS:
             tools.addAction(tool_icon(kind, color), name).triggered.connect(
                 lambda _c=False, k=kind: self.start_tool(k, at))
+        n = len(self.drawing_store.get(self.ticker, []))
+        clear = menu.addAction(f"Remove all drawings of {self.ticker}" + (f" ({n})" if n else ""))
+        clear.setEnabled(n > 0)
+        clear.triggered.connect(self._remove_all)
         # a buy or a sell order (not an ATM trade), its price from where it was right-clicked
         menu.addSeparator()
         start = _tick(at[1]) if at is not None and at[1] > 0 else (self.c[-1] if self.c else 0.0)
@@ -727,11 +731,6 @@ class DrawingsMixin:
             act = menu.addAction(_dot_icon(dot), f"{side}...")
             act.setToolTip(f"A {side} order of {self.ticker} at {start}")
             act.triggered.connect(lambda _c=False, s=side: self.new_order.emit(s, float(start)))
-        n = len(self.drawing_store.get(self.ticker, []))
-        menu.addSeparator()
-        clear = menu.addAction(f"Remove all drawings of {self.ticker}" + (f" ({n})" if n else ""))
-        clear.setEnabled(n > 0)
-        clear.triggered.connect(self._remove_all)
         menu.exec(e.globalPos())
 
     def _remove_all(self):
