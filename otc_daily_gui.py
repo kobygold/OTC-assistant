@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -499,6 +499,32 @@ def fix_fav_column(tbl: QTableWidget, col: int):
 
 TICKER_HISTORY = 20     # tickers kept in the ticker boxes' Down-arrow history
 MINUTES_REFRESH = 30    # seconds between readings of the 1D view's 1-minute candles
+
+
+class AfterTabs(QObject):
+    """Keeps a widget on the tabs line just after the last tab (Qt's corner widgets go to the far edges)."""
+
+    GAP = 14
+
+    def __init__(self, tabs: QTabWidget, widget: QWidget):
+        super().__init__(tabs)
+        self.tabs, self.widget = tabs, widget
+        widget.setParent(tabs)
+        for w in (tabs, tabs.tabBar(), widget):
+            w.installEventFilter(self)
+        self.place()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show, QEvent.Type.LayoutRequest):
+            QTimer.singleShot(0, self.place)
+        return False
+
+    def place(self):
+        bar = self.tabs.tabBar().geometry()
+        size = self.widget.sizeHint()
+        self.widget.setGeometry(bar.right() + self.GAP, max(0, bar.top() + (bar.height() - size.height()) // 2),
+                                size.width(), size.height())
+        self.widget.raise_()
 
 
 class SelectAllLineEdit(QLineEdit):
@@ -2280,9 +2306,11 @@ class MainWindow(QMainWindow):
     def _build_schwab_tab(self):
         tab = QWidget()
         root = QVBoxLayout(tab)
-        box = QGroupBox("Account for orders")
-        lay = QVBoxLayout(box)
-        row = QHBoxLayout()
+        # the account selector sits on the tabs line just after the last tab, seen on every tab
+        corner = QWidget()
+        row = QHBoxLayout(corner)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
         row.addWidget(QLabel("Account:"))
         self.schwab_account = QComboBox()
         self.schwab_account.setMinimumWidth(220)
@@ -2290,17 +2318,10 @@ class MainWindow(QMainWindow):
                                        "until it is changed here. Only its last 3 digits are kept.")
         self.schwab_account.activated.connect(self.on_schwab_account)
         row.addWidget(self.schwab_account)
-        self.schwab_reload = QPushButton("Reload")
-        self.schwab_reload.setToolTip("Read the login's accounts from Schwab again")
-        self.schwab_reload.clicked.connect(lambda: self.read_schwab_accounts(again=True))
-        row.addWidget(self.schwab_reload)
-        row.addStretch()
-        lay.addLayout(row)
         self.schwab_status = QLabel("")
         self.schwab_status.setStyleSheet("color: #a8a8a8;")
-        self.schwab_status.setWordWrap(True)
-        lay.addWidget(self.schwab_status)
-        root.addWidget(box)
+        row.addWidget(self.schwab_status)
+        self.after_tabs = AfterTabs(self.tabs, corner)
         trades = self.atm_box = QGroupBox("ATM Trades")
         tlay = QVBoxLayout(trades)
         self.trades_table = AtmTable(self.checklist.atm)
@@ -2340,7 +2361,8 @@ class MainWindow(QMainWindow):
         reader = self.checklist.fee_reader
         if reader:
             reader.accounts_read.connect(self.on_schwab_accounts)
-        self.show_schwab_accounts([])
+            QTimer.singleShot(1500, lambda: self.schwab_accounts_read or self.read_schwab_accounts())
+        self.show_schwab_accounts()
         return tab
 
     def on_atm_changed(self):
@@ -2364,27 +2386,29 @@ class MainWindow(QMainWindow):
             self.schwab_status.setText("No Schwab login.")
             return
         self.schwab_accounts_read = True
-        self.schwab_reload.setEnabled(False)
-        self.schwab_status.setText("Reading the accounts from Schwab...")
         reader.read_accounts(again)
 
     def on_schwab_accounts(self, accounts, error):
-        self.schwab_reload.setEnabled(True)
         self.show_schwab_accounts(accounts, error)
 
-    def show_schwab_accounts(self, accounts, error=""):
-        """Fills the account choice: the saved account selected, or a "Choose" line while none is."""
+    def show_schwab_accounts(self, accounts=None, error=""):
+        """Fills the account choice from the accounts kept in the settings (last 3 digits and type
+        only), so it's ready at once; once the login's accounts are read from Schwab, a new or
+        closed account updates the kept list. A "Choose" line while none is chosen."""
+        if accounts:
+            known = [[tail, kind] for tail, _, kind in accounts]
+            if known != self.settings.get("schwab_accounts"):
+                self.settings["schwab_accounts"] = known
+                save_settings(self.settings)
+        known = self.settings.get("schwab_accounts", [])
         saved = self.settings.get("schwab_account", "")
         combo = self.schwab_account
         combo.clear()
-        reader = self.checklist.fee_reader
-        tails = [tail for tail, _, _ in accounts]
+        tails = [tail for tail, _ in known]
         if saved not in tails:
-            combo.addItem(f"...{saved} (not read yet)" if saved and not accounts else "Choose an account", "")
-            if saved and not accounts:
-                combo.setItemData(0, saved)
-        for tail in tails:
-            combo.addItem(reader.kind(tail), tail)
+            combo.addItem(f"...{saved}" if saved and not known else "Choose an account", saved if not known else "")
+        for tail, kind in known:
+            combo.addItem(f"...{tail}" + (f" ({kind})" if kind else ""), tail)
         combo.setCurrentIndex(max(0, combo.findData(saved)) if saved else 0)
         if hasattr(self, "trades_table"):   # the trades, orders and stocks of this account only
             self.trades_table.rebuild()
@@ -2392,13 +2416,13 @@ class MainWindow(QMainWindow):
             self.orders_table.rebuild()
             self.owned_table.rebuild()
         if error:
-            self.schwab_status.setText(f"Can't read the accounts: {error}")
-        elif not accounts:
-            self.schwab_status.setText("The accounts are read from Schwab when this tab opens.")
-        elif saved in tails:
-            self.schwab_status.setText(f"BUY and SELL orders go to {reader.kind(saved)}.")
+            self.schwab_status.setText("<span style='color:#ff5252'>Can't read the accounts</span>")
+            self.schwab_status.setToolTip(str(error))
+        elif not known or saved in tails:
+            self.schwab_status.setText("")
+            self.schwab_status.setToolTip("")
         else:
-            self.schwab_status.setText("Choose the account the BUY and SELL orders go to.")
+            self.schwab_status.setText("Choose the account the orders go to:")
 
     def on_schwab_account(self, index):
         tail = self.schwab_account.itemData(index)
@@ -2406,8 +2430,7 @@ class MainWindow(QMainWindow):
             return
         self.settings["schwab_account"] = tail
         save_settings(self.settings)
-        reader = self.checklist.fee_reader
-        self.show_schwab_accounts(reader.accounts if reader else [])
+        self.show_schwab_accounts()
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
         self.checklist.atm.check()      # and read its orders
 
