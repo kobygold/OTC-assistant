@@ -53,10 +53,10 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel
 from otc_intraday import MinuteLoader
-from otc_level2 import Level2Panel
+from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -981,6 +981,7 @@ class MainWindow(QMainWindow):
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
         self.level2.live_quote.connect(self.on_live_quote)
+        self.level2.logged_in.connect(self.on_logged_in)
         self.minute_loader = MinuteLoader(self.settings, APP_DIR / "schwab_token.json")
         self.minute_loader.done.connect(self.on_minutes)
         self.minute_timer = QTimer(self)
@@ -2326,10 +2327,22 @@ class MainWindow(QMainWindow):
                                        "until it is changed here. Only its last 3 digits are kept.")
         self.schwab_account.activated.connect(self.on_schwab_account)
         row.addWidget(self.schwab_account)
+        # the Schwab login lasts 7 days: renewed at the weekend (it reminds), it never runs out
+        # in the middle of a market week
+        self.renew_btn = QPushButton("Renew Schwab login...")
+        self.renew_btn.clicked.connect(self.renew_login)
+        row.addWidget(self.renew_btn)
         self.schwab_status = QLabel("")
         self.schwab_status.setStyleSheet("color: #a8a8a8;")
         row.addWidget(self.schwab_status)
         self.after_tabs = AfterTabs(self.tabs, corner)
+        self.renew_snoozed = False
+        self.renew_asking = False
+        self.renew_timer = QTimer(self)
+        self.renew_timer.setInterval(60_000)
+        self.renew_timer.timeout.connect(self.check_login_age)
+        self.renew_timer.start()
+        QTimer.singleShot(5000, self.check_login_age)
         trades = self.atm_box = QGroupBox("ATM Trades")
         tlay = QVBoxLayout(trades)
         self.trades_table = AtmTable(self.checklist.atm)
@@ -2386,6 +2399,84 @@ class MainWindow(QMainWindow):
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""
         return self.checklist.atm.chart_orders(ticker)
+
+    # ---- the Schwab login: renewing it, and the weekend reminder ----
+    def login_expiry(self):
+        """(when the login was made, when it runs out) as datetimes, or (None, None) without one."""
+        created = token_created(APP_DIR / "schwab_token.json")
+        if created is None:
+            return None, None
+        made = datetime.fromtimestamp(created)
+        return made, made + timedelta(days=TOKEN_DAYS)
+
+    def show_login_age(self):
+        """The Renew button: plain; yellow on the day the login runs out; red once it ran out."""
+        made, ends = self.login_expiry()
+        now = datetime.now()
+        if ends is None:
+            look, tip = "red", "No Schwab login yet: log in"
+        elif ends <= now:
+            look, tip = "red", f"The Schwab login ran out {ends:%a %d/%m %H:%M}: log in again"
+        else:
+            look = "yellow" if ends.date() == now.date() else ""
+            tip = (f"Logged in {made:%a %d/%m %H:%M}; it runs out {ends:%a %d/%m %H:%M} (7 days).\n"
+                   "Renewing restarts the 7 days: at the weekend, it lasts the whole market week.")
+        styles = {"red": "QPushButton { background: #c62828; color: #ffffff; border: 1px solid #e53935; }",
+                  "yellow": "QPushButton { background: #f2c200; color: #000000; border: 1px solid #ffd740; }",
+                  "": ""}
+        if self.renew_btn.property("look") != look:
+            self.renew_btn.setProperty("look", look)
+            self.renew_btn.setStyleSheet(styles[look])
+        self.renew_btn.setToolTip(tip)
+
+    def check_login_age(self):
+        """Every minute: the button's colour, and on Saturday and Sunday a reminder when the login
+        would run out before the next weekend ("Not now": not again until tomorrow)."""
+        self.show_login_age()
+        if not self.settings.get("schwab_app_key") or self.renew_asking:
+            return
+        now = datetime.now()
+        if now.weekday() < 5:
+            return
+        _made, ends = self.login_expiry()
+        monday = (now + timedelta(days=7 - now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        next_weekend = monday + timedelta(days=5)       # the Saturday after the coming week
+        if ends is not None and ends >= next_weekend:
+            return
+        if self.settings.get("renew_not_now") == now.date().isoformat():
+            return
+        self.renew_asking = True
+        try:
+            when = ("has run out" if ends is not None and ends <= now else
+                    f"runs out {ends:%A %d/%m %H:%M}" if ends is not None else "isn't there")
+            box = QMessageBox(QMessageBox.Icon.Question, "Renew the Schwab login",
+                              f"The Schwab login {when}: renew it now, so it lasts through the "
+                              "coming market week (it lasts 7 days from the login).", parent=self)
+            renew = box.addButton("Renew now...", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is renew:
+                self.renew_login()
+            else:
+                self.settings["renew_not_now"] = now.date().isoformat()
+                save_settings(self.settings)
+        finally:
+            self.renew_asking = False
+
+    def renew_login(self):
+        self.level2.login()             # the browser login; logged_in follows when it worked
+        self.show_login_age()
+
+    def on_logged_in(self):
+        """A new login: the Schwab connections kept in memory start over with it (else one of them
+        could save its old login back over the new one when it renews its access)."""
+        reader = self.checklist.fee_reader
+        if reader is not None:
+            reader._client = None
+        self.minute_loader._client = None
+        self.settings.pop("renew_not_now", None)
+        save_settings(self.settings)
+        self.show_login_age()
 
     def chart_quotes(self):
         """The chart's bid, ask and last price now (its live quote; the last candle's close for the

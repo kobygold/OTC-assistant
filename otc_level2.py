@@ -70,6 +70,14 @@ def tos_price(v, sign=False) -> str:
     return ("+" if sign and v > 0 else "") + fmt_price(v)
 
 
+def token_created(token_path: Path):
+    """When the browser login was made (time.time() seconds), or None without a usable token file."""
+    try:
+        return float(json.loads(token_path.read_text(encoding="utf-8"))["creation_timestamp"])
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return None
+
+
 def token_age_days(token_path: Path):
     """Days since the last browser login, or None without a usable token file."""
     try:
@@ -315,6 +323,7 @@ class Level2Panel(QWidget):
     book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown
     any_quote = pyqtSignal(str, dict)             # the same for every ticker streamed (the ATM trades' too)
     any_book = pyqtSignal(str, list, list)
+    logged_in = pyqtSignal()                      # a new browser login was saved to the token file
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -522,6 +531,7 @@ class Level2Panel(QWidget):
                                 f"{e}\n\n\"invalid_grant\" usually means the address was pasted too late. Try again.")
             return
         self.login_btn.hide()
+        self.logged_in.emit()
         self.set_status("Logged in. Connecting...")
         if self.feed:
             self.feed.restart()
