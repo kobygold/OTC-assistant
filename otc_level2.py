@@ -88,10 +88,14 @@ def token_age_days(token_path: Path):
 
 
 def write_token(token_path: Path):
-    """The token writer schwab-py expects, in the file format its token-file login reads."""
+    """The token writer schwab-py expects, in the file format its token-file login reads. schwab-py
+    hands it the token already wrapped as {"creation_timestamp", "token"}: written as it is (a bare
+    token gets wrapped, for safety; wrapping a wrapped one made a file no login could read)."""
     def write(token, *args, **kwargs):
+        if not (isinstance(token, dict) and "creation_timestamp" in token and "token" in token):
+            token = {"creation_timestamp": int(time.time()), "token": token}
         tmp = token_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"creation_timestamp": int(time.time()), "token": token}), encoding="utf-8")
+        tmp.write_text(json.dumps(token), encoding="utf-8")
         tmp.replace(token_path)
     return write
 
