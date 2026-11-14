@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import Level2Panel
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "0.9.15"
+APP_VERSION = "0.9.16"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -948,6 +948,7 @@ class MainWindow(QMainWindow):
         self.level2.any_book.connect(atm_trades.on_book)
         atm_trades.changed.connect(self.on_atm_changed)
         self.chart.order_lines = self.chart_orders
+        self.level2.my_orders = atm_trades.chart_orders     # their green rows in Level II
         self.chart.cancel_order.connect(self.cancel_chart_order)
         self.chart.move_order.connect(self.move_chart_order)
         self.level2.watch(atm_trades.open_tickers())
@@ -2300,6 +2301,7 @@ class MainWindow(QMainWindow):
 
     def on_atm_changed(self):
         self.level2.watch(self.checklist.atm.open_tickers())
+        self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
 
     def chart_orders(self, ticker):

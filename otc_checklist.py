@@ -959,19 +959,22 @@ class AtmTrades(QObject):
 
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: the ATM trade's, then the account's others.
-        [{"key", "side", "shares", "price", "atm", "duration"}]."""
+        [{"key", "side", "shares", "price", "atm", "duration", "account" (its last 3 digits)}]."""
         out = []
         e = self.active(ticker)
+        chosen = self.chosen_account()
         if e and e.get("state") == "buy_open" and not e.get("gone"):
             out.append({"key": f"atm:{e['id']}:BUY", "side": "BUY", "atm": True, "duration": "GTC",
-                        "shares": e["shares"] - (e.get("filled") or 0), "price": e["entry"]})
+                        "shares": e["shares"] - (e.get("filled") or 0), "price": e["entry"],
+                        "account": e.get("account") or chosen})
         elif e and e.get("state") == "sell_open" and e.get("sell_price") and not e.get("gone"):
             out.append({"key": f"atm:{e['id']}:SELL", "side": "SELL", "atm": True, "duration": "GTC",
-                        "shares": self.remaining(e) - (e.get("sell_filled") or 0), "price": e["sell_price"]})
+                        "shares": self.remaining(e) - (e.get("sell_filled") or 0), "price": e["sell_price"],
+                        "account": e.get("account") or chosen})
         for o in self.other_orders(ticker):
             duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration"))
             out.append({"key": f"schwab:{o['id']}", "side": o["side"], "atm": False, "duration": duration,
-                        "shares": o["shares"], "price": o["price"]})
+                        "shares": o["shares"], "price": o["price"], "account": chosen})
         return out
 
     def _order_of_key(self, key):

@@ -37,6 +37,7 @@ POLL_SECONDS = 0.3              # how often the stream loop checks for a new tic
 # LEVEL_COLORS and GOLD (otc_chart): thinkorswim's Level II colors, also the chart's Level II tags
 GREEN = "#1db31d"       # a size that grew, a rise, the bid in the quote bar
 RED = "#e0404f"         # a size that shrank, a fall
+MINE = "#14692c"        # the row of an open order of mine, as thinkorswim marks it
 LAST = "#f3c400"        # the last price
 TEXT = "#d8d8d8"
 # Market makers to watch on the ask side, from the OTC course's market maker table. Green ones
@@ -326,6 +327,10 @@ class Level2Panel(QWidget):
         self.ticker = ""
         self.name = ""
         self.feed = None
+        # my open orders on a ticker, for their own green rows in the book, as thinkorswim shows them:
+        # ticker -> [{"side", "price", "shares", "account", ...}] (set by the app)
+        self.my_orders = lambda ticker: []
+        self.shown_book = ([], [])             # the shown ticker's bids and asks, as streamed
         self.extra = set()                     # the open ATM trades' tickers, streamed too
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
@@ -427,9 +432,9 @@ class Level2Panel(QWidget):
             self.prev = {"BID": {}, "ASK": {}}
             self.trend = {"BID": {}, "ASK": {}}
             self.prev_quote = {}
-            self.bid_table.setRowCount(0)
-            self.ask_table.setRowCount(0)
             self.ticker, self.name = ticker, name
+            self.shown_book = ([], [])
+            self.refresh_mine()                # my orders show until the book comes
             self.show_quote({})
         if not ticker:
             if self.feed:
@@ -571,20 +576,47 @@ class Level2Panel(QWidget):
         self.any_book.emit(ticker, bids, asks)
         if ticker != self.ticker:
             return
-        self._fill(self.bid_table, bids, "BID")
-        self._fill(self.ask_table, asks, "ASK")
+        self.shown_book = (bids, asks)
+        self.refresh_mine()
+        # without my rows: the chart and the checklist count only the market's
         self.book_changed.emit(ticker, bids, asks)
+
+    def refresh_mine(self):
+        """Fills the tables again: the book with my open orders' rows (after an order changed)."""
+        bids, asks = self.shown_book
+        orders = self.my_orders(self.ticker) if self.ticker else []
+        self._fill(self.bid_table, self._with_mine(bids, orders, "BID"), "BID")
+        self._fill(self.ask_table, self._with_mine(asks, orders, "ASK"), "ASK")
+
+    @staticmethod
+    def _with_mine(rows, orders, side):
+        """The book's rows, (mm, price, size, level, mine), with a row for each of my open orders on
+        this side, after the market makers at its price, as thinkorswim places them."""
+        out = [(*row, False) for row in rows]
+        for o in orders:
+            if (o["side"] == "BUY") != (side == "BID") or not o.get("price") or o.get("shares", 0) <= 0:
+                continue
+            price = o["price"]
+            at = 0
+            while at < len(out) and (out[at][1] >= price if side == "BID" else out[at][1] <= price):
+                at += 1
+            level = out[at - 1][3] if at else 0
+            out.insert(at, (f"Me ...{o.get('account') or ''}", price, int(o["shares"]), level, True))
+        return out
 
     def _fill(self, table, rows, side):
         prev, trend = self.prev[side], self.trend[side]
         table.setRowCount(len(rows))
-        for r, (mm, price, size, level) in enumerate(rows):
+        for r, (mm, price, size, level, mine) in enumerate(rows):
             # Size colored by its last change, as in thinkorswim: green up, red down
-            if mm in prev and size != prev[mm]:
-                trend[mm] = 1 if size > prev[mm] else -1
-            prev[mm] = size
-            bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
+            if not mine:
+                if mm in prev and size != prev[mm]:
+                    trend[mm] = 1 if size > prev[mm] else -1
+                prev[mm] = size
+            bg = QColor(MINE if mine else LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
             cells = [QTableWidgetItem(mm), QTableWidgetItem(tos_price(price)), QTableWidgetItem(f"{size:,}")]
+            if mine:
+                cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
             first = 0
             if side == "ASK":
                 # The sign column: red for a diluter, yellow for a so-so market maker
@@ -601,5 +633,5 @@ class Level2Panel(QWidget):
                 if col > first:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 table.setItem(r, col, item)
-            if trend.get(mm):
+            if not mine and trend.get(mm):
                 cells[-1].setForeground(QColor(GREEN if trend[mm] > 0 else RED))
