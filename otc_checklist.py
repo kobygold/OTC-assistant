@@ -50,6 +50,7 @@ LOCKED_INDENT = 8         # px: the fixed cells' left padding, for the values be
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
 ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
+ORDERS_BACK_DAYS = 180      # how far back the account's orders are read
 # Schwab order statuses after which an order no longer works
 ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
 # An ATM trade's states: the name shown, its colour and its text colour (the table's price colours)
@@ -604,7 +605,12 @@ class SchwabTrader(QObject):
         try:
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                r = client.get_orders_for_account(account)
+                # back 180 days, Schwab's longest Good-Till-Cancel (the library's default is 60)
+                now = datetime.now()
+                r = client.get_orders_for_account(account, from_entered_datetime=now - timedelta(days=ORDERS_BACK_DAYS),
+                                                  to_entered_datetime=now)
+                if r.status_code != 200:
+                    r = client.get_orders_for_account(account)
             if r.status_code != 200:
                 self.orders.emit(account_tail, None, f"HTTP {r.status_code}")
                 return
