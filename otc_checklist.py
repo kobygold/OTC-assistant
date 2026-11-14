@@ -49,7 +49,7 @@ LIVE_INDENT = 6           # px: a live value's text, where the text in the live 
 LOCKED_INDENT = 8         # px: the fixed cells' left padding, for the values beside them to line up
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
 ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed, not the live ones
-ORDER_CHECK_S = 60          # how often open orders are checked at Schwab, in seconds
+ORDER_CHECK_S = 15          # how often open orders are checked at Schwab, in seconds
 ORDERS_BACK_DAYS = 180      # how far back the account's orders are read
 # Schwab order statuses after which an order no longer works
 ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
@@ -535,7 +535,7 @@ class SchwabTrader(QObject):
         self._start(self._quotes, list(tickers))
 
     def read_orders(self, account):
-        """The account's orders of the last 60 days (Schwab's limit), as order_info()."""
+        """The account's orders of the last ORDERS_BACK_DAYS days, as order_info()."""
         self._start(self._orders, account)
 
     def replace(self, key, ticker, side, order_id, shares, price, account, duration=None, session=None):
