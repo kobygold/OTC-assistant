@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from statistics import median
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QToolTip, QWidget
 
 from otc_zones import dollar_price
@@ -1059,25 +1059,29 @@ class CandleChart(QWidget):
                     self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
                                    arrow="axis")
                     p.setFont(f)
-            text = (f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT" if not off
-                    else f"{'+' if side == 'BUY' else '-'}{shares} LMT")
+            text = f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT"
             tw = fm.horizontalAdvance(text)
             w = tw + 30
             cx = price.left() + price.width() * 0.62
             if off:
                 cx = edge_x.get(off, cx + w / 2) - w / 2
                 edge_x[off] = cx - w / 2 - 6        # the next one on this edge, to its left
-                y = price.top() + 14 if off < 0 else price.bottom() - 14
+                y = price.top() + 17 if off < 0 else price.bottom() - 17
             r = QRectF(cx - w / 2, y - 8, w, 16)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(QPen(color, 1))
             p.setBrush(color.darker(230))
-            p.drawRoundedRect(r, 8, 8)
-            if off:     # the pointer, out of the tag's edge toward the price
-                tip_y = r.bottom() + 5 if off > 0 else r.top() - 5
-                base = r.bottom() - 0.5 if off > 0 else r.top() + 0.5
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawPolygon(QPolygonF([QPointF(cx - 5, base), QPointF(cx + 5, base), QPointF(cx, tip_y)]))
+            shape = QPainterPath()
+            shape.addRoundedRect(r, 8, 8)
+            if off:     # the pointer, out of the tag's left side toward the price, as in thinkorswim
+                px = r.left() + 16
+                base = r.bottom() - 1 if off > 0 else r.top() + 1
+                tip_y = r.bottom() + 8 if off > 0 else r.top() - 8
+                pointer = QPainterPath()
+                pointer.addPolygon(QPolygonF([QPointF(px - 7, base), QPointF(px + 7, base), QPointF(px, tip_y),
+                                              QPointF(px - 7, base)]))
+                shape = shape.united(pointer)       # one outline round both
+            p.drawPath(shape)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             p.setPen(QColor("#ffffff"))
             p.drawText(QRectF(r.left() + 8, r.top(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
