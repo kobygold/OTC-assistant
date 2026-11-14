@@ -27,17 +27,14 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from otc_chart import fmt_price
+from otc_chart import GOLD, LEVEL_COLORS, fmt_price
 
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this
 BOOK_SERVICES = ("NASDAQ_BOOK", "NYSE_BOOK")
 RECONNECT_SECONDS = 15
 POLL_SECONDS = 0.3              # how often the stream loop checks for a new ticker
 
-# thinkorswim's Level II colors: one blue per price level, best first and darker further out,
-# the same on both sides
-LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
-GOLD = "#e3b23c"        # market makers, prices and sizes
+# LEVEL_COLORS and GOLD (otc_chart): thinkorswim's Level II colors, also the chart's Level II tags
 GREEN = "#1db31d"       # a size that grew, a rise, the bid in the quote bar
 RED = "#e0404f"         # a size that shrank, a fall
 LAST = "#f3c400"        # the last price

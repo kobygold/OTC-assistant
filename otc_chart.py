@@ -29,8 +29,6 @@ INFO_BOX = QColor("#3c3c3c")
 UP = QColor("#1fc41f")
 DOWN = QColor("#ff4b14")
 NEUTRAL = QColor("#2ad4e6")
-BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis
-ASK_TAG = QColor("#9c2a35")
 VOL_AVG = QColor("#f0a020")
 VOL_MEDIAN = QColor("#e000e0")
 DAY_DOLLAR = QColor("#4a6cff")
@@ -55,7 +53,14 @@ PRICE_DECIMALS = 4          # the finest price the chart shows: 0.0001
 INFO_H, VOL_HEADER_H, AXIS_H = 24, 22, 24
 RISK_SIZE = 16
 LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
-TAG_H = 16                   # the right axis tags' height
+# thinkorswim's Level II colors: one blue per price level, best first and darker further out, the
+# same on both sides; market makers, prices and sizes in gold (also the chart's Bid/Ask and Level II tags' text).
+LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
+GOLD = "#e3b23c"
+BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis, and the Level II's
+ASK_TAG = QColor("#9c2a35")
+TAG_H = 16                  # the right axis tags' height
+TAG_SEP = " × "         # between a Level II tag's price and shares, drawn small and white
 INFO_X = RISK_SIZE + 8       # where the info bar's boxes start, after the risk sign
 SNAP_PX = 8                 # the crosshair snaps to a candle's high, low, open or close this close to it
 PRICE_MARGIN_PX = 30        # room above the high / below the low for Hi/Lo labels
@@ -309,12 +314,12 @@ class CandleChart(QWidget):
 
     @staticmethod
     def _levels(rows):
-        """{price: (total size, market makers)} of Level II rows."""
+        """{price: (total size, its level: 0 the best price)} of Level II rows."""
         levels = {}
-        for mm, price, size, *_ in rows:
+        for mm, price, size, *rest in rows:
             if price:
-                total, n = levels.get(price, (0, 0))
-                levels[price] = (total + (size or 0), n + 1)
+                total, level = levels.get(price, (0, rest[0] if rest else 0))
+                levels[price] = (total + (size or 0), level)
         return levels
 
     def _live_candle(self, q):
@@ -603,19 +608,18 @@ class CandleChart(QWidget):
         self._tag_points = []
         if self.show_bid_ask_tags:
             # The Level II's other prices first, so the Bid and Ask tags are drawn over them: one tag
-            # a price, its market makers together (their shares, and how many when more than one)
+            # a price, its market makers' shares together
             book = self.book if self.book[0] == self.ticker else ("", [], [])
             levels = {"bid": self._levels(book[1]), "ask": self._levels(book[2])}
-
-            def amount(total, n):
-                return fmt_shares(total) + (f" ({n})" if n > 1 else "")
-            for k, bg in (("ask", ASK_TAG), ("bid", BID_TAG)):
-                for value, (total, n) in sorted(levels[k].items(), reverse=k == "bid"):
+            # colored as in the Level II box: its price level's blue, gold text
+            for k in ("ask", "bid"):
+                for value, (total, level) in sorted(levels[k].items(), reverse=k == "bid"):
                     y = py(value)
                     if value == self.live.get(k) or not price.top() <= y <= price.bottom():
                         continue
-                    tip = self._axis_tag(p, price.right() - 2, y, f"{fmt_axis(value)} · {amount(total, n)}",
-                                         bg, QColor("#ffffff"), arrow="inside")
+                    bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
+                    tip = self._axis_tag(p, price.right() - 2, y, f"{fmt_axis(value)}{TAG_SEP}{fmt_shares(total)}",
+                                         bg, QColor(GOLD), arrow="inside")
                     self._tag_points.append((tip.x(), tip.y(), value, 1))
             tags = []
             for k, label, bg in (("ask", "A", ASK_TAG), ("bid", "B", BID_TAG)):
@@ -623,8 +627,8 @@ class CandleChart(QWidget):
                 if not value:
                     continue
                 # the shares at the price: the Level II's market makers there, else the quote's size
-                total, n = levels[k].get(value, (self.live.get(f"{k}_size") or 0, 1))
-                text = f"{label}: {fmt_axis(value)}" + (f" · {amount(total, n)}" if total else "")
+                total, _ = levels[k].get(value, (self.live.get(f"{k}_size") or 0, 1))
+                text = f"{label}: {fmt_axis(value)}" + (f"{TAG_SEP}{fmt_shares(total)}" if total else "")
                 tags.append((py(value), text, bg, value))
             tags = [t for t in tags if price.top() <= t[0] <= price.bottom()]
             if len(tags) == 2 and tags[1][0] - tags[0][0] < TAG_H + 1:
@@ -632,7 +636,7 @@ class CandleChart(QWidget):
                 mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
             for y, text, bg, value in tags:
-                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor("#ffffff"), arrow="inside")
+                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor(GOLD), arrow="inside")
                 self._tag_points.append((tip.x(), tip.y(), value, 0))
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
@@ -1081,8 +1085,27 @@ class CandleChart(QWidget):
         else:
             r = QRectF(x, y - h / 2, max(tw, RIGHT_W - 6), h)
             p.drawRoundedRect(r, 2, 2)
-        p.setPen(fg)
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+        if arrow == "inside":   # [A: |B: ]price[ × shares]: the A:/B: white, the × small and white
+            left, sep, right = text.partition(TAG_SEP)
+            white = QColor("#ffffff")
+            small = QFont(f)
+            small.setPointSizeF(f.pointSizeF() * 0.85)
+            small.setBold(True)
+            label, _, left = left.rpartition(": ")
+            parts = ([(label + ": ", f, white)] if label else []) + [(left, f, fg)] + (
+                [(TAG_SEP, small, white), (right, f, fg)] if sep else [])
+            widths = [QFontMetrics(pf).horizontalAdvance(t) for t, pf, _ in parts]
+            tx = r.left() + (r.width() - sum(widths)) / 2
+            for (t, pf, color), w in zip(parts, widths):
+                p.setFont(pf)
+                p.setPen(color)
+                p.drawText(QRectF(tx, r.top(), w + 1, r.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, t)
+                tx += w
+            p.setFont(f)
+        else:
+            p.setPen(fg)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
         f.setBold(False)
         p.setFont(f)
         return QPointF(x, y)    # with an arrow: its point
