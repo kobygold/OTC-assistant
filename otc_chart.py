@@ -1071,9 +1071,9 @@ class CandleChart(DrawingsMixin, QWidget):
             if not off:
                 p.setPen(QPen(color, 1, Qt.PenStyle.SolidLine if o.get("atm") else Qt.PenStyle.DashLine))
                 p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
-                # its price on the right axis, as thinkorswim shows an order's
-                self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
-                               arrow="axis")
+                # its price on the right axis, as thinkorswim shows an order's: coloured as its tag
+                self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color.darker(230), QColor("#ffffff"),
+                               bold=True, arrow="axis", outline=color)
                 p.setFont(f)
             text = f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT"
             tw = fm.horizontalAdvance(text)
@@ -1136,15 +1136,16 @@ class CandleChart(DrawingsMixin, QWidget):
         tick = 0.0001 if value < 1 else 0.01
         return max(tick, round(round(value / tick) * tick, 4))
 
-    def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=None):
+    def _axis_tag(self, p, x, y, text, bg, fg, bold=False, arrow=None, outline=None):
         """A tag centered on y. Plain: starts at x, on the right axis. arrow: with a triangle point
-        on its left side; "inside" ends at x (inside the chart), "axis" has its point at x."""
+        on its left side; "inside" ends at x (inside the chart), "axis" has its point at x.
+        outline: a border of that colour (none without)."""
         f = QFont(p.font())
         f.setBold(bold)
         p.setFont(f)
         tw = QFontMetrics(f).horizontalAdvance(text) + 10
         h = TAG_H
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(outline, 1) if outline is not None else Qt.PenStyle.NoPen)
         p.setBrush(bg)
         if arrow:
             point = h / 2
