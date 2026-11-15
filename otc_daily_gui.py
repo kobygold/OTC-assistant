@@ -697,6 +697,7 @@ class MainWindow(QMainWindow):
         # my computers: the main server and its clients, their priority, the connection log
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
+        self.server.message.connect(self.on_server_token)
         self.computers.banner.connect(self.show_banner)
         self.computers.history.connect(self.show_history)
         if self.checklist.trader is not None:
@@ -2737,7 +2738,15 @@ class MainWindow(QMainWindow):
         reader.read_accounts(again)
 
     def on_schwab_accounts(self, accounts, error):
+        self.accounts_failed = bool(error)
         self.show_schwab_accounts(accounts, error)
+
+    def on_server_token(self, msg):
+        """The accounts weren't read (no login yet, or the server wasn't ready): read again as soon
+        as the server has a login for this app."""
+        if msg.get("type") in ("welcome", "token") and msg.get("token") and getattr(self, "accounts_failed", False):
+            self.accounts_failed = False
+            self.read_schwab_accounts(again=True)
 
     def show_schwab_accounts(self, accounts=None, error=""):
         """Fills the account choice from the accounts kept in the settings (last 3 digits and type
