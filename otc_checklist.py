@@ -1920,11 +1920,9 @@ class AtmTrades(QObject):
             self.trader.read_positions(self.chosen_account())
 
     def _check_quotes(self):
-        # the open trades' tickers, and the chosen account's other orders' (the Schwab tab's bid / ask);
-        # while the stream is on, the open trades' come from it (they are streamed): not read
-        tickers = {o["ticker"] for o in self.other_orders()} | {p["ticker"] for p in self.owned()}
-        streamed = set(self.open_tickers())
-        tickers = sorted(tickers - streamed if self.activity_live else tickers | streamed)
+        # the open trades' tickers, and the chosen account's other orders' and stocks owned (the
+        # Schwab tab's bid / ask); while the stream is on, they all come from it: none read
+        tickers = [] if self.activity_live else self.stream_tickers()
         if tickers:
             self.quotes_checked = time.time()
             self.trader.read_quotes(tickers)
@@ -2067,7 +2065,14 @@ class AtmTrades(QObject):
 
     # ---- the market of the trades' tickers ----
     def _known(self, ticker):
-        return any(e.get("ticker") == ticker for e in self.entries)
+        return any(e.get("ticker") == ticker for e in self.entries) or ticker in self.stream_tickers()
+
+    def stream_tickers(self):
+        """The tickers streamed (Level I and II) besides the chart's: the open ATM trades', and the
+        chosen account's other orders' and stocks owned (the Schwab tab's), so their bid / ask are
+        live instead of read on a timer."""
+        return sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()}
+                      | {p["ticker"] for p in self.owned()})
 
     def on_quote(self, ticker, q):
         """A Level 1 quote from the stream (stream field names)."""

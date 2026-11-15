@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.16"
+APP_VERSION = "1.0.17"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1009,7 +1009,7 @@ class MainWindow(QMainWindow):
         self.chart.move_order.connect(self.move_chart_order)
         self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(
             self, self.chart.ticker, side, price, self.chart_quotes))
-        self.level2.watch(atm_trades.open_tickers())
+        self.level2.watch(atm_trades.stream_tickers())
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
@@ -2397,7 +2397,8 @@ class MainWindow(QMainWindow):
         return tab
 
     def on_atm_changed(self):
-        self.level2.watch(self.checklist.atm.open_tickers())
+        # streamed: the ATM trades', the other orders' and the stocks owned's tickers (as read now)
+        self.level2.watch(self.checklist.atm.stream_tickers())
         self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
 
