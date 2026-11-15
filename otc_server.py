@@ -12,7 +12,9 @@ What it does:
   25 min) and writes schwab_token.json. The app gets the access token without the refresh token
   for its own Schwab requests; one refused asks the server again (token_request);
 - a new browser login made in the app comes here (login) and is saved;
-- recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept.
+- recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept;
+- the shared data (ATM trades, drawings, favorites per account): the one copy, shared.json, changed
+  only here, by the apps' change requests (otc_shared.py).
 
 What is streamed: each app's chart ticker, its extra tickers (sent to it: the open ATM trades,
 orders, stocks owned) and its tracked tickers (recorded only: the favorites...), in that order of
@@ -25,9 +27,11 @@ Messages (JSON, one per WebSocket message), app -> server:
   token_request {old}        "this access token was refused": renewed (if it is still the current
                              one) and sent back
   login {token}              a new browser login (the token as schwab-py writes it)
+  change {id, key, base, data}   a change of the shared data (data None: delete; see otc_shared.py)
   bye                        the app is closing; quit  (an older server: ends it, the app starts a new one)
 server -> app:
-  welcome {code, token, status, activity, login_needed}
+  welcome {code, token, status, activity, login_needed, store: {rev, items}}
+  changed {id, key, v, data, rev, by}   a change applied (to all)   refused {id, key, v, data, why}
   token {token: {token, created}}   after every renewal / login
   quote {ticker, q}  book {ticker, bids, asks}  status {text}  login_needed {why}
   order_event {kind, order_id}  activity {on}
@@ -50,6 +54,7 @@ from datetime import datetime
 from pathlib import Path
 
 from otc_recorder import Recorder
+from otc_shared import SharedStore
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
@@ -144,7 +149,7 @@ class Conn:
 
 
 class Server:
-    def __init__(self, settings: dict, token_path: Path, market_log: Path):
+    def __init__(self, settings: dict, token_path: Path, market_log: Path, shared_path: Path):
         self.key = settings.get("schwab_app_key", "").strip()
         self.app_secret = settings.get("schwab_app_secret", "").strip()
         self.secret = str(settings.get("server_secret", ""))
@@ -159,6 +164,7 @@ class Server:
         self.symbols = set()                    # the tickers subscribed now
         self.counted = None                     # (streamed, wanted) as last sent to the apps
         self.recorder = Recorder(market_log, log)
+        self.store = SharedStore(shared_path, log)
         self.streaming = False                  # the stream is logged in
         self.activity_on = False
         self.status_text = ""
@@ -235,7 +241,8 @@ class Server:
         self.had_app = True
         writer = asyncio.create_task(conn.writer())
         conn.put({"type": "welcome", "code": self.code, "token": self.app_token(), "status": self.status_text,
-                  "activity": self.activity_on, "login_needed": self.login_why})
+                  "activity": self.activity_on, "login_needed": self.login_why,
+                  "store": self.store.snapshot()})
         if self.counted:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
         log(f"App connected ({len(self.conns)} now)")
@@ -250,6 +257,14 @@ class Server:
                     self.on_want(conn, msg)
                 elif kind == "token_request":
                     asyncio.create_task(self.on_token_request(conn, msg.get("old")))
+                elif kind == "change":
+                    answer, new = self.store.apply(msg)
+                    if answer["type"] == "changed" and new:
+                        self.broadcast(answer)
+                    else:
+                        if answer["type"] == "refused":
+                            log(f"Change refused: {answer['key']} ({answer.get('why')})")
+                        conn.put(answer)
                 elif kind == "login":
                     await self.on_login(msg.get("token"))
                 elif kind == "bye":
@@ -637,6 +652,7 @@ def main():
     p.add_argument("--token", default=str(APP_DIR / "schwab_token.json"))
     p.add_argument("--log", default=str(APP_DIR / "server_log.txt"))
     p.add_argument("--market-log", default=str(APP_DIR / "market_log"))
+    p.add_argument("--shared", default=str(APP_DIR / "shared.json"))
     args = p.parse_args()
     LOG_PATH = Path(args.log)
     try:
@@ -645,7 +661,7 @@ def main():
         settings = {}
     port = args.port or int(settings.get("server_port") or DEFAULT_PORT)
     try:
-        asyncio.run(Server(settings, Path(args.token), Path(args.market_log)).run(port))
+        asyncio.run(Server(settings, Path(args.token), Path(args.market_log), Path(args.shared)).run(port))
     except Exception:
         log("Server crashed:\n" + traceback.format_exc())
         sys.exit(1)

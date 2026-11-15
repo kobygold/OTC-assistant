@@ -11,7 +11,9 @@ takes each renewed token as it comes, and a refused token (HTTP 401, or past its
 server for a new one and tries once more. The app never renews or writes the token itself.
 """
 
+import copy
 import hashlib
+import itertools
 import json
 import secrets
 import subprocess
@@ -206,6 +208,104 @@ class ServerLink(QObject):
                         self._token_cv.acquire()
                 self._token_cv.wait(min(0.5, max(0.05, end - time.time())))
         return None
+
+
+class SharedData(QObject):
+    """The app's copy of the shared data (otc_shared.py: items under keys, with versions).
+
+    Reading: get(prefix) -> {the rest of the key: data}. At the start it is the server's file as
+    saved (this computer's server), so the app has it at once; the server's welcome replaces it.
+    Changing: sync(prefix, {rest: data}) sends a change for every item that differs from the copy
+    (data changed, new, or gone: deleted), each with the version it was made from. The copy takes
+    the change at once; the server's answer confirms it, or refuses it (changed meanwhile by
+    someone else): then the copy takes the server's item, and changed + refused tell the owner to
+    show it again. Changes made while the server is away wait and go when it is back.
+    changed(key): an item changed by someone else (or refused), "" for all of them (a new copy)."""
+    changed = pyqtSignal(str)
+    refused = pyqtSignal(str, str)      # key, why
+    ready = pyqtSignal()                # the server's copy arrived
+
+    def __init__(self, link, saved_path: Path):
+        super().__init__()
+        self.link = link
+        self.items = {}                 # key -> [version, data]
+        self.mine = {}                  # change id -> key: sent, not answered yet
+        self.waiting = []               # changes not sent yet (no server)
+        self.got_welcome = False
+        self.app_id = secrets.token_hex(3)
+        self._ids = itertools.count(1)
+        try:
+            saved = json.loads(Path(saved_path).read_text(encoding="utf-8"))
+            self.items = {k: [v["v"], v["data"]] for k, v in saved.get("items", {}).items()}
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            pass
+        link.message.connect(self._on_message)
+
+    def has(self, key):
+        item = self.items.get(key)
+        return item is not None and item[1] is not None
+
+    def get(self, prefix):
+        """{the rest of the key: a copy of its data} of the items under prefix, in the order made."""
+        n = len(prefix)
+        return {k[n:]: copy.deepcopy(d) for k, (_, d) in self.items.items() if k.startswith(prefix) and d is not None}
+
+    def put(self, key, data):
+        self.sync_items({key: data}, [])
+
+    def sync(self, prefix, items: dict):
+        """Makes the items under prefix these ({the rest of the key: data}): changes only for
+        those that differ; the ones not there any more are deleted."""
+        new = {prefix + k: v for k, v in items.items()}
+        gone = [k for k, (_, d) in self.items.items() if k.startswith(prefix) and d is not None and k not in new]
+        self.sync_items(new, gone)
+
+    def sync_items(self, new: dict, gone):
+        for key, data in new.items():
+            data = json.loads(json.dumps(data))         # as it travels (tuples as lists...)
+            v, old = self.items.get(key, [0, None])
+            if old != data:
+                self._change(key, v, data)
+        for key in gone:
+            self._change(key, self.items[key][0], None)
+
+    def _change(self, key, base, data):
+        cid = f"{self.app_id}-{next(self._ids)}"
+        # taken at once, as the server will number it (base + 1); a second change of the same
+        # item before the answer is made from that
+        self.items[key] = [base + 1, data]
+        self.mine[cid] = key
+        msg = {"type": "change", "id": cid, "key": key, "base": base, "data": data, "by": self.app_id}
+        if not self.got_welcome or not self.link.send(msg):
+            self.waiting.append(msg)
+
+    def _on_message(self, msg):
+        kind = msg.get("type")
+        if kind == "welcome":
+            store = msg.get("store") or {}
+            self.items = {k: [v["v"], v["data"]] for k, v in (store.get("items") or {}).items()}
+            self.got_welcome = True
+            waiting, self.waiting = self.waiting, []
+            for m in waiting:       # made while the server was away: their bases may be old (refused)
+                v, d = self.items.get(m["key"], [0, None])
+                self.items[m["key"]] = [v + 1 if m["base"] == v else v, m["data"] if m["base"] == v else d]
+                if not self.link.send(m):
+                    self.waiting.append(m)
+            self.changed.emit("")
+            self.ready.emit()
+        elif kind == "changed":
+            mine = self.mine.pop(msg["id"], None) is not None
+            current = self.items.get(msg["key"], [0, None])[0]
+            if msg["v"] >= current or not mine:
+                self.items[msg["key"]] = [msg["v"], msg["data"]]
+            if not mine:
+                self.changed.emit(msg["key"])
+        elif kind == "refused":
+            self.mine.pop(msg.get("id"), None)
+            if msg.get("key"):
+                self.items[msg["key"]] = [msg["v"], msg["data"]]
+                self.changed.emit(msg["key"])
+                self.refused.emit(msg["key"], msg.get("why", ""))
 
 
 _SESSION_CLASS = None

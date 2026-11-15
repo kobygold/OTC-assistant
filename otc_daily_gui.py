@@ -54,7 +54,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
-from otc_server_link import ServerLink, set_link
+from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
 APP_VERSION = "1.1.0"
@@ -643,7 +643,15 @@ class MainWindow(QMainWindow):
         self.chart_analysis = None
         self.chart_rows = []
         self.tickers_stale = True
-        self.favs = load_favorites()
+        # The server: the background process that holds the Schwab stream, the token and the shared
+        # data (otc_server.py). The shared data (ATM trades, drawings, favorites, per account): its
+        # copy here, changed only through the server, so no change overwrites another computer's.
+        # Until the computer's own files were taken in (on_shared_ready), the files are used.
+        self.server = ServerLink(self.settings, save_settings)
+        set_link(self.server)
+        self.shared = SharedData(self.server, APP_DIR / "shared.json")
+        self.shared_imported = self.shared.has("meta/imported")
+        self.favs = self.load_favs()
         self.fav_icons = {g: star_icon(color) for g, (_, color) in FAV_GROUPS.items()}
         self.no_fav_icon = star_icon()
         self.fav_filling = False
@@ -972,15 +980,12 @@ class MainWindow(QMainWindow):
         self.zone_info.hide()
         root.addWidget(self.zone_info)
         self.chart = CandleChart()
-        self.chart.drawing_store = load_drawings()
-        self.chart.drawings_changed = lambda: save_drawings(self.chart.drawing_store)
+        self.chart.drawing_store = self.load_drawing_store()
+        self.chart.drawings_changed = self.save_drawing_store
         self.chart.show_expirations = self.expirations_show.isChecked()
         self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
         self.chart.avg_period = self.avg_period.value()
-        # The server: the background process that holds the Schwab stream and the token (otc_server.py)
-        self.server = ServerLink(self.settings, save_settings)
-        set_link(self.server)
         self.server.start()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json", self.server,
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
@@ -1016,6 +1021,11 @@ class MainWindow(QMainWindow):
         self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(
             self, self.chart.ticker, side, price, self.chart_quotes))
         self.level2.watch(atm_trades.stream_tickers())
+        if self.shared_imported:
+            atm_trades.use_shared(self.shared)
+        self.shared.changed.connect(self.on_shared_changed)
+        self.shared.refused.connect(self.on_shared_refused)
+        self.shared.ready.connect(self.on_shared_ready)
         self.update_tracked()
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
@@ -2415,9 +2425,124 @@ class MainWindow(QMainWindow):
 
     def update_tracked(self):
         """Streamed and recorded by the server, besides what the app shows: every account's
-        orders' and stocks owned's tickers, then the favorites (by group)."""
-        favs = sorted(self.favs, key=lambda t: (self.favs[t].get("group", 9), t))
+        orders' and stocks owned's tickers, then every account's favorites (by group)."""
+        favs = dict(self.favs)
+        if self.shared_imported:
+            for key, f in self.shared.get("favorites/").items():
+                ticker = key.partition("/")[2]
+                if isinstance(f, dict) and (ticker not in favs or f.get("group", 9) < favs[ticker].get("group", 9)):
+                    favs[ticker] = f
+        favs = sorted(favs, key=lambda t: (favs[t].get("group", 9), t))
         self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + favs)))
+
+    # ---- the shared data: favorites, drawings and ATM trades, per account (otc_server_link) ----
+    def shared_account(self):
+        """The account whose favorites and drawings are shown: the chosen one."""
+        return self.settings.get("schwab_account") or "none"
+
+    def load_favs(self):
+        if not self.shared_imported:
+            return load_favorites()
+        return {t: f for t, f in self.shared.get(f"favorites/{self.shared_account()}/").items()
+                if isinstance(f, dict) and f.get("group") in FAV_GROUPS}
+
+    def save_favs(self):
+        if self.shared_imported:
+            self.shared.sync(f"favorites/{self.shared_account()}/", self.favs)
+        else:
+            save_favorites(self.favs)
+
+    def load_drawing_store(self):
+        if not self.shared_imported:
+            return load_drawings()
+        store = {}
+        for key, d in self.shared.get(f"drawings/{self.shared_account()}/").items():
+            ticker, _, name = key.partition("/")
+            if ticker == "_defaults":
+                store.setdefault("_defaults", {})[name] = d
+            elif isinstance(d, dict):
+                store.setdefault(ticker, []).append(d)
+        return store
+
+    @staticmethod
+    def flat_drawings(store):
+        """{ticker/drawing id: drawing, _defaults/tool: look} from {ticker: [drawing], "_defaults": {...}}."""
+        flat = {}
+        for ticker, v in store.items():
+            if ticker == "_defaults":
+                flat.update({f"_defaults/{tool}": look for tool, look in v.items()})
+            else:
+                flat.update({f"{ticker}/{d['id']}": d for d in v})
+        return flat
+
+    def save_drawing_store(self):
+        if self.shared_imported:
+            self.shared.sync(f"drawings/{self.shared_account()}/", self.flat_drawings(self.chart.drawing_store))
+        else:
+            save_drawings(self.chart.drawing_store)
+
+    def on_shared_ready(self):
+        """The server's copy came. The first time ever (nothing taken in yet), this computer's own
+        files are taken in: the favorites and drawings for every account, the ATM trades under their
+        own account. From then on the shared data is used, and the files aren't any more (kept as
+        they were, as a backup)."""
+        if self.shared.has("meta/imported"):
+            if not self.shared_imported:            # taken in from another app meanwhile
+                self.use_shared_data()
+            return
+        accounts = [tail for tail, _ in self.settings.get("schwab_accounts", [])] or [self.shared_account()]
+        favs, drawings = load_favorites(), self.flat_drawings(load_drawings())
+        new = {}
+        for a in accounts:
+            new.update({f"favorites/{a}/{t}": f for t, f in favs.items()})
+            new.update({f"drawings/{a}/{k}": d for k, d in drawings.items()})
+        atm = self.checklist.atm
+        new.update({f"atm/{atm.shared_key(e)}": e for e in atm.entries})
+        new["meta/imported"] = {"time": datetime.now().isoformat(timespec="seconds"), "accounts": accounts,
+                                "favorites": len(favs), "drawings": len(drawings), "atm": len(atm.entries)}
+        self.shared.sync_items(new, [])
+        self.use_shared_data()
+        self.statusBar().showMessage(
+            f"The favorites ({len(favs)}) and drawings ({len(drawings)}) were copied to every account "
+            f"({', '.join('...' + a for a in accounts)}), and the ATM trades ({len(atm.entries)}) to theirs.", 15000)
+
+    def use_shared_data(self):
+        self.shared_imported = True
+        self.checklist.atm.use_shared(self.shared)
+        self.on_shared_changed("")
+
+    def on_shared_changed(self, key):
+        """Shared data changed elsewhere (or a change of ours refused): shown again."""
+        if not self.shared_imported:
+            return
+        if key == "" or key.startswith(f"favorites/{self.shared_account()}/"):
+            self.reload_favs()
+        elif key.startswith("favorites/"):
+            self.update_tracked()
+        if key == "" or key.startswith(f"drawings/{self.shared_account()}/"):
+            self.reload_drawings()
+        if key == "" or key.startswith("atm/"):
+            self.checklist.atm.reload_shared()
+
+    def on_shared_refused(self, key, why):
+        what = key.split("/")[0]
+        self.statusBar().showMessage(
+            f"Your change of {what} wasn't saved: it was changed on another computer a moment before. "
+            "It shows as it is now: make your change again if still needed.", 15000)
+
+    def reload_favs(self):
+        old, self.favs = self.favs, self.load_favs()
+        for ticker in set(old) | set(self.favs):
+            if old.get(ticker) != self.favs.get(ticker):
+                self.refresh_fav_views(ticker)
+        self.refresh_favorites_table()
+        self.update_tracked()
+
+    def reload_drawings(self):
+        self.chart.drawing_store = self.load_drawing_store()
+        if self.chart.selected is not None and self.chart._find_drawing(self.chart.selected) is None:
+            self.chart.selected = None
+        self.chart.update()
 
     def on_streamed(self, count, wanted, most):
         """The server's count of streamed tickers, next to the account selector."""
@@ -2592,6 +2717,9 @@ class MainWindow(QMainWindow):
         self.settings["schwab_account"] = tail
         save_settings(self.settings)
         self.show_schwab_accounts()
+        if self.shared_imported:            # this account's favorites and drawings
+            self.reload_favs()
+            self.reload_drawings()
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
         self.checklist.atm.check()      # and read its orders
 
@@ -3024,7 +3152,7 @@ class MainWindow(QMainWindow):
             del self.favs[ticker]
         else:
             self.favs.setdefault(ticker, {})["group"] = group
-        save_favorites(self.favs)
+        self.save_favs()
         self.update_tracked()
         # Later, so no table replaces its cells while it is still handling the click
         QTimer.singleShot(0, lambda: self.refresh_fav_views(ticker))
@@ -3184,7 +3312,7 @@ class MainWindow(QMainWindow):
                 self.favs[ticker]["notes"] = text
             else:
                 self.favs[ticker].pop("notes", None)
-            save_favorites(self.favs)
+            self.save_favs()
             QTimer.singleShot(0, self.refresh_favorites_table)
             return
         text = item.text().replace(",", "").replace("$", "").strip()
@@ -3200,7 +3328,7 @@ class MainWindow(QMainWindow):
                 self.favs[ticker].pop(key, None)
             else:
                 self.favs[ticker][key] = value
-            save_favorites(self.favs)
+            self.save_favs()
         # Later, so the cell isn't replaced while the table is still handling the edit
         QTimer.singleShot(0, self.refresh_favorites_table)
 

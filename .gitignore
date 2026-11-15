@@ -96,3 +96,6 @@ target/
 
 server_log.txt
 market_log/
+shared.json
+shared.tmp
+shared.bad-*.json

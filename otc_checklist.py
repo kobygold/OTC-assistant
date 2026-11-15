@@ -1313,12 +1313,31 @@ class AtmTrades(QObject):
         self.timer.start(ORDER_CHECK_S * 1000)
         QTimer.singleShot(3000, self.check)
 
-    # ---- the file ----
+    # ---- the file, or the shared data (the server's: use_shared) ----
+    def use_shared(self, shared):
+        """From now on the trades are the shared data's (atm/<account>/<trade id>), not atm.json."""
+        self.shared = shared
+        self.reload_shared()
+
+    def reload_shared(self):
+        """The trades as the shared data has them now (changed elsewhere, or a change refused)."""
+        if getattr(self, "shared", None) is None:
+            return
+        self.entries = self._fixed(list(self.shared.get("atm/").values()))
+        self.changed.emit()
+
+    def shared_key(self, e):
+        return f"{e.get('account') or self.chosen_account() or 'none'}/{e['id']}"
+
     def _read(self):
         try:
             entries = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return []
+        return self._fixed(entries)
+
+    @staticmethod
+    def _fixed(entries):
         for e in entries:
             if "stop" in e:         # called "safety-net" since v0.9.4
                 e["safety-net"] = e.pop("stop")
@@ -1331,6 +1350,10 @@ class AtmTrades(QObject):
         return entries
 
     def save(self):
+        if getattr(self, "shared", None) is not None:
+            # only the trades that changed go to the server, each from the version it had here
+            self.shared.sync("atm/", {self.shared_key(e): e for e in self.entries})
+            return
         text = json.dumps(self.entries, indent=1)
         # each [price, amount] / [market maker, price, amount] on one line
         text = re.sub(r"\[\s+([^\[\]{}]*?)\s+\]", lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)
