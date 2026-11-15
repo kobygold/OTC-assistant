@@ -255,6 +255,7 @@ class Server:
         self.massive_key = settings.get("api_key", "").strip()      # Massive's (the daily candles)
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
+        self.name_set = bool(str(settings.get("server_name") or "").strip())
         self.name = str(settings.get("server_name") or socket.gethostname()).strip()
         self.port = port
         self.address_set = bool(str(settings.get("server_address") or "").strip())
@@ -333,10 +334,12 @@ class Server:
                 ip = await asyncio.to_thread(tailscale_ip)
                 extra = [ip] if ip else []
             hosts += [h for h in extra if h and h not in hosts]
-            if not self.address_set:        # how the others reach it: its Tailscale name
+            if not (self.address_set and self.name_set):
                 ts = await asyncio.to_thread(tailscale_name)
-                if ts:
+                if ts and not self.address_set:     # how the others reach it: its Tailscale name
                     self.address = f"{ts}:{self.port}"
+                if ts and not self.name_set:        # and its name (the Windows name may differ)
+                    self.name = ts
         try:
             server = await serve(self.handler, hosts, self.port, max_size=None, ping_interval=5, ping_timeout=10)
         except OSError as e:
@@ -652,15 +655,18 @@ class Server:
     def add_computer(self, name, address):
         """(main server) The computers' list (shared, in priority order): a new one at the end."""
         item = self.store.items.get(COMPUTERS_KEY) or {"v": 0, "data": None}
-        computers = list(item["data"] or [])
-        for c in computers:
-            if c.get("name") == name:
-                if address and c.get("address") != address:
-                    c["address"] = address
-                    break
-                return
-        else:
+        computers = [dict(c) for c in item["data"] or [] if isinstance(c, dict)]
+        same = next((c for c in computers if c.get("name") == name), None)
+        if same is None and address:    # renamed (the same address): its entry, in its place
+            same = next((c for c in computers if c.get("address") == address), None)
+        if same is None:
             computers.append({"name": name, "address": address})
+        elif same.get("name") == name and (not address or same.get("address") == address):
+            return
+        else:
+            if same.get("name") != name:
+                log(f"{same.get('name')} is now called {name}")
+            same.update(name=name, address=address or same.get("address", ""))
         answer, _ = self.store.apply({"id": f"{self.name}-computers-{time.time()}", "key": COMPUTERS_KEY,
                                       "base": item["v"], "data": computers, "by": self.name})
         if answer["type"] == "changed":
