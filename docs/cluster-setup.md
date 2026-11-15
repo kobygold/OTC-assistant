@@ -32,9 +32,10 @@ The design is in [server-design.md](server-design.md).
 2. **Tailscale**: from <https://tailscale.com/download>; sign in with the same account on all the
    computers. Turn on **MagicDNS** at <https://login.tailscale.com/admin/dns> if it is off, so the
    computers' names work (`ping koby-thinkpad` from another one should answer).
-3. **The app**: `git clone -b cluster https://github.com/kobygold/OTC-assistant.git C:\github\OTC-assistant`
-   (or copy the app's folder), then double-click `run_otc_gui.bat`: the first run installs the
-   packages and puts a shortcut on the desktop.
+3. **The app**: `git clone https://github.com/kobygold/OTC-assistant.git C:\github\OTC-assistant`
+   (git: <https://git-scm.com/download/win>), then double-click `run_otc_gui.bat`: the first run
+   installs the packages and puts a shortcut on the desktop. A clone updates itself with the app's
+   **Check for update** button (top right); a copied folder (not a clone) can't.
 
 ## 2. The main server (e.g. the home desktop, which is on all the time)
 
