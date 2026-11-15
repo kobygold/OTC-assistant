@@ -682,6 +682,9 @@ class MainWindow(QMainWindow):
         self.computers.banner.connect(self.show_banner)
         if self.checklist.trader is not None:
             self.checklist.trader.blocked = self.computers.block_reason
+            # the orders and positions: read by the main server, once for all my computers
+            self.checklist.trader.use_server(self.server)
+            self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)

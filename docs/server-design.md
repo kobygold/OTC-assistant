@@ -1,7 +1,8 @@
 # OTC Assistant: Server / Clients design (draft 2, for review)
 
 Status: steps 1-5 implemented (v2.0.x): the server per computer, recording, shared data, several
-computers, failover and take-back. Not yet: the account reads on the main server only, fetching recording gaps.
+computers, failover and take-back. The account reads (orders, positions) are
+done by the main server only, once for all the computers. Not yet: fetching recording gaps.
 Draft 2 adds the review answers: a server process on every computer, shared per-account data with
 versioned changes (no lost updates), the recording list, the "server not responding" banner, the
 connection log, and the computers' priority list.

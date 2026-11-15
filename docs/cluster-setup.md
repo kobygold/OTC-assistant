@@ -2,8 +2,10 @@
 
 OTC Assistant can run on several of my computers at once, sharing **one** Schwab stream:
 
-- the **main server** (one computer) holds the Schwab stream, renews the login's token, and keeps the
-  one copy of the shared data (ATM trades, drawings, favorites, per account);
+- the **main server** (one computer) holds the Schwab stream, renews the login's token, reads the
+  accounts' orders and positions (once for all the computers: on each order event), and keeps the one
+  copy of the shared data (ATM trades, drawings, favorites, per account); its app is the one that
+  updates the ATM trades from the orders (bought, sold, canceled), and the others show it;
 - every other computer is a **client** of it: it gets the stream, the token and the shared data from
   the main server, and records the stream itself (`market_log/`, 2 weeks).
 

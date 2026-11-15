@@ -278,7 +278,7 @@ class SharedData(QObject):
         # taken at once, as the server will number it (base + 1); a second change of the same
         # item before the answer is made from that
         self.items[key] = [base + 1, data]
-        self.mine[cid] = key
+        self.mine[cid] = (key, data)
         msg = {"type": "change", "id": cid, "key": key, "base": base, "data": data, "by": self.app_id}
         if not self.got_welcome or not self.link.send(msg):
             self.waiting.append(msg)
@@ -309,11 +309,12 @@ class SharedData(QObject):
             if not mine:
                 self.changed.emit(msg["key"])
         elif kind == "refused":
-            self.mine.pop(msg.get("id"), None)
+            _, tried = self.mine.pop(msg.get("id"), (None, None))
             if msg.get("key"):
                 self.items[msg["key"]] = [msg["v"], msg["data"]]
-                self.changed.emit(msg["key"])
-                self.refused.emit(msg["key"], msg.get("why", ""))
+                if msg["data"] != tried:        # (the same as ours, written first by another: no conflict)
+                    self.changed.emit(msg["key"])
+                    self.refused.emit(msg["key"], msg.get("why", ""))
 
 
 _SESSION_CLASS = None

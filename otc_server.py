@@ -24,6 +24,9 @@ What it does:
   apps get the access token without the refresh token; one refused asks the server (token_request);
 - a new browser login made in any app comes to the main server (login), which sends it to all;
 - recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept;
+- the account reads (main server): every account's orders and positions, read once for all the
+  computers: on an order event, when the stream connects, and when an app asks (asks from several
+  computers within READ_BATCH_S share one read); the results go to every app (orders, positions);
 - the shared data (ATM trades, drawings, favorites per account, the computers' list): the one copy
   on the main server (shared.json), changed only there, by change requests (otc_shared.py); every
   client keeps a copy.
@@ -40,6 +43,7 @@ Messages (JSON, one per WebSocket message), app -> server:
                              one) and sent back
   login {token}              a new browser login (the token as schwab-py writes it)
   change {id, key, base, data}   a change of the shared data (data None: delete; see otc_shared.py)
+  read {what: orders / positions, account}   read them soon (account None: every account)
   bye                        the app is closing; quit  (an older server: ends it, the app starts a new one)
 server -> app:
   welcome {code, token, status, activity, login_needed, store?, role, leader, events, cluster}
@@ -51,6 +55,7 @@ server -> app:
   streamed {count, wanted, max}     the tickers streamed, of those wanted (more than max: the rest not)
   cluster {me, role, leader, connected, computers: [{name, address, role, online, version, since}]}
   event {time, text}                a connection event, for the app's connection log
+  orders / positions {account, data, error}   an account's orders / positions as read (otc_orders.py)
 Between servers (client -> main): hello {role "peer", secret: cluster_secret, name, address, proto,
 version}, want {symbols, extra, track, on}, token_request, login, change; main -> client: welcome
 {leader, token (whole), store, activity}, l1 {c, t}, l2 {s, c, t}, q {ticker, q} (as Schwab sent
@@ -76,6 +81,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from otc_orders import account_numbers, read_orders, read_positions
 from otc_recorder import Recorder
 from otc_shared import SharedStore
 
@@ -99,6 +105,9 @@ ELECTION_STEP_S = 3             # a computer waits (its place among those runnin
 TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 60))   # a higher-priority computer, back,
                                 # takes over after running this long
 FAKE_STREAM = os.environ.get("OTC_FAKE_STREAM") == "1"      # tests: no Schwab connection at all
+FAKE_ACCOUNTS = os.environ.get("OTC_FAKE_ACCOUNTS")         # tests: the accounts' orders from this file
+READ_BATCH_S = 0.5              # an app's ask to read waits this long: asks from all the computers together
+EVENT_READ_S = 0.7              # an order event's read waits this long: the events come a few together
 PROBE_TIMEOUT_S = 2             # asking a computer who the main server is
 SPLIT_CHECK_S = 10              # the main server checks that no other one runs (two at once) this often
 EVENTS_KEPT = 200               # connection events kept for the apps' log
@@ -272,6 +281,9 @@ class Server:
         self.remote_cluster = {}                # (client) the main server's cluster info
         self.lost_logged = False
         self.last_heard = time.time()
+        self.read_wanted = {}                   # (main server) (what, account or "*") -> when it is due
+        self.last_reads = {}                    # (what, account) -> the latest orders / positions message
+        self.account_hashes = None              # (main server) [(last 3 digits, hash)]
 
     # ------------------------------------------------------------ running ---
     async def run(self):
@@ -373,6 +385,8 @@ class Server:
         conn.put(welcome)
         if self.counted:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
+        for m in list(self.last_reads.values()):        # the latest orders and positions
+            conn.put(m)
         log(f"App connected ({len(self.conns)} now)")
         try:
             async for raw in ws:
@@ -390,6 +404,8 @@ class Server:
                         self.up_send({"type": "token_request", "old": msg.get("old")})
                 elif kind == "change":
                     self.on_change(conn, msg)
+                elif kind == "read":
+                    self.on_read(msg)
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -445,6 +461,8 @@ class Server:
                   "store": self.store.snapshot(), "activity": self.activity_on, "login_needed": self.login_why})
         if self.counted:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
+        for m in list(self.last_reads.values()):        # the latest orders and positions
+            conn.put(m)
         self.event(f"{name} connected (client, version {conn.version})")
         self.add_computer(name, conn.address)
         self.send_cluster()
@@ -461,6 +479,8 @@ class Server:
                     asyncio.create_task(self.on_token_request(conn, msg.get("old")))
                 elif kind == "change":
                     self.on_change(conn, msg)
+                elif kind == "read":
+                    self.on_read(msg)
                 elif kind == "login":
                     await self.on_login(msg.get("token"))
                 elif kind == "takeover_request":
@@ -658,7 +678,9 @@ class Server:
         self.symbols = set()
         self.counted = None
         self.store_ready = True
-        self.leader_tasks = [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop())]
+        self.account_hashes = None
+        self.leader_tasks = [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop()),
+                             asyncio.create_task(self.read_loop())]
         if self.cluster_secret:
             self.leader_tasks.append(asyncio.create_task(self.watch_loop()))
             self.add_computer(self.name, self.address)
@@ -985,6 +1007,10 @@ class Server:
         elif kind == "order_event":
             self.recorder.account(m["kind"], m["order_id"])
             self.broadcast(m)
+        elif kind in ("orders", "positions"):
+            if m.get("data") is not None:
+                self.last_reads[(kind, m.get("account"))] = m
+            self.broadcast(m)
         elif kind == "activity":
             self.set_activity(bool(m["on"]))
         elif kind == "token":
@@ -1015,6 +1041,82 @@ class Server:
                 return
             self.write_token(wrapped)
             self.login_why = ""
+
+    # ------------------------------------------------------------ the account reads (main server) ---
+    def on_read(self, msg):
+        """An app asks to read orders / positions (an account's, or every account's)."""
+        what = msg.get("what")
+        if what not in ("orders", "positions"):
+            return
+        if self.leader:
+            self.schedule_read(what, msg.get("account") or None, READ_BATCH_S)
+        else:
+            self.up_send(msg)       # (not kept while the main server is away: the next one reads anyway)
+
+    def schedule_read(self, what, account, delay):
+        key = (what, account or "*")
+        due = time.time() + delay
+        self.read_wanted[key] = min(self.read_wanted.get(key, due), due)
+
+    async def read_loop(self):
+        """Reads what is due; every account's orders / positions go to all the apps and clients."""
+        while True:
+            await asyncio.sleep(0.1)
+            now = time.time()
+            due = sorted(k for k, t in self.read_wanted.items() if t <= now)
+            if not due:
+                continue
+            for k in due:
+                self.read_wanted.pop(k, None)
+            try:
+                accounts = await asyncio.to_thread(self._accounts, [a for _, a in due if a != "*"])
+            except Exception as e:
+                log(f"Reading the accounts failed: {type(e).__name__}: {e}")
+                continue
+            done = set()
+            for what, account in due:
+                for tail, account_hash in accounts:
+                    if (account != "*" and tail != account) or (what, tail) in done:
+                        continue
+                    done.add((what, tail))
+                    try:
+                        data, error = await asyncio.to_thread(self._read, what, account_hash), ""
+                    except Exception as e:
+                        data, error = None, f"{type(e).__name__}: {e}"
+                    msg = {"type": what, "account": tail, "data": data, "error": error}
+                    if data is not None:
+                        self.last_reads[(what, tail)] = msg
+                    self.broadcast(msg)
+                    self.to_peers(msg)
+
+    def _fake(self):
+        return json.loads(Path(FAKE_ACCOUNTS).read_text(encoding="utf-8"))
+
+    def _accounts(self, tails):
+        """(worker thread) [(last 3 digits, hash)], read once (again when an unknown one is asked)."""
+        if FAKE_ACCOUNTS:
+            return [tuple(a) for a in self._fake()["accounts"]]
+        with self.client_lock:
+            client = self.ensure_client()
+            if client is None:
+                raise RuntimeError("no Schwab login")
+            known = {t for t, _ in self.account_hashes or []}
+            if self.account_hashes is None or any(t not in known for t in tails):
+                self.account_hashes = account_numbers(client)
+            return list(self.account_hashes)
+
+    def _read(self, what, account_hash):
+        if FAKE_ACCOUNTS:
+            fake = self._fake()
+            tail = next(t for t, h in fake["accounts"] if h == account_hash)
+            with open(FAKE_ACCOUNTS + ".reads", "a", encoding="utf-8") as f:    # (the test counts them)
+                f.write(f"{self.name} {what} {tail}" + chr(10))
+            return fake[what].get(tail, [])
+        with self.client_lock:
+            client = self.ensure_client()
+            if client is None:
+                raise RuntimeError("no Schwab login")
+            return (read_orders if what == "orders" else read_positions)(client, account_hash)
 
     # ------------------------------------------------------------ token ---
     def read_token(self):
@@ -1192,6 +1294,8 @@ class Server:
         if FAKE_STREAM:                 # tests: "streaming" without Schwab
             self.streaming = True
             self.event("Schwab stream connected (pretend)")
+            self.schedule_read("orders", None, 0)
+            self.schedule_read("positions", None, 0)
             try:
                 while self.stream_wanted() and not self.restart_stream:
                     self.symbols = self.wanted()
@@ -1221,6 +1325,9 @@ class Server:
                 self.set_activity(True)
             except Exception:
                 self.set_activity(False)        # the app's regular checks do it all
+            # the orders and positions once: the order events missed while not connected
+            self.schedule_read("orders", None, 0)
+            self.schedule_read("positions", None, 0)
             self.set_status("Live")
             while self.stream_wanted() and not self.restart_stream:
                 if self.wanted() != self.symbols:
@@ -1303,6 +1410,8 @@ class Server:
             except (ValueError, AttributeError):
                 order_id = ""
             self.recorder.account(kind, order_id, msg.get("timestamp"))
+            self.schedule_read("orders", None, EVENT_READ_S)
+            self.schedule_read("positions", None, EVENT_READ_S)
             m = {"type": "order_event", "kind": kind, "order_id": order_id}
             self.broadcast(m)
             self.to_peers(m)

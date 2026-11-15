@@ -153,6 +153,12 @@ class ComputersPanel(QWidget):
         elif not text:
             self.banner_timer.stop()
 
+    def decides(self):
+        """This computer's app decides what the orders' statuses do to the ATM trades: it's the main
+        server's (or works on its own)."""
+        info = self.info
+        return bool(info) and (not info.get("clustered") or info.get("role") == "main server")
+
     def block_reason(self):
         """Why orders can't be sent now ("" when they can): no main server."""
         return self.banner_text

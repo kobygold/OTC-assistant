@@ -23,6 +23,7 @@ from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalett
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
+from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW
 
@@ -57,9 +58,6 @@ POSITIONS_TAB_S = 60        # the positions while the Schwab tab is open (Schwab
 SAFETY_CHECK_S = 300        # the orders, while an ATM trade has an order working (a fill's event missed)
 NO_STREAM_CHECK_S = 60      # all of it, while the account activity stream is off (Level II off, reconnecting)
 ORDER_EVENT_DELAY_MS = 700  # an order event's check waits this long: the events come a few together
-ORDERS_BACK_DAYS = 180      # how far back the account's orders are read
-# Schwab order statuses after which an order no longer works
-ORDER_DONE = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
 # An ATM trade's states: the name shown, its colour and its text colour (the table's price colours)
 STATES = {"buy_open": ("Step 1/4: Wait for Buy", "#e0404f", "#ffffff"),
           "bought": ("Step 2/4: Sell the Shares", "#e3b23c", "#111111"),
@@ -529,6 +527,36 @@ class SchwabTrader(QObject):
         # why orders can't be sent now ("" when they can): no main server (otc_computers); the
         # order actions then answer at once that they weren't sent
         self.blocked = lambda: ""
+        self.link = None            # the server (use_server): it reads the orders and positions
+        self.checks = {}            # (account, order id) -> [(key, side)]: checks waiting for the orders
+
+    def use_server(self, link):
+        """From now on the orders and positions are read by the main server, once for all my
+        computers, and come from it (to every app, asked or not); a check of one order is answered
+        from its account's orders. Without a connection to the server, they are read here."""
+        self.link = link
+        link.message.connect(self._from_server)
+
+    def _from_server(self, msg):
+        kind = msg.get("type")
+        if kind not in ("orders", "positions"):
+            return
+        account, data, error = msg.get("account", ""), msg.get("data"), msg.get("error", "")
+        if kind == "positions":
+            self.positions.emit(account, data, error)
+            return
+        self.orders.emit(account, data, error)
+        if data is None:
+            return                  # (the checks wait for the next read)
+        by_id = {o["id"]: o for o in data}
+        for key in [k for k in self.checks if k[0] == account]:
+            for check_key, side in self.checks.pop(key):
+                o = by_id.get(key[1])
+                if o is not None:
+                    self.checked.emit(check_key, side, {"orderId": o["id"], "status": o["status"],
+                                                        "filledQuantity": o["filled"]}, "")
+                else:               # not among them (older?): asked directly
+                    self._start(self._check, check_key, side, key[1], account)
 
     def _refused(self, emit):
         """An order action not done (blocked): its answer, a moment later, as Schwab's would come."""
@@ -549,6 +577,11 @@ class SchwabTrader(QObject):
         self._start(self._place, key, ticker, side, shares, price, account)
 
     def check(self, key, side, order_id, account=None):
+        if self.link is not None and self.link.is_connected:
+            account = account or self.session.chosen_tail()
+            self.checks.setdefault((account, str(order_id)), []).append((key, side))
+            self.read_orders(account)
+            return
         self._start(self._check, key, side, order_id, account)
 
     def cancel(self, key, side, order_id, account=None):
@@ -561,6 +594,8 @@ class SchwabTrader(QObject):
 
     def read_orders(self, account):
         """The account's orders of the last ORDERS_BACK_DAYS days, as order_info()."""
+        if self.link is not None and self.link.send({"type": "read", "what": "orders", "account": account}):
+            return
         self._start(self._orders, account)
 
     def replace(self, key, ticker, side, order_id, shares, price, account, duration=None, session=None):
@@ -573,6 +608,8 @@ class SchwabTrader(QObject):
 
     def read_positions(self, account):
         """The stocks owned in the account, as position_info()."""
+        if self.link is not None and self.link.send({"type": "read", "what": "positions", "account": account}):
+            return
         self._start(self._positions, account)
 
     def send(self, key, ticker, side, shares, price, account, duration=None, order_type="LIMIT"):
@@ -728,50 +765,6 @@ class SchwabTrader(QObject):
 
 
 OPEN_GONE = {"CANCELED", "REPLACED"}     # an open order that may have been changed in thinkorswim
-
-
-def position_info(p):
-    """A Schwab position, short: {"ticker", "shares" (owned), "avg" (cost a share), "value" (Schwab's
-    market value), "day_pl" (today's P/L), "type"}; None unless stocks are owned (not cash, options...)."""
-    try:
-        inst = p.get("instrument") or {}
-        kind = inst.get("assetType", "")
-        shares = float(p.get("longQuantity") or 0)
-        if kind not in ("EQUITY", "COLLECTIVE_INVESTMENT") or shares <= 0 or not inst.get("symbol"):
-            return None
-        avg = p.get("averageLongPrice") or p.get("averagePrice") or p.get("taxLotAverageLongPrice")
-        return {"ticker": inst["symbol"], "shares": int(shares) if shares == int(shares) else shares,
-                "avg": float(avg) if avg else None, "value": p.get("marketValue"),
-                "day_pl": p.get("currentDayProfitLoss"), "type": kind}
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def order_info(o):
-    """A Schwab order, short: {"id", "ticker", "side" ("BUY" or "SELL"), "shares" (left to fill),
-    "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type"};
-    None for an order that isn't a one-leg stock order."""
-    try:
-        legs = o.get("orderLegCollection") or []
-        if len(legs) != 1:
-            return None
-        leg = legs[0]
-        instruction = leg.get("instruction", "")
-        side = "BUY" if instruction.startswith("BUY") else "SELL" if instruction.startswith("SELL") else None
-        if side is None:
-            return None
-        quantity = int(o.get("quantity") or leg.get("quantity") or 0)
-        filled = int(o.get("filledQuantity") or 0)
-        status = o.get("status", "")
-        return {"id": str(o.get("orderId")), "ticker": leg.get("instrument", {}).get("symbol", ""),
-                "side": side, "quantity": quantity, "filled": filled,
-                "shares": int(o.get("remainingQuantity") or (quantity - filled)),
-                "price": o.get("price"), "status": status,
-                "open": status not in ORDER_DONE and status not in ("PENDING_CANCEL", "PENDING_REPLACE"),
-                "entered": o.get("enteredTime", ""), "duration": o.get("duration"),
-                "session": o.get("session"), "type": o.get("orderType")}
-    except (TypeError, ValueError, AttributeError):
-        return None
 
 
 def tint(value) -> str:
@@ -1308,6 +1301,10 @@ class AtmTrades(QObject):
         self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
         self.app_canceled = set()   # order ids the app canceled
         self.positions = {}         # account tail -> [position_info()]: the stocks owned, read with each check
+        # With several computers, only the main server's app decides what an order's status does to
+        # a trade (bought, sold, canceled, changed in thinkorswim); the others show what it decided
+        # (the shared data), so two computers never race to write the same trade
+        self.decides = lambda: True
         self._migrate()
         if trader:
             trader.placed.connect(self._placed)
@@ -1861,6 +1858,16 @@ class AtmTrades(QObject):
             return                  # tried again at the next check
         self.schwab_orders[account] = orders
         self.orders_time[account] = time.time()
+        # the trades' own orders: their status from the list (as a check of each would say)
+        by_id = {o["id"]: o for o in orders}
+        for e in list(self.entries):
+            if (e.get("account") or self.chosen_account()) != account:
+                continue
+            for state, side, field in (("buy_open", "BUY", "order_id"), ("sell_open", "SELL", "sell_id")):
+                o = by_id.get(str(e.get(field)))
+                if e.get("state") == state and o is not None:
+                    self._checked(e["id"], side, {"orderId": o["id"], "status": o["status"],
+                                                  "filledQuantity": o["filled"]}, "")
         if account == self.chosen_account() and self.trader is not None:
             # new tickers on the Schwab tab's list (another account chosen, say): their bid / ask now
             new = sorted({o["ticker"] for o in self.other_orders()} - set(self.market))
@@ -1868,7 +1875,7 @@ class AtmTrades(QObject):
                 self.trader.read_quotes(new)
         # trades whose order was canceled or replaced outside the app: follow the new one, or, once
         # the orders read after it show none, take it as canceled
-        for e in list(self.entries):
+        for e in list(self.entries) if self.decides() else []:
             gone = e.get("gone")
             if not gone or (e.get("account") or self.chosen_account()) != account:
                 continue
@@ -1934,15 +1941,18 @@ class AtmTrades(QObject):
 
     def order_event(self, kind, order_id):
         """An event of the account activity stream (OrderCreated, ChangeAccepted, a fill...): the
-        orders and positions checked in a moment (one check for a few events together)."""
+        orders and positions checked in a moment (one check for a few events together). With the
+        server reading them, it does it by itself on the event, for all my computers."""
+        if self.trader is not None and self.trader.link is not None and self.trader.link.is_connected:
+            return
         self.event_timer.start()
 
     def set_activity_live(self, live):
         """The account activity stream on / off. On (connected, or again after a drop): the orders
         read once, for the events missed while it was off."""
         was, self.activity_live = self.activity_live, bool(live)
-        if self.activity_live and not was:
-            self.event_timer.start()
+        if self.activity_live and not was and not (self.trader is not None and self.trader.link is not None):
+            self.event_timer.start()        # (the server reads them by itself when its stream connects)
 
     def set_tab_open(self, shown):
         """The Schwab tab shown: all of it read at once, then its quotes and positions while shown."""
@@ -2030,6 +2040,8 @@ class AtmTrades(QObject):
         e = self.find(key)
         if info is None or e is None or key in self.sending:
             return                  # tried again at the next check; or the order is being changed
+        if not self.decides():
+            return                  # the main server's app does it
         if e.get("state") != ("buy_open" if side == "BUY" else "sell_open"):
             return                  # an older answer
         current = e.get("order_id" if side == "BUY" else "sell_id")
