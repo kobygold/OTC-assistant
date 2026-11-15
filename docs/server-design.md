@@ -1,7 +1,7 @@
 # OTC Assistant: Server / Clients design (draft 2, for review)
 
 Status: **draft, nothing implemented yet**. Version 1.1.0 is the starting point.
-Draft 2 adds the review answers: a node process on every computer, shared per-account data with
+Draft 2 adds the review answers: a server process on every computer, shared per-account data with
 versioned changes (no lost updates), the recording list, the "server not responding" banner, the
 connection log, and the computers' priority list.
 
@@ -20,12 +20,12 @@ connection log, and the computers' priority list.
    same on every computer; no change is ever lost or overwritten by someone else's (4.).
 7. Free, private, and mostly idle: no Schwab requests on a timer unless needed (as v1.0.16-1.0.17).
 
-## 2. Two programs on every computer: the node and the app
+## 2. Two programs on every computer: the server and the app
 
 ```
  home-pc (leader)                               laptop
  +-----------------------------+                +-----------------------------+
- | node  <== Schwab stream     |   Tailscale    | node                        |
+ | server  <== Schwab stream     |   Tailscale    | server                        |
  |  - token, shared data       |<==============>|  - copy of token, shared    |
  |  - recorder                 |   WebSocket    |    data; recorder           |
  +-------------^---------------+                +-------------^---------------+
@@ -35,22 +35,22 @@ connection log, and the computers' priority list.
  +-----------------------------+                +-----------------------------+
 ```
 
-- **The node** (`otc_node.py`, a small background program, no window) does everything about the
+- **The server** (`otc_server.py`, a small background program, no window) does everything about the
   connection: the Schwab stream (when it is the leader), the token, the shared data, the recording,
-  the election. Every node is the same program; one of them is the **leader**, the others
+  the election. Every server is the same program; one of them is the **leader**, the others
   **followers** of it.
-- **The app** (OTC Assistant) talks **only to its own node**, over localhost (well under 1 ms). It
+- **The app** (OTC Assistant) talks **only to its own server**, over localhost (well under 1 ms). It
   never cares who the leader is: a single computer, the leader, or a follower all look the same to it.
   One code path, no "single computer mode".
-- A single computer is just a cluster of one: its node is the leader.
-- The app starts its node as a child process and stops it when it closes: closing the app ends
+- A single computer is just a cluster of one: its server is the leader.
+- The app starts its server as a child process and stops it when it closes: closing the app ends
   that computer's part (stream, recording, candidacy). For full history, the desktop runs the app all
   the time; the others catch up from it (6.). A separate process (not a thread of the app) so a busy
   app screen never delays the heartbeats or the stream.
 - What still goes from the app straight to Schwab: **order actions** (buy, sell, change, cancel),
-  the fee preview, and price history, with the access token it gets from its node. An order's
+  the fee preview, and price history, with the access token it gets from its server. An order's
   answer comes straight back to whoever sent it, and an election can never drop or repeat an order.
-- The token file is touched only by the node (the app asks the node for the token), which also
+- The token file is touched only by the server (the app asks the server for the token), which also
   ends the kind of bug where two Schwab connections wrote the token file over each other.
 
 | Part | Choice | Why |
@@ -61,7 +61,7 @@ connection log, and the computers' priority list.
 
 ## 3. The computers and their priority
 
-- Each computer's **own name** is in its local `settings.json` (`"node_name": "home-pc"`, default:
+- Each computer's **own name** is in its local `settings.json` (`"server_name": "home-pc"`, default:
   the Windows computer name), with the cluster secret and port.
 - The **list of computers** (name, Tailscale host, priority) is shared data (4.): the same on all of
   them, edited from any of them in a **Computers** tab: the list in priority order with up / down
@@ -69,7 +69,7 @@ connection log, and the computers' priority list.
   marked clearly (e.g. a "SERVER" badge on its row, and "Server: home-pc" above the list), and
   "this computer" is marked too.
 - Priority 1 is the preferred leader (e.g. home desktop 1, laptop 2, work laptop 3, other laptop 4).
-- A new computer is added by giving its node the secret and the name of any computer already in the
+- A new computer is added by giving its server the secret and the name of any computer already in the
   cluster; it joins at the end of the list, and can be moved up from the Computers tab.
 
 ## 4. Shared data without lost updates (ATM trades, drawings, favorites)
@@ -78,7 +78,7 @@ The problem: if a computer sends the whole `atm.json` (or drawings, favorites) t
 overwrites a change another computer made a moment earlier ("lost update"; the ABA case is one form
 of it). The design never sends whole files; it sends **changes**, and the leader is the only writer.
 
-1. **One writer**: only the leader changes the shared data. Every other node, and every app, sends it
+1. **One writer**: only the leader changes the shared data. Every other server, and every app, sends it
    **change requests**: small operations, never the whole file.
 2. **Small items**: the data is kept as items, each with its own id, per account:
    - `atm/<account>/<trade id>`, `drawings/<account>/<ticker>/<drawing id>`,
@@ -98,12 +98,12 @@ of it). The design never sends whole files; it sends **changes**, and the leader
 5. **Each request once**: every request carries a unique id (computer + counter). If it is sent again
    (no answer, an election in between), the leader sees it already did it and only answers again.
 6. **One order of changes for all**: the leader numbers every applied change (the **revision**: 1, 2,
-   3...) and sends the changes to all in that order; every node keeps a copy and its revision. A node
+   3...) and sends the changes to all in that order; every server keeps a copy and its revision. A server
    that misses a number asks for the missing changes (or the whole copy).
-7. **Elections keep it**: a new leader first asks the reachable nodes for their revision and takes
-   the highest copy, so a change the old leader made just before it stopped isn't lost if any node
+7. **Elections keep it**: a new leader first asks the reachable servers for their revision and takes
+   the highest copy, so a change the old leader made just before it stopped isn't lost if any server
    got it.
-8. The apps show their node's copy and update it as changes arrive; a change I make shows at once
+8. The apps show their server's copy and update it as changes arrive; a change I make shows at once
    as "pending" and is confirmed (or refused, 4.) a few ms later.
 
 Schwab stays the truth about orders: the ATM trades' order states still come from reading the orders
@@ -116,12 +116,12 @@ local items are added to the shared data (merged by id: nothing is dropped), the
 
 ## 5. Who does what
 
-| | Leader's node | Follower's node | App (any computer) |
+| | Leader's server | Follower's server | App (any computer) |
 |---|---|---|---|
-| Schwab stream (L1, L2, account activity) | Holds the only one | Gets it from the leader | Gets it from its node |
+| Schwab stream (L1, L2, account activity) | Holds the only one | Gets it from the leader | Gets it from its server |
 | Tickers streamed | Tracked tickers (6.) + each app's chart ticker, max 500 | Sends its app's chart ticker | Its own chart ticker (each computer its own) |
-| Account reads (orders, positions) | On account events and the v1.0.16 timers, **sent to all** | Gets them | Gets them from its node |
-| Order actions, fee preview, price history | - | - | Directly with Schwab, token from its node |
+| Account reads (orders, positions) | On account events and the v1.0.16 timers, **sent to all** | Gets them | Gets them from its server |
+| Order actions, fee preview, price history | - | - | Directly with Schwab, token from its server |
 | Access-token renewal (~30 min) | **Only here** | Never | Never |
 | Weekly browser login | Can be done on any computer: the new token goes to the leader, which sends it to all | | |
 | Shared data (4.) | The only writer | A copy | Shows it, sends change requests |
@@ -158,19 +158,19 @@ no collisions on Schwab's ~120 requests/minute.
 
 ## 7. Messages (JSON over the WebSocket)
 
-Between nodes (the app <-> node messages are the same kind, over localhost):
+Between servers (the app <-> server messages are the same kind, over localhost):
 
 | From | Message | Content |
 |---|---|---|
-| node | `hello` | name, secret proof, version, its revision and last `seq` |
+| server | `hello` | name, secret proof, version, its revision and last `seq` |
 | leader | `welcome` | term, leader name, token, accounts, orders, positions, shared data (or the missing changes), current L1/L2 of every streamed ticker |
-| node | `want` | its app's chart ticker |
+| server | `want` | its app's chart ticker |
 | leader | `l1`, `l2`, `account_event`, `orders`, `positions` | as from Schwab / as read; numbered by `seq` |
-| node | `change` | a change request (4.): id, item, base version, operation |
+| server | `change` | a change request (4.): id, item, base version, operation |
 | leader | `changed` / `refused` | the applied change with its revision and the item's new version / the current item |
 | leader | `token` | access token, expiry, refresh token (8.) |
-| node | `token_request` | "my token was refused" |
-| node | `login` | a new browser login made here |
+| server | `token_request` | "my token was refused" |
+| server | `login` | a new browser login made here |
 | leader | `heartbeat` | every 1 s |
 | any | `takeover_request`, `handover`, `i_am_leader`, `revision?` | elections (9., 10.) |
 
@@ -179,23 +179,23 @@ Every message carries the leader's `term` (9.); a message of an older term is ig
 ## 8. The Schwab token
 
 - **Renewal**: the leader renews the access token **5 minutes before** it runs out (every ~25 min)
-  and sends it to all; nodes pass it to their app, which swaps it in memory: no reconnect, no pause.
+  and sends it to all; servers pass it to their app, which swaps it in memory: no reconnect, no pause.
   The stream isn't affected (it uses the token only to log in).
 - **Only the leader renews**: the apps' Schwab connections get the access token without the refresh
-  token, so they can't renew even by mistake. Every node keeps the full token on disk, for the day it
+  token, so they can't renew even by mistake. Every server keeps the full token on disk, for the day it
   becomes the leader.
-- **A refused token** (HTTP 401): the app asks its node, which asks the leader (`token_request`); the
+- **A refused token** (HTTP 401): the app asks its server, which asks the leader (`token_request`); the
   leader answers with the current token, or renews first; the app retries once. With no leader, the
   request waits for the election (9.) and continues with the new leader.
 - **Weekly login** (Renew button, weekend reminder): on any computer; the new token goes to the
   leader, which sends it to all. The 7 days count from that login everywhere.
-- The token travels only inside Tailscale's encrypted connection, to nodes that know the secret.
+- The token travels only inside Tailscale's encrypted connection, to servers that know the secret.
 
 ## 9. Failover: the leader stops
 
-1. **Noticing**: the leader sends a heartbeat every second. A node that hears nothing for **5 s**
+1. **Noticing**: the leader sends a heartbeat every second. A server that hears nothing for **5 s**
    and can't reconnect considers it gone.
-2. **Who takes over**: the highest-priority node still running. Each node waits
+2. **Who takes over**: the highest-priority server still running. Each server waits
    `(its place among the remaining) x 3 s`, then checks whether a higher one is alive or already
    announced itself; only if none did, it becomes the leader.
 3. **Becoming the leader**: term + 1; takes the highest shared-data copy (4.7); opens the Schwab
@@ -214,14 +214,14 @@ Every message carries the leader's `term` (9.); a message of an older term is ig
 2. After **60 s** of steady running, it sends `takeover_request`.
 3. The leader: finishes the requests under way, sends the last changes and the token, closes the
    Schwab stream, and answers `handover` (term + 1).
-4. The returning node opens the stream, subscribes, reads the account once, sends `i_am_leader`.
+4. The returning server opens the stream, subscribes, reads the account once, sends `i_am_leader`.
 5. Gap: about 2-5 s. Done any time, also in market hours: what is lost is only those seconds of
    L1/L2 in the recording; the screens are fully up to date right after (the stream sends the
    current L1 and the whole L2 book on subscribing, and the account is read once).
 
 ## 11. While there is no leader: the yellow banner
 
-- From the moment the leader stops answering until a new leader is working (or this node becomes
+- From the moment the leader stops answering until a new leader is working (or this server becomes
   it): a **yellow banner** at the top of the app: "Server not responding: waiting for laptop to take
   over (8 s)" / "Taking over as the server...". It goes away when the data flows again.
 - Meanwhile the app is **blocked for changes**: the order dialogs and shared-data changes wait (a
@@ -243,17 +243,17 @@ Every message carries the leader's `term` (9.); a message of an older term is ig
 
 ## 13. What changes in the app
 
-1. The Level II feed, the order reader's stream part and the token handling move to the node; the
-   app gets the same signals from its node, so the chart, Level II and tables don't change.
-2. The app's Schwab connection (orders, fee preview, minute history) gets its token from the node.
-3. ATM trades, drawings and favorites: per account, read from the node's copy, changed by change
+1. The Level II feed, the order reader's stream part and the token handling move to the server; the
+   app gets the same signals from its server, so the chart, Level II and tables don't change.
+2. The app's Schwab connection (orders, fee preview, minute history) gets its token from the server.
+3. ATM trades, drawings and favorites: per account, read from the server's copy, changed by change
    requests (4.).
 4. New: the Computers tab (list, priorities, count, connection log), the yellow banner, a status
    label next to the account selector ("Leader: home-pc").
 
 ## 14. Plan, in steps (each one usable on its own)
 
-1. The node on one computer: Schwab stream, token and account reads move there; the app becomes its
+1. The server on one computer: Schwab stream, token and account reads move there; the app becomes its
    client. No visible change.
 2. Recorder and tracked tickers (with the count).
 3. Shared data per account with change requests (ATM trades, drawings, favorites), still one computer.
@@ -263,7 +263,7 @@ Every message carries the leader's `term` (9.); a message of an older term is ig
 
 ## 15. Decisions from review
 
-1. The node stops with the app; the desktop runs all the time for full history; others catch up.
+1. The server stops with the app; the desktop runs all the time for full history; others catch up.
 2. Drawings and favorites become per account, today's copied to every account, shared to all.
 3. Everything streamed is recorded (chart tickers too).
 4. Take-back any time, also in market hours.

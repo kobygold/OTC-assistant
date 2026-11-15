@@ -407,9 +407,9 @@ class FeeReader(QObject):
         secret = self.settings.get("schwab_app_secret", "").strip()
         if not (key and secret and self.token_path.exists()):
             raise RuntimeError("No Schwab login (schwab_app_key, schwab_app_secret and the Level II login)")
-        from otc_node_link import make_client
+        from otc_server_link import make_client
         if self._client is None:
-            self._client = make_client(key, secret)     # on the node's token
+            self._client = make_client(key, secret)     # on the server's token
         if not self.accounts:
             r = self._client.get_account_numbers()
             if r.status_code != 200 or not r.json():

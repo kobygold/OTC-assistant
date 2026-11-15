@@ -1,8 +1,8 @@
 """
 otc_level2.py - Live Level II (market makers' bids and asks) from the Schwab API, for the Chart tab.
 
-The Schwab stream itself is held by the node (otc_node.py, a background process the app starts):
-NodeFeed tells it the ticker followed (the chart's) and the extra ones, and gets their Level II
+The Schwab stream itself is held by the server (otc_server.py, a background process the app starts):
+ServerFeed tells it the ticker followed (the chart's) and the extra ones, and gets their Level II
 (NASDAQ_BOOK and NYSE_BOOK; OTC stocks come on NASDAQ_BOOK) and Level 1 quotes for the header line.
 
 Level2Panel shows it like thinkorswim's Level II: bids on the left, asks on the right, one row per
@@ -94,8 +94,8 @@ def write_token(token_path: Path):
     return write
 
 
-class NodeFeed(QObject):
-    """Level II and Level 1 from the node (otc_node.py), which holds the Schwab stream: the ticker
+class ServerFeed(QObject):
+    """Level II and Level 1 from the server (otc_server.py), which holds the Schwab stream: the ticker
     followed (the chart's) and any extra ones (the open ATM trades). The signals arrive in the GUI
     thread, for every ticker."""
     book = pyqtSignal(str, list, list)     # ticker, bids, asks: [(market maker, price, size, level)]
@@ -136,7 +136,7 @@ class NodeFeed(QObject):
         self._send()
 
     def restart(self):
-        """After a new login: the node starts its stream over by itself."""
+        """After a new login: the server starts its stream over by itself."""
 
     def close(self):
         """No stream wanted, and no more messages to this feed."""
@@ -190,7 +190,7 @@ class Level2Panel(QWidget):
     side by side on black, one row per market maker, darker blue for each price level further out."""
 
     def __init__(self, settings: dict, token_path: Path, link, mm_icons=None, parent=None):
-        """link: the app's NodeLink (otc_node_link). mm_icons: {1: yellow sign, 2: red sign} for
+        """link: the app's ServerLink (otc_server_link). mm_icons: {1: yellow sign, 2: red sign} for
         the market makers in MM_YELLOW / MM_RED."""
         super().__init__(parent)
         self.settings, self.token_path, self.link = settings, token_path, link
@@ -327,7 +327,7 @@ class Level2Panel(QWidget):
             self.set_status("Add schwab_app_key and schwab_app_secret to settings.json to see Level II.")
             return
         if self.feed is None:
-            self.feed = NodeFeed(self.link)
+            self.feed = ServerFeed(self.link)
             self.feed.book.connect(self.show_book)
             self.feed.quote.connect(self.on_quote)
             self.feed.status.connect(self.set_status)
@@ -357,7 +357,7 @@ class Level2Panel(QWidget):
                     signal.disconnect()
                 except TypeError:
                     pass
-            feed.close()        # the node logs out of the stream
+            feed.close()        # the server logs out of the stream
             self.activity_live.emit(False)
         self.login_btn.hide()
         self.set_status("Off · not connected to Schwab")
@@ -389,12 +389,12 @@ class Level2Panel(QWidget):
         url = url.strip()
         if not ok or not url:
             return
-        def to_node(wrapped, *args, **kwargs):
-            # the node keeps the token (and renews it): sent to it; saved here only without a node
+        def to_server(wrapped, *args, **kwargs):
+            # the server keeps the token (and renews it): sent to it; saved here only without a server
             if not self.link.login(wrapped):
                 write_token(self.token_path)(wrapped)
         try:
-            client_from_received_url(key, secret, ctx, url, to_node)
+            client_from_received_url(key, secret, ctx, url, to_server)
         except Exception as e:
             QMessageBox.warning(self, "Schwab login failed",
                                 f"{e}\n\n\"invalid_grant\" usually means the address was pasted too late. Try again.")

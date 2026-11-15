@@ -1,32 +1,32 @@
 """
-otc_node.py - The node: the one program on this computer that holds Schwab's stream and the
+otc_server.py - The server: the one program on this computer that holds Schwab's stream and the
 login's token (docs/server-design.md, step 1: one computer).
 
 The app (OTC Assistant) starts it as a background process and talks to it over a local WebSocket
-(otc_node_link.py); the node ends by itself when no app has been connected for a few seconds.
+(otc_server_link.py); the server ends by itself when no app has been connected for a few seconds.
 
 What it does:
 - the Schwab stream: Level I and Level II (NASDAQ_BOOK, NYSE_BOOK) of the tickers the app wants,
   and the account activity (order events); everything goes to the app as it comes;
 - the token: it is the only one that renews the access token (5 minutes before it runs out, ~every
   25 min) and writes schwab_token.json. The app gets the access token without the refresh token
-  for its own Schwab requests; one refused asks the node again (token_request);
+  for its own Schwab requests; one refused asks the server again (token_request);
 - a new browser login made in the app comes here (login) and is saved.
 
-Messages (JSON, one per WebSocket message), app -> node:
+Messages (JSON, one per WebSocket message), app -> server:
   hello {secret}             first; a wrong secret closes the connection
   want {symbol, extra, on}   the chart's ticker, more tickers to stream, False = no stream at all
   token_request {old}        "this access token was refused": renewed (if it is still the current
                              one) and sent back
   login {token}              a new browser login (the token as schwab-py writes it)
-  bye                        the app is closing; quit  (an older node: ends it, the app starts a new one)
-node -> app:
+  bye                        the app is closing; quit  (an older server: ends it, the app starts a new one)
+server -> app:
   welcome {code, token, status, activity, login_needed}
   token {token: {token, created}}   after every renewal / login
   quote {ticker, q}  book {ticker, bids, asks}  status {text}  login_needed {why}
   order_event {kind, order_id}  activity {on}
 
-Run by the app; by hand: pythonw otc_node.py [--port N] [--settings path] [--token path]
+Run by the app; by hand: pythonw otc_server.py [--port N] [--settings path] [--token path]
 """
 
 import argparse
@@ -49,7 +49,7 @@ POLL_SECONDS = 0.3              # how often the stream loop looks at what is wan
 RENEW_CHECK_S = 30              # how often the access token's time left is looked at
 RENEW_BEFORE_S = 300            # renewed when less than this is left (schwab-py's leeway)
 FORCED_RENEW_GAP_S = 30         # a refused token renews at most this often
-IDLE_EXIT_S = 10                # no app connected for this long (after one was): the node ends
+IDLE_EXIT_S = 10                # no app connected for this long (after one was): the server ends
 START_GRACE_S = 30              # ... or, at the start, no app came at all
 LOG_MAX_BYTES = 1_000_000
 
@@ -63,15 +63,15 @@ REST_L1 = (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", 
 
 
 def code_hash(path: Path = Path(__file__)) -> str:
-    """This file's fingerprint: the app restarts a node that runs older code."""
+    """This file's fingerprint: the app restarts a server that runs older code."""
     return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
 
 
-LOG_PATH = APP_DIR / "node_log.txt"
+LOG_PATH = APP_DIR / "server_log.txt"
 
 
 def log(text):
-    """The node's events (connections, renewals, errors) in node_log.txt; never every message."""
+    """The server's events (connections, renewals, errors) in server_log.txt; never every message."""
     try:
         if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
             LOG_PATH.write_text(LOG_PATH.read_text(encoding="utf-8")[-LOG_MAX_BYTES // 2:], encoding="utf-8")
@@ -129,11 +129,11 @@ class Conn:
             await self.ws.send(json.dumps(msg))
 
 
-class Node:
+class Server:
     def __init__(self, settings: dict, token_path: Path):
         self.key = settings.get("schwab_app_key", "").strip()
         self.app_secret = settings.get("schwab_app_secret", "").strip()
-        self.secret = str(settings.get("node_secret", ""))
+        self.secret = str(settings.get("server_secret", ""))
         self.token_path = token_path
         self.code = code_hash()
         self.conns = set()
@@ -164,9 +164,9 @@ class Node:
         try:
             server = await serve(self.handler, "127.0.0.1", port, max_size=None, ping_interval=20)
         except OSError as e:
-            log(f"Port {port} is taken ({e}): another node runs; this one ends")
+            log(f"Port {port} is taken ({e}): another server runs; this one ends")
             return
-        log(f"Node started (port {port}, code {self.code})")
+        log(f"Server started (port {port}, code {self.code})")
         tasks = [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop()),
                  asyncio.create_task(self.idle_loop())]
         await self.stop_event.wait()
@@ -174,7 +174,7 @@ class Node:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        log("Node ended")
+        log("Server ended")
         del websockets
 
     def quit(self, why):
@@ -575,22 +575,22 @@ class Node:
 
 def main():
     global LOG_PATH
-    p = argparse.ArgumentParser(description="OTC Assistant's node (started by the app)")
+    p = argparse.ArgumentParser(description="OTC Assistant's server (started by the app)")
     p.add_argument("--port", type=int)
     p.add_argument("--settings", default=str(APP_DIR / "settings.json"))
     p.add_argument("--token", default=str(APP_DIR / "schwab_token.json"))
-    p.add_argument("--log", default=str(APP_DIR / "node_log.txt"))
+    p.add_argument("--log", default=str(APP_DIR / "server_log.txt"))
     args = p.parse_args()
     LOG_PATH = Path(args.log)
     try:
         settings = json.loads(Path(args.settings).read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         settings = {}
-    port = args.port or int(settings.get("node_port") or DEFAULT_PORT)
+    port = args.port or int(settings.get("server_port") or DEFAULT_PORT)
     try:
-        asyncio.run(Node(settings, Path(args.token)).run(port))
+        asyncio.run(Server(settings, Path(args.token)).run(port))
     except Exception:
-        log("Node crashed:\n" + traceback.format_exc())
+        log("Server crashed:\n" + traceback.format_exc())
         sys.exit(1)
 
 
