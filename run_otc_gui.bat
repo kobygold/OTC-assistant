@@ -4,23 +4,40 @@ rem Keep this file in the same folder as the app's .py files and requirements.tx
 setlocal
 cd /d "%~dp0"
 
-rem ---- Find a working Python: the "py" launcher first, then "python" ----
+rem ---- Find Python 3.11 or newer (the app's server needs it) ----
+rem The "py" launcher finds every Python installed, wherever it is: the newest of these first,
+rem then its default, then "python" on the PATH. An older Python (3.7...) is passed over.
 set "PY="
 set "PYW="
-py -c "import sys" >nul 2>nul && (
-    set "PY=py"
-    set "PYW=pyw"
+set "NEED=import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"
+for %%V in (3.14 3.13 3.12 3.11) do (
+    if not defined PY (
+        py -%%V -c "%NEED%" >nul 2>nul && (
+            set "PY=py -%%V"
+            set "PYW=pyw -%%V"
+        )
+    )
 )
 if not defined PY (
-    python -c "import sys" >nul 2>nul && (
+    py -c "%NEED%" >nul 2>nul && (
+        set "PY=py"
+        set "PYW=pyw"
+    )
+)
+if not defined PY (
+    python -c "%NEED%" >nul 2>nul && (
         set "PY=python"
         set "PYW=pythonw"
     )
 )
 if not defined PY (
-    echo Python was not found.
-    echo Install it from https://www.python.org/downloads/
-    echo and tick "Add python.exe to PATH" during installation, then try again.
+    echo OTC Assistant needs Python 3.11 or newer. Found on this PC, if any:
+    py -0p 2>nul
+    python --version 2>nul
+    echo.
+    echo Install the newest Python from https://www.python.org/downloads/
+    echo keeping "py launcher" ticked, or ticking "Add python.exe to PATH", then try again.
+    echo An older Python can stay installed: the newer one is used.
     echo.
     pause
     exit /b 1
