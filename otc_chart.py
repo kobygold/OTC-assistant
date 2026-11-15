@@ -1040,8 +1040,8 @@ class CandleChart(DrawingsMixin, QWidget):
 
     def _draw_orders(self, p, price, py, orders):
         """Each open order: a line at its price across the chart, and a tag on it as in thinkorswim,
-        "BUY +4225 LMT x" (green), "SELL -4225 LMT x" (red). The x cancels it; dragging the tag
-        moves it (and a price tag on the right axis) to another price. An ATM trade's order has a
+        "BUY +4225 LMT x" (green), "SELL -4225 LMT x" (red), and its price on the right axis in the
+        same colour. The x cancels it; dragging the tag moves it (and its axis price) to another price. An ATM trade's order has a
         solid line, another Schwab order (sent from thinkorswim) a dashed one."""
         self._order_tags = []
         if not orders:
@@ -1071,10 +1071,10 @@ class CandleChart(DrawingsMixin, QWidget):
             if not off:
                 p.setPen(QPen(color, 1, Qt.PenStyle.SolidLine if o.get("atm") else Qt.PenStyle.DashLine))
                 p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
-                if dragged:
-                    self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
-                                   arrow="axis")
-                    p.setFont(f)
+                # its price on the right axis, as thinkorswim shows an order's
+                self._axis_tag(p, price.right() + 1, y, fmt_axis(value), color, QColor("#ffffff"), bold=True,
+                               arrow="axis")
+                p.setFont(f)
             text = f"{'BUY +' if side == 'BUY' else 'SELL -'}{shares} LMT"
             tw = fm.horizontalAdvance(text)
             w = tw + 30
