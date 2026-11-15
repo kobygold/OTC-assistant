@@ -17,11 +17,12 @@ import time
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QAbstractItemView, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QSpinBox,
     QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 COMPUTERS_KEY = "cluster/computers"
+DEFAULT_PORT = 8765         # the servers' port, unless changed
 LOG_LINES = 1000
 COLUMNS = ["Priority", "Computer", "Role", "State", "Version", "Online since", "Address"]
 GREEN, RED, GRAY, YELLOW = "#4caf50", "#ff5252", "#a8a8a8", "#f2c200"
@@ -83,7 +84,7 @@ class ComputersPanel(QWidget):
         form_box = QGroupBox("This computer")
         form = QFormLayout(form_box)
         self.name_edit = QLineEdit(settings.get("server_name", ""))
-        self.name_edit.setPlaceholderText("the Windows computer name")
+        self.name_edit.setPlaceholderText("empty: its Tailscale name")
         form.addRow("Name:", self.name_edit)
         secret_row = QHBoxLayout()
         self.secret_edit = QLineEdit(settings.get("cluster_secret", ""))
@@ -95,11 +96,22 @@ class ComputersPanel(QWidget):
             b.clicked.connect(slot)
             secret_row.addWidget(b)
         form.addRow("Cluster secret:", secret_row)
-        self.join_edit = QLineEdit(settings.get("cluster_join", ""))
-        self.join_edit.setPlaceholderText("empty: this computer is the main server (e.g. home-pc:8765)")
-        form.addRow("Main server:", self.join_edit)
+        # the main server's Tailscale name, and its port (kept in settings.json as "name:port")
+        join = str(settings.get("cluster_join", "")).strip()
+        host, _, port = join.rpartition(":") if ":" in join else (join, "", "")
+        join_row = QHBoxLayout()
+        self.join_edit = QLineEdit(host)
+        self.join_edit.setPlaceholderText("its Tailscale name, e.g. home-pc (empty: this computer is the main server)")
+        join_row.addWidget(self.join_edit, 1)
+        join_row.addWidget(QLabel("Port:"))
+        self.join_port = QSpinBox()
+        self.join_port.setRange(1, 65535)
+        self.join_port.setValue(int(port) if port.isdigit() else DEFAULT_PORT)
+        self.join_port.setToolTip(f"The main server's port: {DEFAULT_PORT}, unless it was changed there.")
+        join_row.addWidget(self.join_port)
+        form.addRow("Main server:", join_row)
         self.address_edit = QLineEdit(settings.get("server_address", ""))
-        self.address_edit.setPlaceholderText("how the others reach this one (default: its name:8765)")
+        self.address_edit.setPlaceholderText("how the others reach this one; empty: its Tailscale name:8765")
         form.addRow("Address:", self.address_edit)
         save = QPushButton("Save and restart the server")
         save.clicked.connect(self.save_and_restart)
@@ -294,9 +306,19 @@ class ComputersPanel(QWidget):
     def copy_secret(self):
         QGuiApplication.clipboard().setText(self.secret_edit.text())
 
+    def join_value(self):
+        """The main server as settings.json keeps it: "name:port" ("" for none)."""
+        host = self.join_edit.text().strip()
+        if ":" in host:                 # typed with the port: the port box takes it
+            host, _, port = host.rpartition(":")
+            if port.isdigit():
+                self.join_port.setValue(int(port))
+            self.join_edit.setText(host)
+        return f"{host}:{self.join_port.value()}" if host else ""
+
     def save_and_restart(self):
         values = {"server_name": self.name_edit.text().strip(), "cluster_secret": self.secret_edit.text().strip(),
-                  "cluster_join": self.join_edit.text().strip(), "server_address": self.address_edit.text().strip()}
+                  "cluster_join": self.join_value(), "server_address": self.address_edit.text().strip()}
         for key, v in values.items():
             if v:
                 self.settings[key] = v

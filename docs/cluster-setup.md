@@ -60,8 +60,9 @@ its app closed), or download them on the Download tab.
 
 1. Open the **Computers** tab:
    - **Cluster secret**: paste the main server's;
-   - **Main server**: the main server's Tailscale name and `:8765`, e.g. `home-pc:8765` (needed
-     once, to find it the first time; then it is in the computers' list);
+   - **Main server**: the main server's Tailscale name, e.g. `home-pc` (needed once, to find it the
+     first time; then it is in the computers' list); **Port** beside it stays 8765 unless the main
+     server's was changed;
    - press **Save and restart the server**.
 2. Within seconds the log shows "Connected to the main server home-pc" and the tabs line "Client of
    home-pc"; the main server's Computers tab lists the client as Online.
@@ -115,7 +116,7 @@ any more (only while it is offline).
 
 | What I see | What to do |
 |---|---|
-| Yellow line counting, "Looking for the main server" | Set **Main server** on this computer to the main server's Tailscale name (`home-pc:8765`), Save and restart |
+| Yellow line counting, "Looking for the main server" | Set **Main server** on this computer to the main server's Tailscale name (`home-pc`), Save and restart |
 | Can't reach the main server at home-pc:8765 | Is the main server's app open? Is Tailscale on, on both? `ping home-pc`. Windows firewall on the main server: allow Python on private networks |
 | tried to connect with a wrong cluster secret: refused | Copy the secret again from the main server, Save and restart |
 | runs another version: refused | Update the computers to the same version (`git pull`, restart the app) |
