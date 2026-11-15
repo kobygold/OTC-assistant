@@ -58,7 +58,7 @@ from otc_computers import ComputersPanel
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.0.8"
+APP_VERSION = "2.0.9"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
