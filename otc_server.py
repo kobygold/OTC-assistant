@@ -109,7 +109,7 @@ TIDY_S = 3600                   # the recording's old days: compressed / deleted
 HEARTBEAT_S = 1                 # the main server's heartbeat to its clients
 HEARTBEAT_TIMEOUT_S = 5         # a client that hears nothing for this long: the main server is gone
 ELECTION_STEP_S = 3             # a computer waits (its place among those running) x this before taking over
-TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 60))   # a higher-priority computer, back,
+TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 10))   # a higher-priority computer, back,
                                 # takes over after running this long
 FAKE_STREAM = os.environ.get("OTC_FAKE_STREAM") == "1"      # tests: no Schwab connection at all
 FAKE_ACCOUNTS = os.environ.get("OTC_FAKE_ACCOUNTS")         # tests: the accounts' orders from this file

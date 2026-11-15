@@ -78,7 +78,7 @@ its app closed), or download them on the Download tab.
 
 On the Computers tab of any computer, select a computer and press **Up** / **Down**. The order is the
 same on all of them: priority 1 is the preferred main server. Moving a client to the top makes it the
-main server about 60 s later (take-back, below). **Remove from the list** removes a computer not used
+main server about 10 s later (take-back, below). **Remove from the list** removes a computer not used
 any more (only while it is offline).
 
 ## 5. When the main server stops (failover), and when it comes back (take-back)
@@ -91,7 +91,7 @@ any more (only while it is offline).
   gone. Changes to favorites, drawings and ATM trades made meanwhile are kept and sent once there's a
   main server again.
 - **Take-back**: when a computer that comes first in the order starts again, it joins the current main
-  server as a client, gets everything, and after 60 s of running asks to take over; the main server
+  server as a client, gets everything, and after 10 s of running asks to take over; the main server
   hands over (its stream logs out first, then the new one logs in: 2-5 s of yellow line). Any time,
   also during market hours: only those seconds of the recording are missing.
 - **Finding each other**: the computers keep the list of all of them (with their Tailscale names);

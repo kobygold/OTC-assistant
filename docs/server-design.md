@@ -214,7 +214,7 @@ Every message carries the leader's `term` (9.); a message of an older term is ig
 ## 10. Take-back: a higher-priority computer returns
 
 1. It joins as a follower and catches up (token, shared data, live data).
-2. After **60 s** of steady running, it sends `takeover_request`.
+2. After **10 s** of steady running, it sends `takeover_request`.
 3. The leader: finishes the requests under way, sends the last changes and the token, closes the
    Schwab stream, and answers `handover` (term + 1).
 4. The returning server opens the stream, subscribes, reads the account once, sends `i_am_leader`.
