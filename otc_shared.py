@@ -72,6 +72,18 @@ class SharedStore:
                 del self.results[old]
         return answer, True
 
+    def replace(self, snapshot):
+        """(a client) The main server's whole copy."""
+        self.rev = int(snapshot.get("rev", 0))
+        self.items = dict(snapshot.get("items") or {})
+        self.save()
+
+    def take(self, changed):
+        """(a client) A change the main server applied."""
+        self.items[changed["key"]] = {"v": changed["v"], "data": changed["data"]}
+        self.rev = max(self.rev, int(changed.get("rev") or 0))
+        self.save()
+
     def save(self):
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"rev": self.rev, "items": self.items}, separators=(",", ":")), encoding="utf-8")

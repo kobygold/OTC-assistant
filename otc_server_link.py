@@ -72,6 +72,10 @@ class ServerLink(QObject):
         self._thread = threading.Thread(target=self._run, name="server-link", daemon=True)
         self._thread.start()
 
+    def restart_server(self):
+        """New settings: the server ends, and a new one starts with them (the link reconnects)."""
+        self.send({"type": "quit"})
+
     def stop(self):
         """The app is closing: the server ends too (bye)."""
         self._stop.set()
@@ -279,20 +283,24 @@ class SharedData(QObject):
         if not self.got_welcome or not self.link.send(msg):
             self.waiting.append(msg)
 
+    def _take_store(self, store):
+        """The server's whole copy (its welcome; a client's server once it has the main one's)."""
+        self.items = {k: [v["v"], v["data"]] for k, v in (store.get("items") or {}).items()}
+        self.changed.emit("")
+        self.ready.emit()
+
     def _on_message(self, msg):
         kind = msg.get("type")
         if kind == "welcome":
-            store = msg.get("store") or {}
-            self.items = {k: [v["v"], v["data"]] for k, v in (store.get("items") or {}).items()}
             self.got_welcome = True
+            if msg.get("store") is not None:        # (a client server that never had it sends it later)
+                self._take_store(msg["store"])
             waiting, self.waiting = self.waiting, []
             for m in waiting:       # made while the server was away: their bases may be old (refused)
-                v, d = self.items.get(m["key"], [0, None])
-                self.items[m["key"]] = [v + 1 if m["base"] == v else v, m["data"] if m["base"] == v else d]
                 if not self.link.send(m):
                     self.waiting.append(m)
-            self.changed.emit("")
-            self.ready.emit()
+        elif kind == "store":
+            self._take_store(msg["store"])
         elif kind == "changed":
             mine = self.mine.pop(msg["id"], None) is not None
             current = self.items.get(msg["key"], [0, None])[0]

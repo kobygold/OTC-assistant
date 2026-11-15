@@ -54,6 +54,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
+from otc_computers import ComputersPanel
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
@@ -665,6 +666,10 @@ class MainWindow(QMainWindow):
         self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.schwab_tab_index = self.tabs.addTab(self._build_schwab_tab(), "Schwab")
+        # my computers: the main server and its clients, their priority, the connection log
+        self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
+        self.computers.summary.connect(self.show_cluster_summary)
+        self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
         visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
@@ -2365,6 +2370,10 @@ class MainWindow(QMainWindow):
         self.stream_count = QLabel("")
         self.stream_count.setStyleSheet("color: #a8a8a8;")
         row.addWidget(self.stream_count)
+        # this computer's part: the main server, or a client of it (only with several computers)
+        self.cluster_label = QLabel("")
+        self.cluster_label.setToolTip("My computers: see the Computers tab.")
+        row.addWidget(self.cluster_label)
         self.stream_full_told = False
         self.level2.streamed.connect(self.on_streamed)
         self.after_tabs = AfterTabs(self.tabs, corner)
@@ -2543,6 +2552,10 @@ class MainWindow(QMainWindow):
         if self.chart.selected is not None and self.chart._find_drawing(self.chart.selected) is None:
             self.chart.selected = None
         self.chart.update()
+
+    def show_cluster_summary(self, text, color):
+        self.cluster_label.setText(text)
+        self.cluster_label.setStyleSheet(f"color: {color};" if color else "")
 
     def on_streamed(self, count, wanted, most):
         """The server's count of streamed tickers, next to the account selector."""
