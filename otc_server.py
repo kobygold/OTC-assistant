@@ -251,6 +251,7 @@ class Server:
     def __init__(self, settings: dict, token_path: Path, market_log: Path, shared_path: Path, port=DEFAULT_PORT):
         self.key = settings.get("schwab_app_key", "").strip()
         self.app_secret = settings.get("schwab_app_secret", "").strip()
+        self.callback = settings.get("schwab_callback_url", "").strip()
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
         self.name = str(settings.get("server_name") or socket.gethostname()).strip()
@@ -412,7 +413,8 @@ class Server:
         self.conns.add(conn)
         self.had_app = True
         writer = asyncio.create_task(conn.writer())
-        welcome = {"type": "welcome", "code": self.code, "token": self.app_token(), "status": self.status_text,
+        welcome = {"type": "welcome", "code": self.code, "token": self.app_token(), "keys": self.keys(),
+                   "status": self.status_text,
                    "activity": self.activity_on, "login_needed": self.login_why, "events": list(self.events),
                    "cluster": self.cluster_info()}
         if self.store_ready:
@@ -495,7 +497,8 @@ class Server:
         self.peers.add(conn)
         writer = asyncio.create_task(conn.writer())
         conn.put({"type": "welcome", "leader": self.name, "term": self.term, "token": self.wrapped or self.read_token(),
-                  "store": self.store.snapshot(), "activity": self.activity_on, "login_needed": self.login_why})
+                  "store": self.store.snapshot(), "activity": self.activity_on, "login_needed": self.login_why,
+                  "keys": self.keys()})
         if self.counted:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
         for m in list(self.last_reads.values()):        # the latest orders and positions
@@ -1019,7 +1022,23 @@ class Server:
             self.sent_want = want
             self.up.put(want)
 
+    def keys(self):
+        """The Schwab app's keys (settings.json), for a client that hasn't them."""
+        if not (self.key and self.app_secret):
+            return None
+        return {"schwab_app_key": self.key, "schwab_app_secret": self.app_secret,
+                "schwab_callback_url": self.callback or "https://127.0.0.1"}
+
     def on_up_welcome(self, w):
+        keys = w.get("keys")
+        if keys and not (self.key and self.app_secret):
+            # this computer had none: the main server's, here and for the apps (they save them)
+            self.key, self.app_secret = keys["schwab_app_key"], keys["schwab_app_secret"]
+            self.callback = keys.get("schwab_callback_url", "")
+            self.client = None
+            self.event(f"Got the Schwab app's keys from the main server {self.leader_name}")
+        if self.keys():
+            self.broadcast({"type": "keys", "keys": self.keys()})
         if w.get("token"):
             self.take_token(w["token"])
         if w.get("store") is not None:

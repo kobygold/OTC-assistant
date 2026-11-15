@@ -2743,7 +2743,19 @@ class MainWindow(QMainWindow):
 
     def on_server_token(self, msg):
         """The accounts weren't read (no login yet, or the server wasn't ready): read again as soon
-        as the server has a login for this app."""
+        as the server has a login for this app. The Schwab app's keys, on a computer without them,
+        come from the main server (through this computer's server): saved to settings.json."""
+        keys = msg.get("keys") if msg.get("type") in ("welcome", "keys") else None
+        if keys and not (self.settings.get("schwab_app_key", "").strip() and
+                         self.settings.get("schwab_app_secret", "").strip()):
+            self.settings.update(keys)
+            save_settings(self.settings)
+            self.statusBar().showMessage("The Schwab app's keys came from the main server and were saved.", 10000)
+            if self.level2_show.isChecked() and self.chart_fav_ticker:     # Level II can start now
+                self.level2.follow(self.chart_fav_ticker, self.chart_name)
+            if getattr(self, "accounts_failed", False) and self.server.current_token():
+                self.accounts_failed = False
+                self.read_schwab_accounts(again=True)
         if msg.get("type") in ("welcome", "token") and msg.get("token") and getattr(self, "accounts_failed", False):
             self.accounts_failed = False
             self.read_schwab_accounts(again=True)
