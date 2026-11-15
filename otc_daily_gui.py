@@ -696,7 +696,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_chart_tab(), "Chart")
         self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
         self.zone_tab_index = self.tabs.addTab(self._build_zones_tab(), "Zones")
-        self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM")
+        self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM Scanner")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
         self.schwab_tab_index = self.tabs.addTab(self._build_schwab_tab(), "Schwab")
         # my computers: the main server and its clients, their priority, the connection log
@@ -2002,7 +2002,7 @@ class MainWindow(QMainWindow):
         visited, or None."""
         return {
             self.zone_tab_index: (self.zone_table, ZONE_TICKER_COL, self.open_chart_from_zones, "Zones"),
-            self.atm_tab_index: (self.atm_table, ATM_TICKER_COL, self.open_chart_from_atm, "ATM"),
+            self.atm_tab_index: (self.atm_table, ATM_TICKER_COL, self.open_chart_from_atm, "ATM Scanner"),
             self.fav_tab_index: (self.fav_table, FAV_COLUMNS.index("Ticker"), self.open_chart_from_fav, "Favorites"),
         }.get(self.nav_tab)
 
