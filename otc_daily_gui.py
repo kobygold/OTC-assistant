@@ -59,10 +59,9 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.1.2"
 
 APP_DIR = Path(__file__).resolve().parent
-NOTICE_W = 520              # the widest a message on the tabs line gets (px); longer: shortened
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
 DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
@@ -715,28 +714,33 @@ class MainWindow(QMainWindow):
         self.updater = Updater()
         self.updater.done.connect(self.on_update)
         self.restart_after_close = False
-        # the tabs line's right end: the app's short messages (no status bar), the version, the button
+        # the tabs line's right end: the local date and time, Check for update (messages: the status bar)
         right = QWidget()
         right_row = QHBoxLayout(right)
         right_row.setContentsMargins(0, 0, 4, 0)
         right_row.setSpacing(8)
-        self.notice = QLabel("")
-        self.notice.setStyleSheet("color: #d8d8d8;")
-        right_row.addWidget(self.notice)
-        self.notice_text = ""
-        self.version_label = version = QLabel(f"v{APP_VERSION}")
-        version.setStyleSheet("color: #a8a8a8;")
-        right_row.addWidget(version)
+        self.notice_text = ""       # the status bar's last message
+        # the computer's local date and time, to the second (the version is in the window's title)
+        self.clock = QLabel("")
+        self.clock.setTextFormat(Qt.TextFormat.RichText)
+        self.clock.setToolTip("This computer's local date and time")
+        # as wide as its widest text, so the message beside it doesn't move each second
+        bold = self.clock.font()
+        bold.setBold(True)
+        self.clock.setFixedWidth(self.clock.fontMetrics().horizontalAdvance("Sep, 28  ")
+                                 + QFontMetrics(bold).horizontalAdvance("00:00:00") + 8)
+        self.clock.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        right_row.addWidget(self.clock)
+        self.clock_timer = QTimer(self)
+        self.clock_timer.setSingleShot(True)
+        self.clock_timer.timeout.connect(self.tick_clock)
+        self.tick_clock()
         self.update_btn = QPushButton("Check for update")
         self.update_btn.setToolTip("Looks on GitHub for a newer version; if there is one, updates the app's "
                                    "files (git pull) and restarts it.")
         self.update_btn.clicked.connect(self.check_update)
         right_row.addWidget(self.update_btn)
         self.tabs.setCornerWidget(right, Qt.Corner.TopRightCorner)
-        self.notice_timer = QTimer(self)
-        self.notice_timer.setSingleShot(True)
-        self.notice_timer.timeout.connect(lambda: self.notify(""))
-        self.after_tabs.on_place = self.fit_notice
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
         visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
@@ -2630,26 +2634,17 @@ class MainWindow(QMainWindow):
             self.history_progress.setValue(done)
         self.history_bar.setVisible(busy)
 
-    def notify(self, text, ms=8000):
-        """A short message for a few seconds at the tabs line's right end (long ones shortened: all
-        of it on hover)."""
+    def notify(self, text, ms=0):
+        """A message in the status bar at the bottom (ms: for that long; 0: until the next one)."""
         self.notice_text = text
-        self.notice.setToolTip(text)
-        self.fit_notice()
-        if text:
-            self.notice_timer.start(ms)
+        self.statusBar().showMessage(text, ms)
 
-    def fit_notice(self):
-        """The message in the room between the account selector's row and the version (shortened)."""
-        if not hasattr(self, "notice"):
-            return
-        left = self.after_tabs.widget.geometry().right()
-        fixed = self.version_label.sizeHint().width() + self.update_btn.sizeHint().width() + 30
-        room = min(NOTICE_W, self.tabs.width() - left - fixed - 20)
-        fm = self.notice.fontMetrics()
-        text = fm.elidedText(self.notice_text, Qt.TextElideMode.ElideRight, room) if room > 60 else ""
-        self.notice.setFixedWidth(fm.horizontalAdvance(text) + 2 if text else 0)
-        self.notice.setText(text)
+    def tick_clock(self):
+        """The clock, then again just after the next second starts (so it never skips one)."""
+        now = datetime.now()
+        self.clock.setText(f'<span style="color: #a8a8a8;">{now.strftime("%b")}, {now.day}</span>&nbsp;&nbsp;'
+                           f'<b style="color: #ffffff;">{now.strftime("%H:%M:%S")}</b>')
+        self.clock_timer.start(1000 - now.microsecond // 1000 + 5)
 
     # ---- Check for update ----
     def check_update(self):
