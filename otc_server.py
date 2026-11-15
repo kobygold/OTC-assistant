@@ -162,6 +162,21 @@ def login_expired(error: Exception) -> bool:
     return any(s in text for s in ("invalid_grant", "refresh_token", "unauthorized", "invalid_client", "401"))
 
 
+def tailscale_name():
+    """This computer's name on Tailscale (MagicDNS: "koby-thinkpad"), or None."""
+    flags = 0x08000000 if sys.platform == "win32" else 0       # no window
+    for exe in ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe"):
+        try:
+            r = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5,
+                               creationflags=flags)
+            name = (json.loads(r.stdout or "{}").get("Self") or {}).get("DNSName", "")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        if name:
+            return name.split(".")[0]
+    return None
+
+
 def tailscale_ip():
     """This computer's Tailscale address (100.x.y.z), or None."""
     flags = 0x08000000 if sys.platform == "win32" else 0       # no window
@@ -240,6 +255,7 @@ class Server:
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
         self.name = str(settings.get("server_name") or socket.gethostname()).strip()
         self.port = port
+        self.address_set = bool(str(settings.get("server_address") or "").strip())
         self.address = str(settings.get("server_address") or f"{self.name.lower()}:{port}").strip()
         # the first main server to ask (later, the computers' list says where they all are)
         self.join = str(settings.get("cluster_join", "")).strip() if self.cluster_secret else ""
@@ -289,6 +305,7 @@ class Server:
         self.remote_cluster = {}                # (client) the main server's cluster info
         self.lost_logged = False
         self.last_heard = time.time()
+        self.hints = set()                      # main servers' addresses learned from their checks
         self.read_wanted = {}                   # (main server) (what, account or "*") -> when it is due
         self.history_task = None                # (client) fetching the periods missed
         self.hist_wait = None                   # (client) the main server's next history answer
@@ -314,12 +331,17 @@ class Server:
                 ip = await asyncio.to_thread(tailscale_ip)
                 extra = [ip] if ip else []
             hosts += [h for h in extra if h and h not in hosts]
+            if not self.address_set:        # how the others reach it: its Tailscale name
+                ts = await asyncio.to_thread(tailscale_name)
+                if ts:
+                    self.address = f"{ts}:{self.port}"
         try:
             server = await serve(self.handler, hosts, self.port, max_size=None, ping_interval=5, ping_timeout=10)
         except OSError as e:
             log(f"Port {self.port} is taken ({e}): another server runs; this one ends")
             return
-        self.event(f"Server started on {self.name} (listening on {', '.join(hosts)}:{self.port}, version {self.version})")
+        self.event(f"Server started on {self.name} (listening on {', '.join(hosts)}:{self.port}, version {self.version}"
+                   + (f"; the others reach it at {self.address})" if self.cluster_secret else ")"))
         tasks = [asyncio.create_task(self.idle_loop()), asyncio.create_task(self.tidy_loop())]
         if self.cluster_secret:
             self.cluster_task = asyncio.create_task(self.cluster_loop())
@@ -764,8 +786,9 @@ class Server:
         """{name: answer} of the other computers that answer (the list's, and the first one to join)."""
         targets = {c["address"]: c.get("name") for c in self.computer_list()
                    if c.get("name") != self.name and c.get("address")}
-        if self.join and self.join not in targets:
-            targets[self.join] = None
+        for address in [self.join] + sorted(self.hints):
+            if address and address not in targets and address != self.address:
+                targets[address] = None
         answers = await asyncio.gather(*(self.probe(a) for a in targets))
         out = {}
         for a in answers:
@@ -788,6 +811,9 @@ class Server:
             await ws.send(json.dumps(answer))
         except Exception:
             pass
+        # a main server checking on this one: where it is (a computer that looks for it finds it)
+        if hello.get("leader") and hello.get("address") and not self.leader:
+            self.hints.add(str(hello["address"]))
         # two main servers at once: the higher term stays (the same term: the higher priority)
         other = str(hello.get("name", ""))
         if self.leader and hello.get("leader") and (
@@ -805,10 +831,12 @@ class Server:
             if time.time() - last_check >= SPLIT_CHECK_S:
                 last_check = time.time()
                 connected = {p.name for p in self.peers}
-                for c in self.computer_list():
-                    if c.get("name") in connected or c.get("name") == self.name or not c.get("address"):
-                        continue
-                    asyncio.create_task(self.probe(c["address"]))     # its answer is handled there
+                addresses = {c["address"] for c in self.computer_list() if c.get("address")
+                             and c.get("name") not in connected and c.get("name") != self.name}
+                if self.join:
+                    addresses.add(self.join)
+                for address in addresses - {self.address}:
+                    asyncio.create_task(self.probe(address))     # its answer is handled there
 
     async def take_best_store(self, answers):
         """Before taking over: the newest copy of the shared data among the computers that answered."""
