@@ -62,6 +62,7 @@ APP_NAME = "OTC Assistant"
 APP_VERSION = "2.0.12"
 
 APP_DIR = Path(__file__).resolve().parent
+NOTICE_W = 520              # the widest a message on the tabs line gets (px); longer: shortened
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
 DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
@@ -518,6 +519,7 @@ class AfterTabs(QObject):
     def __init__(self, tabs: QTabWidget, widget: QWidget):
         super().__init__(tabs)
         self.tabs, self.widget = tabs, widget
+        self.on_place = None        # called after each placing (the tabs line's message fits the rest)
         widget.setParent(tabs)
         for w in (tabs, tabs.tabBar(), widget):
             w.installEventFilter(self)
@@ -534,6 +536,8 @@ class AfterTabs(QObject):
         self.widget.setGeometry(bar.right() + self.GAP, max(0, bar.top() + (bar.height() - size.height()) // 2),
                                 size.width(), size.height())
         self.widget.raise_()
+        if self.on_place:
+            self.on_place()
 
 
 class SelectAllLineEdit(QLineEdit):
@@ -707,18 +711,32 @@ class MainWindow(QMainWindow):
             self.checklist.trader.use_server(self.server)
             self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
-        # Check for update (bottom right): the sources from GitHub, then a restart
+        # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
         self.updater.done.connect(self.on_update)
         self.restart_after_close = False
-        version = QLabel(f"v{APP_VERSION}")
-        version.setStyleSheet("color: #a8a8a8; padding: 0 6px;")
+        # the tabs line's right end: the app's short messages (no status bar), the version, the button
+        right = QWidget()
+        right_row = QHBoxLayout(right)
+        right_row.setContentsMargins(0, 0, 4, 0)
+        right_row.setSpacing(8)
+        self.notice = QLabel("")
+        self.notice.setStyleSheet("color: #d8d8d8;")
+        right_row.addWidget(self.notice)
+        self.notice_text = ""
+        self.version_label = version = QLabel(f"v{APP_VERSION}")
+        version.setStyleSheet("color: #a8a8a8;")
+        right_row.addWidget(version)
         self.update_btn = QPushButton("Check for update")
         self.update_btn.setToolTip("Looks on GitHub for a newer version; if there is one, updates the app's "
                                    "files (git pull) and restarts it.")
         self.update_btn.clicked.connect(self.check_update)
-        self.statusBar().addPermanentWidget(version)
-        self.statusBar().addPermanentWidget(self.update_btn)
+        right_row.addWidget(self.update_btn)
+        self.tabs.setCornerWidget(right, Qt.Corner.TopRightCorner)
+        self.notice_timer = QTimer(self)
+        self.notice_timer.setSingleShot(True)
+        self.notice_timer.timeout.connect(lambda: self.notify(""))
+        self.after_tabs.on_place = self.fit_notice
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
         visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
@@ -1485,7 +1503,7 @@ class MainWindow(QMainWindow):
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"{stamp}  {text}")
         first_line = text.splitlines()[0] if text else ""
-        self.statusBar().showMessage(first_line, 8000)
+        self.notify(first_line, 8000)
 
     # ================================================== download actions ===
     def start_fetch(self):
@@ -2056,7 +2074,7 @@ class MainWindow(QMainWindow):
         self.reload_btn.setText("Reload History")
         if ok:
             self.show_chart(ticker)
-            self.statusBar().showMessage(message, 10000)
+            self.notify(message, 10000)
         else:
             QMessageBox.warning(self, "Reload problem", message[:1500])
 
@@ -2560,7 +2578,7 @@ class MainWindow(QMainWindow):
                                 "favorites": len(favs), "drawings": len(drawings), "atm": len(atm.entries)}
         self.shared.sync_items(new, [])
         self.use_shared_data()
-        self.statusBar().showMessage(
+        self.notify(
             f"The favorites ({len(favs)}) and drawings ({len(drawings)}) were copied to every account "
             f"({', '.join('...' + a for a in accounts)}), and the ATM trades ({len(atm.entries)}) to theirs.", 15000)
 
@@ -2584,7 +2602,7 @@ class MainWindow(QMainWindow):
 
     def on_shared_refused(self, key, why):
         what = key.split("/")[0]
-        self.statusBar().showMessage(
+        self.notify(
             f"Your change of {what} wasn't saved: it was changed on another computer a moment before. "
             "It shows as it is now: make your change again if still needed.", 15000)
 
@@ -2611,6 +2629,27 @@ class MainWindow(QMainWindow):
             self.history_progress.setRange(0, total)
             self.history_progress.setValue(done)
         self.history_bar.setVisible(busy)
+
+    def notify(self, text, ms=8000):
+        """A short message for a few seconds at the tabs line's right end (long ones shortened: all
+        of it on hover)."""
+        self.notice_text = text
+        self.notice.setToolTip(text)
+        self.fit_notice()
+        if text:
+            self.notice_timer.start(ms)
+
+    def fit_notice(self):
+        """The message in the room between the account selector's row and the version (shortened)."""
+        if not hasattr(self, "notice"):
+            return
+        left = self.after_tabs.widget.geometry().right()
+        fixed = self.version_label.sizeHint().width() + self.update_btn.sizeHint().width() + 30
+        room = min(NOTICE_W, self.tabs.width() - left - fixed - 20)
+        fm = self.notice.fontMetrics()
+        text = fm.elidedText(self.notice_text, Qt.TextElideMode.ElideRight, room) if room > 60 else ""
+        self.notice.setFixedWidth(fm.horizontalAdvance(text) + 2 if text else 0)
+        self.notice.setText(text)
 
     # ---- Check for update ----
     def check_update(self):
@@ -2648,7 +2687,7 @@ class MainWindow(QMainWindow):
                 self.update_btn.setText("Updating...")
                 self.updater.update()
         elif r["step"] == "update":
-            self.statusBar().showMessage("Updated: restarting...", 5000)
+            self.notify("Updated: restarting...", 5000)
             self.restart_after_close = True
             self.close()
             if self.isVisible():            # the close was cancelled (a download running)
@@ -2808,13 +2847,13 @@ class MainWindow(QMainWindow):
             self.settings["api_key"] = keys["api_key"]
             save_settings(self.settings)
             self.key_edit.setText(keys["api_key"])
-            self.statusBar().showMessage("Massive's API key came from the main server and was saved.", 10000)
+            self.notify("Massive's API key came from the main server and was saved.", 10000)
         schwab = {k: v for k, v in keys.items() if k.startswith("schwab_")}
         if schwab.get("schwab_app_key") and not (self.settings.get("schwab_app_key", "").strip() and
                                                  self.settings.get("schwab_app_secret", "").strip()):
             self.settings.update(schwab)
             save_settings(self.settings)
-            self.statusBar().showMessage("The Schwab app's keys came from the main server and were saved.", 10000)
+            self.notify("The Schwab app's keys came from the main server and were saved.", 10000)
             if self.level2_show.isChecked() and self.chart_fav_ticker:     # Level II can start now
                 self.level2.follow(self.chart_fav_ticker, self.chart_name)
             if getattr(self, "accounts_failed", False) and self.server.current_token():
@@ -3342,7 +3381,7 @@ class MainWindow(QMainWindow):
         self.set_fav(ticker, group)
         self.add_ticker_history(ticker)
         self.fav_add_edit.clear()
-        self.statusBar().showMessage(f"{ticker} moved from group {old} to {group}." if old and old != group
+        self.notify(f"{ticker} moved from group {old} to {group}." if old and old != group
                                      else f"{ticker} added to favorites {group}.", 8000)
 
     def refresh_favorites_table(self):
@@ -3468,7 +3507,7 @@ class MainWindow(QMainWindow):
             if value is not None and not (0 <= value < math.inf):
                 raise ValueError
         except ValueError:
-            self.statusBar().showMessage(f"\"{item.text()}\" isn't a valid amount, so {ticker}'s "
+            self.notify(f"\"{item.text()}\" isn't a valid amount, so {ticker}'s "
                                          f"{FAV_COLUMNS[item.column()]} wasn't changed.", 8000)
         else:
             if value is None:
