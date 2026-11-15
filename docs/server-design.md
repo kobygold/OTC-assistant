@@ -1,6 +1,7 @@
 # OTC Assistant: Server / Clients design (draft 2, for review)
 
-Status: **draft, nothing implemented yet**. Version 1.1.0 is the starting point.
+Status: steps 1-5 implemented (v2.0.x): the server per computer, recording, shared data, several
+computers, failover and take-back. Not yet: the account reads on the main server only, fetching recording gaps.
 Draft 2 adds the review answers: a server process on every computer, shared per-account data with
 versioned changes (no lost updates), the recording list, the "server not responding" banner, the
 connection log, and the computers' priority list.

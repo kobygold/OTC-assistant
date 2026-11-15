@@ -658,7 +658,17 @@ class MainWindow(QMainWindow):
         self.fav_filling = False
 
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        # the yellow line over the tabs while there's no main server (otc_computers: banner)
+        self.banner = QLabel("")
+        self.banner.setStyleSheet("background: #f2c200; color: #000000; font-weight: bold; padding: 4px 10px;")
+        self.banner.hide()
+        central = QWidget()
+        central_lay = QVBoxLayout(central)
+        central_lay.setContentsMargins(0, 0, 0, 0)
+        central_lay.setSpacing(0)
+        central_lay.addWidget(self.banner)
+        central_lay.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
         self.tabs.addTab(self._build_download_tab(), "Download")
         self.tabs.addTab(self._build_chart_tab(), "Chart")
         self.tabs.setTabVisible(self.tabs.addTab(self._build_screener_tab(), "Screener"), False)
@@ -669,6 +679,9 @@ class MainWindow(QMainWindow):
         # my computers: the main server and its clients, their priority, the connection log
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
+        self.computers.banner.connect(self.show_banner)
+        if self.checklist.trader is not None:
+            self.checklist.trader.blocked = self.computers.block_reason
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
@@ -2552,6 +2565,10 @@ class MainWindow(QMainWindow):
         if self.chart.selected is not None and self.chart._find_drawing(self.chart.selected) is None:
             self.chart.selected = None
         self.chart.update()
+
+    def show_banner(self, text):
+        self.banner.setText(text)
+        self.banner.setVisible(bool(text))
 
     def show_cluster_summary(self, text, color):
         self.cluster_label.setText(text)

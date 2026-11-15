@@ -81,7 +81,7 @@ from otc_shared import SharedStore
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
-PROTO = 1                       # the servers' messages; computers must run the same to work together
+PROTO = 2                       # the servers' messages; computers must run the same to work together
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this (a new browser login)
 RECONNECT_SECONDS = 15
 POLL_SECONDS = 0.3              # how often the stream loop looks at what is wanted
@@ -93,7 +93,14 @@ START_GRACE_S = 30              # ... or, at the start, no app came at all
 LOG_MAX_BYTES = 1_000_000
 MAX_TICKERS = 500               # Schwab streams up to this many tickers per service
 TIDY_S = 3600                   # the recording's old days: compressed / deleted this often
-LEADER_RETRY_S = 3              # a client tries the main server again this often
+HEARTBEAT_S = 1                 # the main server's heartbeat to its clients
+HEARTBEAT_TIMEOUT_S = 5         # a client that hears nothing for this long: the main server is gone
+ELECTION_STEP_S = 3             # a computer waits (its place among those running) x this before taking over
+TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 60))   # a higher-priority computer, back,
+                                # takes over after running this long
+FAKE_STREAM = os.environ.get("OTC_FAKE_STREAM") == "1"      # tests: no Schwab connection at all
+PROBE_TIMEOUT_S = 2             # asking a computer who the main server is
+SPLIT_CHECK_S = 10              # the main server checks that no other one runs (two at once) this often
 EVENTS_KEPT = 200               # connection events kept for the apps' log
 COMPUTERS_KEY = "cluster/computers"
 
@@ -217,12 +224,20 @@ class Server:
         self.name = str(settings.get("server_name") or socket.gethostname()).strip()
         self.port = port
         self.address = str(settings.get("server_address") or f"{self.name.lower()}:{port}").strip()
+        # the first main server to ask (later, the computers' list says where they all are)
         self.join = str(settings.get("cluster_join", "")).strip() if self.cluster_secret else ""
         if self.join and ":" not in self.join:
             self.join += f":{DEFAULT_PORT}"
         self.bind = settings.get("server_bind")
-        self.leader = not self.join     # the main server (holds the stream)
-        self.leader_name = self.name if self.leader else self.join
+        self.leader = False             # the main server (holds the stream); decided at run time
+        self.leader_name = ""
+        self.leader_address = ""
+        self.term = 0                   # the main server's term: each new main server takes the next one
+        self.state = "starting"         # leader / connected / searching / handing_over
+        self.state_since = time.time()
+        self.lost = ""                  # the main server that stopped answering
+        self.leader_tasks = []
+        self.cluster_task = None
         self.version = app_version()
         self.token_path = token_path
         self.code = code_hash()
@@ -243,7 +258,7 @@ class Server:
         self.recorder = Recorder(market_log, log)
         self.store = SharedStore(shared_path, log)
         # a client sends its apps the shared data only once it has the main server's (or had it before)
-        self.store_ready = self.leader or bool(self.store.items)
+        self.store_ready = not self.cluster_secret or bool(self.store.items)
         self.streaming = False                  # the stream is logged in (a client: connected to the main)
         self.activity_on = False
         self.status_text = ""
@@ -255,6 +270,8 @@ class Server:
         self.events = collections.deque(maxlen=EVENTS_KEPT)
         self.up_failed = False                  # (client) the last try to reach the main server failed
         self.remote_cluster = {}                # (client) the main server's cluster info
+        self.lost_logged = False
+        self.last_heard = time.time()
 
     # ------------------------------------------------------------ running ---
     async def run(self):
@@ -277,21 +294,19 @@ class Server:
         except OSError as e:
             log(f"Port {self.port} is taken ({e}): another server runs; this one ends")
             return
-        self.event(f"Server started on {self.name} as {'the main server' if self.leader else 'a client of ' + self.join}"
-                   f" (listening on {', '.join(hosts)}:{self.port}, version {self.version})")
+        self.event(f"Server started on {self.name} (listening on {', '.join(hosts)}:{self.port}, version {self.version})")
         tasks = [asyncio.create_task(self.idle_loop()), asyncio.create_task(self.tidy_loop())]
-        if self.leader:
-            tasks += [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop())]
-            if self.cluster_secret:
-                self.add_computer(self.name, self.address)
+        if self.cluster_secret:
+            self.cluster_task = asyncio.create_task(self.cluster_loop())
         else:
-            tasks.append(asyncio.create_task(self.up_loop()))
+            self.start_leader(1, "")       # on its own: it is its own main server
         await self.stop_event.wait()
         server.close()
-        for t in tasks:
+        everything = tasks + self.leader_tasks + ([self.cluster_task] if self.cluster_task else [])
+        for t in everything:
             t.cancel()
         # the stream logs out (up to 3 s); then the process ends, whatever else is still waiting
-        await asyncio.wait(tasks, timeout=6)
+        await asyncio.wait(everything, timeout=6)
         self.recorder.close()
         log(f"Server ended ({self.recorder.lines:,} lines recorded)")
         del websockets
@@ -338,6 +353,9 @@ class Server:
             return
         if hello.get("role") == "peer":
             await self.peer_handler(ws, hello)
+            return
+        if hello.get("role") == "probe":
+            await self.probe_handler(ws, hello)
             return
         if not hmac.compare_digest(str(hello.get("secret", "")), self.secret):
             log("A connection with a wrong secret was refused")
@@ -414,15 +432,16 @@ class Server:
             await ws.close(4002, f"the server {self.name} runs version {self.version}: update this computer")
             return
         if not self.leader:
-            await ws.close(4003, f"{self.name} isn't the main server: join {self.join}")
+            await ws.close(4003, f"{self.name} isn't the main server ({self.leader_name or 'looking for it'})")
             return
         conn = Conn(ws, peer=True, name=name, address=str(hello.get("address", "")),
                     version=str(hello.get("version", "")))
+        conn.can_lead = bool(hello.get("can_lead"))
         for old in [p for p in self.peers if p.name == name]:      # the same computer again
             self.peers.discard(old)
         self.peers.add(conn)
         writer = asyncio.create_task(conn.writer())
-        conn.put({"type": "welcome", "leader": self.name, "token": self.wrapped or self.read_token(),
+        conn.put({"type": "welcome", "leader": self.name, "term": self.term, "token": self.wrapped or self.read_token(),
                   "store": self.store.snapshot(), "activity": self.activity_on, "login_needed": self.login_why})
         if self.counted:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
@@ -444,9 +463,15 @@ class Server:
                     self.on_change(conn, msg)
                 elif kind == "login":
                     await self.on_login(msg.get("token"))
+                elif kind == "takeover_request":
+                    asyncio.create_task(self.hand_over(conn))
         except ConnectionClosed:
             pass
         finally:
+            for _ in range(20):         # (a handover's last message goes out first)
+                if conn.queue.empty():
+                    break
+                await asyncio.sleep(0.05)
             writer.cancel()
             if conn in self.peers:
                 self.peers.discard(conn)
@@ -578,8 +603,8 @@ class Server:
             self.to_peers(answer)
 
     def cluster_info(self):
-        """Who is who, for the apps' Computers tab."""
-        listed = list((self.store.items.get(COMPUTERS_KEY) or {}).get("data") or [])
+        """Who is who, for the apps' Computers tab and banner."""
+        listed = self.computer_list()
         online = {self.name: {"role": "main server" if self.leader else "client", "version": self.version,
                               "since": self.started}}
         if self.leader:
@@ -589,20 +614,307 @@ class Server:
             for c in self.remote_cluster.get("computers", []):
                 if c.get("online") and c["name"] != self.name:
                     online[c["name"]] = {"role": c.get("role"), "version": c.get("version"), "since": c.get("since")}
-            if self.up is not None:
-                online.setdefault(self.leader_name, {"role": "main server", "version": "", "since": None})
         names = [c.get("name") for c in listed]
         computers = [dict(c, online=c.get("name") in online, **online.get(c.get("name"), {})) for c in listed]
         computers += [{"name": n, "address": "", "online": True, **o} for n, o in online.items() if n not in names]
         return {"type": "cluster", "me": self.name, "role": "main server" if self.leader else "client",
                 "leader": self.leader_name, "connected": self.leader or self.up is not None,
-                "clustered": bool(self.cluster_secret), "computers": computers}
+                "clustered": bool(self.cluster_secret), "computers": computers, "term": self.term,
+                "state": self.state, "since": self.state_since, "lost": self.lost}
 
     def send_cluster(self):
         info = self.cluster_info()
         self.broadcast(info)
         if self.leader:
             self.to_peers(info)
+
+    def set_state(self, state, lost=None):
+        if state != self.state:
+            self.state, self.state_since = state, time.time()
+        if lost is not None:
+            self.lost = lost
+        self.send_cluster()
+
+    def computer_list(self):
+        """The shared list of my computers, in priority order: [{"name", "address"}]."""
+        return [c for c in (self.store.items.get(COMPUTERS_KEY) or {}).get("data") or [] if isinstance(c, dict)]
+
+    def rank_of(self, name):
+        names = [c.get("name") for c in self.computer_list()]
+        return names.index(name) if name in names else len(names)
+
+    def can_lead(self):
+        """It can hold the stream: the Schwab keys, and a login that hasn't run out."""
+        age = self.login_age_days()
+        return bool(self.key and self.app_secret and age is not None and age < TOKEN_DAYS)
+
+    # ------------------------------------------------------------ becoming / leaving the main server ---
+    def start_leader(self, term, why):
+        self.leader, self.term = True, term
+        self.leader_name, self.leader_address = self.name, self.address
+        self.up = None
+        self.client = None                      # a new Schwab client, on the token file as it is now
+        self.wrapped = None                     # (read from the file until the client is made)
+        self.symbols = set()
+        self.counted = None
+        self.store_ready = True
+        self.leader_tasks = [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop())]
+        if self.cluster_secret:
+            self.leader_tasks.append(asyncio.create_task(self.watch_loop()))
+            self.add_computer(self.name, self.address)
+            self.event(f"This computer is now the main server (term {term}){why}")
+        self.set_state("leader", "")
+        self.wanted()
+        self.wants_changed.set()
+
+    async def stop_leader(self, why, handover_to=None):
+        """Not the main server any more: the stream logs out first (one stream per login); a
+        handover sends the new main server the last token and shared data; the clients are let go
+        (they find the new one), and this computer looks for it too."""
+        self.leader = False
+        self.set_state("handing_over")
+        tasks, self.leader_tasks = self.leader_tasks, []
+        for t in tasks:
+            t.cancel()
+        await asyncio.wait(tasks, timeout=6) if tasks else None
+        self.client = None
+        self.symbols = set()
+        if handover_to is not None:
+            handover_to.put({"type": "handover", "term": self.term + 1, "token": self.wrapped or self.read_token(),
+                             "store": self.store.snapshot(), "from": self.name})
+            await asyncio.sleep(0.5)
+        for p in list(self.peers):
+            if p is not handover_to:
+                try:
+                    await p.ws.close(4004, why)
+                except Exception:
+                    pass
+        self.peers.clear()
+        self.event(f"This computer isn't the main server any more: {why}")
+        self.leader_name = handover_to.name if handover_to is not None else ""
+        self.cluster_task = asyncio.create_task(self.cluster_loop())
+
+    async def hand_over(self, conn):
+        """(main server) A higher-priority computer, back, asks to take over."""
+        if not self.leader or conn not in self.peers:
+            return
+        if self.rank_of(conn.name) >= self.rank_of(self.name) or not conn.can_lead:
+            log(f"{conn.name} asked to take over, but it doesn't come first: ignored")
+            return
+        self.event(f"Handing the main server over to {conn.name} (it comes first in the priority order)")
+        await self.stop_leader(f"handed over to {conn.name}", handover_to=conn)
+
+    # ------------------------------------------------------------ finding the main server ---
+    async def probe(self, address, want_store=False):
+        """Asks the computer at `address` who it is and who the main server is (None: no answer)."""
+        from websockets.asyncio.client import connect
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_S + (5 if want_store else 0)):
+                async with connect(f"ws://{address}", max_size=None, open_timeout=PROBE_TIMEOUT_S, proxy=None) as ws:
+                    await ws.send(json.dumps({"type": "hello", "role": "probe", "secret": self.cluster_secret,
+                                              "name": self.name, "address": self.address, "proto": PROTO,
+                                              "leader": self.leader, "term": self.term, "store": want_store}))
+                    answer = json.loads(await ws.recv())
+                    return answer if answer.get("type") == "whois" else None
+        except Exception:
+            return None
+
+    async def probe_all(self):
+        """{name: answer} of the other computers that answer (the list's, and the first one to join)."""
+        targets = {c["address"]: c.get("name") for c in self.computer_list()
+                   if c.get("name") != self.name and c.get("address")}
+        if self.join and self.join not in targets:
+            targets[self.join] = None
+        answers = await asyncio.gather(*(self.probe(a) for a in targets))
+        out = {}
+        for a in answers:
+            if a and a.get("name") != self.name:
+                out[a["name"]] = a
+        return out
+
+    async def probe_handler(self, ws, hello):
+        """A computer asks who this one is (finding the main server, or checking that there aren't two)."""
+        if not self.cluster_secret or not hmac.compare_digest(str(hello.get("secret", "")), self.cluster_secret) \
+                or hello.get("proto") != PROTO:
+            await ws.close(4001, "wrong cluster secret or version")
+            return
+        answer = {"type": "whois", "name": self.name, "address": self.address, "term": self.term,
+                  "role": "leader" if self.leader else self.state, "leader": self.leader_name,
+                  "leader_address": self.leader_address, "rev": self.store.rev, "can_lead": self.can_lead()}
+        if hello.get("store"):
+            answer["store"] = self.store.snapshot()
+        try:
+            await ws.send(json.dumps(answer))
+        except Exception:
+            pass
+        # two main servers at once: the higher term stays (the same term: the higher priority)
+        other = str(hello.get("name", ""))
+        if self.leader and hello.get("leader") and (
+                hello.get("term", 0) > self.term or
+                (hello.get("term", 0) == self.term and self.rank_of(other) < self.rank_of(self.name))):
+            asyncio.create_task(self.stop_leader(f"{other} is the main server too (term {hello.get('term')}): "
+                                                 f"it stays, this one steps down"))
+
+    async def watch_loop(self):
+        """(main server) The heartbeat to the clients, and now and then a look for another main server."""
+        last_check = time.time()
+        while True:
+            await asyncio.sleep(HEARTBEAT_S)
+            self.to_peers({"type": "hb", "term": self.term})
+            if time.time() - last_check >= SPLIT_CHECK_S:
+                last_check = time.time()
+                connected = {p.name for p in self.peers}
+                for c in self.computer_list():
+                    if c.get("name") in connected or c.get("name") == self.name or not c.get("address"):
+                        continue
+                    asyncio.create_task(self.probe(c["address"]))     # its answer is handled there
+
+    async def take_best_store(self, answers):
+        """Before taking over: the newest copy of the shared data among the computers that answered."""
+        best = max(answers.values(), key=lambda a: a.get("rev", 0), default=None)
+        if best and best.get("rev", 0) > self.store.rev:
+            full = await self.probe(best["address"], want_store=True)
+            if full and full.get("store"):
+                self.store.replace(full["store"])
+                log(f"Took the newer shared data of {best['name']} (revision {self.store.rev})")
+
+    async def cluster_loop(self):
+        """(not the main server) Finds the main server and follows it; becomes it when it should."""
+        lost = None
+        try:
+            while True:
+                found = await self.find_leader(lost)
+                if found is None:
+                    return                              # this computer is the main server now
+                lost = await self.follow(found)
+                if lost is None:
+                    return                              # it handed the main server over to this one
+        finally:
+            if self.cluster_task is asyncio.current_task():
+                self.cluster_task = None
+
+    async def find_leader(self, lost):
+        """The main server's whois answer, once found; None when this computer became it. A computer
+        takes over when no main server answers and it comes first among the computers running
+        (the one that stopped left out), after waiting its place x ELECTION_STEP_S."""
+        self.set_state("searching", lost or "")
+        if lost:
+            self.set_status(f"The main server {lost} isn't answering: waiting for a new one...")
+        start = time.time()
+        told = False
+        while True:
+            answers = await self.probe_all()
+            leaders = [a for a in answers.values() if a.get("role") == "leader"]
+            if leaders:
+                return max(leaders, key=lambda a: (a.get("term", 0), -self.rank_of(a["name"])))
+            if self.can_lead():
+                order = [c.get("name") for c in self.computer_list()
+                         if c.get("name") != lost and (c.get("name") == self.name or c.get("name") in answers)]
+                if self.name not in order:
+                    order.append(self.name)
+                place = order.index(self.name)
+                if time.time() - start >= place * ELECTION_STEP_S:
+                    await self.take_best_store(answers)
+                    term = max([self.term] + [a.get("term", 0) for a in answers.values()]) + 1
+                    self.start_leader(term, f": {lost} stopped answering" if lost else
+                                      "" if not answers else ": no main server was running")
+                    return None
+            elif not told:
+                told = True
+                self.event("No main server answers, and this computer can't be it (no Schwab keys or login)")
+            await asyncio.sleep(1)
+
+    async def follow(self, found):
+        """Connected to the main server as its client, until it stops: then its name (lost), or None
+        when it handed the main server over to this computer."""
+        from websockets.asyncio.client import connect
+        address, name = found.get("address"), found.get("name")
+        writer = watchdog = None
+        self.leader_name, self.leader_address = name, address
+        handed = False
+        try:
+            async with connect(f"ws://{address}", max_size=None, open_timeout=5, ping_interval=5,
+                               ping_timeout=10, proxy=None) as ws:
+                await ws.send(json.dumps({"type": "hello", "role": "peer", "secret": self.cluster_secret,
+                                          "name": self.name, "address": self.address, "proto": PROTO,
+                                          "version": self.version, "can_lead": self.can_lead()}))
+                welcome = json.loads(await asyncio.wait_for(ws.recv(), 10))
+                if welcome.get("type") != "welcome":
+                    raise RuntimeError(f"unexpected answer {welcome.get('type')}")
+                self.up = Conn(ws, peer=True, name=welcome.get("leader", name))
+                self.term = max(self.term, int(welcome.get("term") or 0))
+                writer = asyncio.create_task(self.up.writer())
+                self.last_heard = time.time()
+                watchdog = asyncio.create_task(self.watchdog(ws))
+                self.event(f"Connected to the main server {name} (term {self.term})")
+                self.on_up_welcome(welcome)
+                connected_at, asked = time.time(), False
+                async for raw in ws:
+                    self.last_heard = time.time()
+                    try:
+                        msg = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if msg.get("type") == "handover":
+                        self.take_handover(msg)
+                        handed = True
+                        return None
+                    try:
+                        self.on_up_message(msg)
+                    except (KeyError, TypeError) as e:
+                        log(f"A message from the main server was bad: {type(e).__name__}: {e}")
+                    # take-back: back for a while, and first in the priority order: asks to take over
+                    if (not asked and time.time() - connected_at >= TAKEBACK_AFTER_S and self.can_lead()
+                            and self.rank_of(self.name) < self.rank_of(name)):
+                        asked = True
+                        self.event(f"This computer comes before {name} in the priority order: asking to take over")
+                        self.up.put({"type": "takeover_request"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            rcvd = getattr(e, "rcvd", None)
+            why = (rcvd.reason if rcvd is not None and rcvd.reason else "") or f"{type(e).__name__}: {e}"
+            if self.up is not None:
+                self.event(f"Lost the connection to the main server {name} ({why})")
+                self.lost_logged = True
+            else:
+                log(f"Couldn't join the main server {name} ({why})")
+        finally:
+            for t in (writer, watchdog):
+                if t:
+                    t.cancel()
+            was = self.up is not None
+            self.up = None
+            if was and not handed and not self.lost_logged:
+                self.event(f"The main server {name} closed the connection")
+            self.lost_logged = False
+            if not handed:
+                self.remote_cluster = {}
+                self.streaming = False
+                self.set_activity(False)
+                if was:
+                    self.set_status(f"Not connected to the main server {name}")
+        return name
+
+    async def watchdog(self, ws):
+        """(client) The main server's heartbeat: nothing heard for HEARTBEAT_TIMEOUT_S, it's gone."""
+        while True:
+            await asyncio.sleep(1)
+            if time.time() - self.last_heard > HEARTBEAT_TIMEOUT_S:
+                self.event(f"The main server {self.leader_name} isn't answering "
+                           f"(nothing for {HEARTBEAT_TIMEOUT_S} s)")
+                self.lost_logged = True
+                await ws.close(4005, "no heartbeat")
+                return
+
+    def take_handover(self, msg):
+        """(client) The main server hands over to this computer: its last token and shared data."""
+        if msg.get("token"):
+            self.write_token(msg["token"])
+        if msg.get("store"):
+            self.store.replace(msg["store"])
+            self.broadcast({"type": "store", "store": self.store.snapshot()})
+        self.start_leader(int(msg.get("term") or self.term + 1), f": {msg.get('from')} handed it over")
 
     # ------------------------------------------------------------ a client: the main server ---
     def up_send(self, msg):
@@ -633,53 +945,6 @@ class Server:
             self.sent_want = want
             self.up.put(want)
 
-    async def up_loop(self):
-        """(client) Connects to the main server, and again whenever the connection drops."""
-        from websockets.asyncio.client import connect
-        while True:
-            writer = None
-            try:
-                async with connect(f"ws://{self.join}", max_size=None, open_timeout=5, ping_interval=5,
-                                   ping_timeout=10, proxy=None) as ws:
-                    await ws.send(json.dumps({"type": "hello", "role": "peer", "secret": self.cluster_secret,
-                                              "name": self.name, "address": self.address, "proto": PROTO,
-                                              "version": self.version}))
-                    welcome = json.loads(await asyncio.wait_for(ws.recv(), 10))
-                    if welcome.get("type") != "welcome":
-                        raise RuntimeError(f"unexpected answer {welcome.get('type')}")
-                    self.up = Conn(ws, peer=True, name=welcome.get("leader", self.join))
-                    writer = asyncio.create_task(self.up.writer())
-                    self.leader_name = self.up.name
-                    self.up_failed = False
-                    self.event(f"Connected to the main server {self.leader_name} ({self.join})")
-                    self.on_up_welcome(welcome)
-                    async for raw in ws:
-                        try:
-                            self.on_up_message(json.loads(raw))
-                        except (ValueError, KeyError, TypeError) as e:
-                            log(f"A message from the main server was bad: {type(e).__name__}: {e}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                rcvd = getattr(e, "rcvd", None)
-                why = (rcvd.reason if rcvd is not None and rcvd.reason else "") or f"{type(e).__name__}: {e}"
-                if self.up is not None:
-                    self.event(f"Lost the connection to the main server {self.leader_name} ({why})")
-                elif not self.up_failed:
-                    self.event(f"Can't reach the main server at {self.join} ({why}); trying every {LEADER_RETRY_S} s")
-                self.up_failed = True
-            finally:
-                if writer:
-                    writer.cancel()
-                if self.up is not None:
-                    self.up = None
-                    self.remote_cluster = {}
-                    self.streaming = False
-                    self.set_activity(False)
-                    self.set_status(f"Not connected to the main server {self.leader_name}: reconnecting...")
-                    self.send_cluster()
-            await asyncio.sleep(LEADER_RETRY_S)
-
     def on_up_welcome(self, w):
         if w.get("token"):
             self.take_token(w["token"])
@@ -693,14 +958,19 @@ class Server:
             self.need_login(w["login_needed"])
         self.set_status(f"Live (from {self.leader_name})")
         self.sent_want = None
+        # the tickers it had: received again from the main server
+        for t in list(self.symbols):
+            self.books[t], self.l1[t] = {}, {}
         self.send_want()
         waiting, self.waiting = self.waiting, []
         for m in waiting:
             self.up.put(m)
-        self.send_cluster()
+        self.set_state("connected", "")
 
     def on_up_message(self, m):
         kind = m.get("type")
+        if kind == "hb":
+            return
         if kind == "l1":
             self.on_level1({"content": [m["c"]], "timestamp": m.get("t")})
         elif kind == "l2":
@@ -796,6 +1066,8 @@ class Server:
 
     def ensure_client(self):
         """(in a worker thread, holding client_lock) The client, made if needed. None without a login."""
+        if FAKE_STREAM:
+            return object() if self.can_lead() else None
         if self.client is None:
             age = self.login_age_days()
             if age is None or age >= TOKEN_DAYS or not self.key:
@@ -821,7 +1093,7 @@ class Server:
                 session.ensure_active_token(session.token)      # renews only near the end (leeway)
 
     async def renew_loop(self):
-        while True:
+        while not FAKE_STREAM:
             age = self.login_age_days()
             if not self.key:
                 pass
@@ -917,6 +1189,20 @@ class Server:
                 await self.wait_for(self.login_event, RECONNECT_SECONDS)
 
     async def stream(self, client):
+        if FAKE_STREAM:                 # tests: "streaming" without Schwab
+            self.streaming = True
+            self.event("Schwab stream connected (pretend)")
+            try:
+                while self.stream_wanted() and not self.restart_stream:
+                    self.symbols = self.wanted()
+                    for t in self.symbols:
+                        self.l1.setdefault(t, {})
+                        self.books.setdefault(t, {})
+                    await asyncio.sleep(POLL_SECONDS)
+            finally:
+                self.streaming = False
+                self.symbols = set()
+            return
         from schwab.streaming import StreamClient
         stream = StreamClient(client)
         await stream.login()

@@ -12,8 +12,9 @@ otc_computers.py - The Computers tab: my computers working together (docs/server
 """
 
 import secrets
+import time
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication
 from PyQt6.QtWidgets import (
     QAbstractItemView, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
@@ -28,11 +29,17 @@ GREEN, RED, GRAY, YELLOW = "#4caf50", "#ff5252", "#a8a8a8", "#f2c200"
 
 class ComputersPanel(QWidget):
     summary = pyqtSignal(str, str)          # a short text for the tabs line, its colour ("" = hidden)
+    banner = pyqtSignal(str)                # the yellow line at the top: no main server now ("" = none)
 
     def __init__(self, settings: dict, save_settings, link, shared, parent=None):
         super().__init__(parent)
         self.settings, self.save_settings, self.link, self.shared = settings, save_settings, link, shared
         self.info = {}                      # the server's latest cluster info
+        self.local_down = False             # the server on this computer isn't connected (restarting)
+        self.banner_text = ""
+        self.banner_timer = QTimer(self)
+        self.banner_timer.setInterval(1000)
+        self.banner_timer.timeout.connect(self.update_banner)
         root = QVBoxLayout(self)
 
         self.head = QLabel("Starting the server...")
@@ -116,9 +123,39 @@ class ComputersPanel(QWidget):
 
     # ------------------------------------------------------------ from the server ---
     def on_connected(self, ok):
+        self.local_down = not ok
         if not ok:
             self.head.setText("The server stopped: starting it again...")
             self.summary.emit("Server: restarting...", YELLOW)
+        self.update_banner()
+
+    # ------------------------------------------------------------ no main server: the banner ---
+    def update_banner(self):
+        """While there is no working main server: what is happening, and for how long."""
+        info = self.info
+        state = info.get("state")
+        since = int(time.time() - (info.get("since") or time.time()))
+        text = ""
+        if self.local_down:
+            text = "The server on this computer is restarting..."
+        elif info.get("clustered") and state == "searching":
+            lost = info.get("lost")
+            text = (f"The main server {lost} isn't answering: waiting for another computer to take over ({since} s)."
+                    if lost else f"Looking for the main server ({since} s).")
+            text += "  Orders wait until a main server works again."
+        elif info.get("clustered") and state == "handing_over":
+            text = f"Handing the main server over ({since} s)...  Orders wait a moment."
+        if text != self.banner_text:
+            self.banner_text = text
+            self.banner.emit(text)
+        if text and not self.banner_timer.isActive():
+            self.banner_timer.start()
+        elif not text:
+            self.banner_timer.stop()
+
+    def block_reason(self):
+        """Why orders can't be sent now ("" when they can): no main server."""
+        return self.banner_text
 
     def on_message(self, msg):
         kind = msg.get("type")
@@ -143,21 +180,26 @@ class ComputersPanel(QWidget):
 
     def show_cluster(self, info):
         self.info = info
+        self.update_banner()
         me, leader, role = info.get("me", ""), info.get("leader", ""), info.get("role", "")
         if not info.get("clustered"):
             self.head.setText(f"{me}: on its own (no cluster secret). It holds the Schwab stream itself.")
             self.summary.emit("", "")
         elif role == "main server":
             n = sum(1 for c in info.get("computers", []) if c.get("online") and c.get("name") != me)
-            self.head.setText(f"{me} is the main server: it holds the Schwab stream. "
+            self.head.setText(f"{me} is the main server (term {info.get('term')}): it holds the Schwab stream. "
                               f"{n} client{'s' if n != 1 else ''} connected.")
             self.summary.emit(f"Main server ({n} client{'s' if n != 1 else ''})", GREEN)
         elif info.get("connected"):
             self.head.setText(f"{me} is a client of the main server {leader}.")
             self.summary.emit(f"Client of {leader}", GRAY)
+        elif info.get("state") == "handing_over":
+            self.head.setText(f"{me} is handing the main server over...")
+            self.summary.emit("Handing over...", YELLOW)
         else:
-            self.head.setText(f"{me} can't reach the main server {leader}: trying again...")
-            self.summary.emit(f"No connection to {leader}", RED)
+            lost = info.get("lost")
+            self.head.setText(f"{me}: looking for the main server" + (f" ({lost} stopped answering)..." if lost else "..."))
+            self.summary.emit("No main server", RED)
         self.fill(info.get("computers", []))
 
     def fill(self, computers):

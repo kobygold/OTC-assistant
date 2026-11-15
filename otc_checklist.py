@@ -526,18 +526,34 @@ class SchwabTrader(QObject):
     def __init__(self, session: FeeReader):
         super().__init__()
         self.session = session
+        # why orders can't be sent now ("" when they can): no main server (otc_computers); the
+        # order actions then answer at once that they weren't sent
+        self.blocked = lambda: ""
+
+    def _refused(self, emit):
+        """An order action not done (blocked): its answer, a moment later, as Schwab's would come."""
+        why = self.blocked()
+        if not why:
+            return False
+        text = f"Not sent: {why}"
+        QTimer.singleShot(0, lambda: emit(text))
+        return True
 
     def _start(self, target, *args):
         threading.Thread(target=target, args=args, name="order", daemon=True).start()
 
     def place(self, key, ticker, side, shares, price, account):
         """account: the last 3 digits of the account to send it to."""
+        if self._refused(lambda why: self.placed.emit(key, side, None, why)):
+            return
         self._start(self._place, key, ticker, side, shares, price, account)
 
     def check(self, key, side, order_id, account=None):
         self._start(self._check, key, side, order_id, account)
 
     def cancel(self, key, side, order_id, account=None):
+        if self._refused(lambda why: self.canceled.emit(key, side, why)):
+            return
         self._start(self._cancel, key, side, order_id, account)
 
     def read_quotes(self, tickers):
@@ -551,6 +567,8 @@ class SchwabTrader(QObject):
         """Changes an open limit order's price, as thinkorswim does: Schwab replaces it with a new
         order (the old one becomes REPLACED). duration / session: the old order's (GTC, NORMAL
         when not given)."""
+        if self._refused(lambda why: self.replaced.emit(key, side, None, price, why)):
+            return
         self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session)
 
     def read_positions(self, account):
@@ -561,6 +579,8 @@ class SchwabTrader(QObject):
         """An order that isn't an ATM trade (the stocks owned list, the chart's BUY / SELL): a limit
         order, or a market one (order_type "MARKET": price not used, always Day). The answer comes
         as sent()."""
+        if self._refused(lambda why: self.sent.emit(key, None, why)):
+            return
         self._start(self._send, key, ticker, side, shares, price, account, duration, order_type)
 
     def _positions(self, account_tail):
