@@ -654,8 +654,8 @@ class CandleChart(DrawingsMixin, QWidget):
                 color = UP if now > self.live["open"] else DOWN if now < self.live["open"] else NEUTRAL
             ly = py(now)
             if price.top() <= ly <= price.bottom():
-                self._axis_tag(p, price.right() + 1, ly, fmt_axis(now), color, QColor("#000000"), bold=True,
-                               arrow="axis")
+                self._axis_tag(p, price.right() + 1, ly, f"P: {fmt_axis(now)}", color, QColor("#000000"),
+                               bold=True, arrow="axis")    # P: the price (not an order's, or a drawing's)
 
         if not self.intraday:
             self._draw_zone_labels(p, price, py)
