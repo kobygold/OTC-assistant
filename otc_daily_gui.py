@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.17"
+APP_VERSION = "1.1.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
