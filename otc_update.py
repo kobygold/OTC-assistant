@@ -34,8 +34,10 @@ def git_exe():
 
 def run(args, timeout=120):
     """(return code, output) of a command in the app's folder, without a window."""
-    r = subprocess.run(args, cwd=APP_DIR, capture_output=True, text=True, timeout=timeout,
-                       creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+    # (git's output is UTF-8, as the files are: read as such, not in Windows' own code page, which
+    # garbles or refuses some of it, e.g. Hebrew Windows')
+    r = subprocess.run(args, cwd=APP_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=timeout, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
     return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
 
 
@@ -75,9 +77,13 @@ class Updater(QObject):
         _, behind = run([git, "rev-list", "--count", "HEAD..@{u}"])
         _, ahead = run([git, "rev-list", "--count", "@{u}..HEAD"])
         _, log = run([git, "log", "--format=%s", "HEAD..@{u}"])
-        log = [line for line in log.splitlines() if line and not line.startswith("Version ")]
+        subjects = [line for line in log.splitlines() if line]
+        log = [line for line in subjects if not line.startswith("Version ")]
         _, source = run([git, "show", "@{u}:otc_daily_gui.py"])
         m = re.search(r'APP_VERSION = "([^"]+)"', source)
+        if not m:       # else: the newest "Version 2.0.14" commit among the new ones
+            m = next((re.match(r"Version (\d+\.\d+\.\d+)", line) for line in subjects
+                      if re.match(r"Version \d+\.\d+\.\d+", line)), None)
         return {"step": "check", "branch": branch, "upstream": upstream, "behind": int(behind or 0),
                 "ahead": int(ahead or 0), "version": m[1] if m else "?", "log": log[:15], "changes": len(log)}
 
