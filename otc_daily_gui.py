@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QEvent, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
@@ -55,6 +55,7 @@ from otc_checklist import ChecklistPanel
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 from otc_computers import ComputersPanel
+from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
@@ -706,6 +707,18 @@ class MainWindow(QMainWindow):
             self.checklist.trader.use_server(self.server)
             self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
+        # Check for update (bottom right): the sources from GitHub, then a restart
+        self.updater = Updater()
+        self.updater.done.connect(self.on_update)
+        self.restart_after_close = False
+        version = QLabel(f"v{APP_VERSION}")
+        version.setStyleSheet("color: #a8a8a8; padding: 0 6px;")
+        self.update_btn = QPushButton("Check for update")
+        self.update_btn.setToolTip("Looks on GitHub for a newer version; if there is one, updates the app's "
+                                   "files (git pull) and restarts it.")
+        self.update_btn.clicked.connect(self.check_update)
+        self.statusBar().addPermanentWidget(version)
+        self.statusBar().addPermanentWidget(self.update_btn)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
         visible = [i for i in range(self.tabs.count()) if self.tabs.isTabVisible(i)]
@@ -2599,6 +2612,50 @@ class MainWindow(QMainWindow):
             self.history_progress.setValue(done)
         self.history_bar.setVisible(busy)
 
+    # ---- Check for update ----
+    def check_update(self):
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Checking...")
+        self.updater.check()
+
+    def on_update(self, r):
+        self.update_btn.setEnabled(True)
+        self.update_btn.setText("Check for update")
+        if r.get("error"):
+            QMessageBox.warning(self, "Check for update", r["error"])
+            return
+        if r["step"] == "check":
+            if not r["behind"]:
+                extra = (f"\n\n(This copy has {r['ahead']} change{'s' if r['ahead'] != 1 else ''} that "
+                         f"aren't on GitHub yet.)" if r["ahead"] else "")
+                QMessageBox.information(self, "Check for update", f"OTC Assistant {APP_VERSION} is the newest "
+                                        f"version ({r['upstream']}).{extra}")
+                return
+            if r["ahead"]:
+                QMessageBox.warning(self, "Check for update",
+                                    f"GitHub has a newer version ({r['version']}), but this copy has changes of its "
+                                    f"own too ({r['ahead']}), so it can't update itself: update it with git by hand.")
+                return
+            changes = "\n".join(f"  \u2022 {line}" for line in r["log"]) or "  (no details)"
+            more = r.get("changes", len(r["log"])) - len(r["log"])
+            answer = QMessageBox.question(
+                self, "Update available",
+                f"Version {r['version']} is available (this is {APP_VERSION}). What's new:\n\n{changes}"
+                + (f"\n  ...and {more} more" if more > 0 else "")
+                + "\n\nUpdate now and restart the app?")
+            if answer == QMessageBox.StandardButton.Yes:
+                self.update_btn.setEnabled(False)
+                self.update_btn.setText("Updating...")
+                self.updater.update()
+        elif r["step"] == "update":
+            self.statusBar().showMessage("Updated: restarting...", 5000)
+            self.restart_after_close = True
+            self.close()
+            if self.isVisible():            # the close was cancelled (a download running)
+                self.restart_after_close = False
+                QMessageBox.information(self, "Check for update",
+                                        "The app was updated: restart it to use the new version.")
+
     def show_banner(self, text):
         self.banner.setText(text)
         self.banner.setVisible(bool(text))
@@ -3457,6 +3514,8 @@ class MainWindow(QMainWindow):
             self.settings.pop("schwab_split", None)
             save_settings(self.settings)
         event.accept()
+        if self.restart_after_close:        # updated: the new version starts (its own server too)
+            QProcess.startDetached(sys.executable, [str(APP_DIR / "otc_daily_gui.py")], str(APP_DIR))
 
 
 def install_error_log():
