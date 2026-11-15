@@ -644,8 +644,8 @@ class CandleChart(DrawingsMixin, QWidget):
                 mid = (tags[0][0] + tags[1][0]) / 2
                 mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
-            for y, text, bg, value in tags:
-                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor(GOLD), arrow="inside")
+            for y, text, bg, value in tags:      # (bold: they stand out from the book's other prices)
+                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor(GOLD), bold=True, arrow="inside")
                 self._tag_points.append((tip.x(), tip.y(), value, 0))
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])
