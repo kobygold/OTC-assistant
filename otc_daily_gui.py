@@ -667,6 +667,24 @@ class MainWindow(QMainWindow):
         central_lay.setContentsMargins(0, 0, 0, 0)
         central_lay.setSpacing(0)
         central_lay.addWidget(self.banner)
+        # ... and a line while the recording's missed periods come from the main server (in the
+        # background: nothing waits for it)
+        self.history_bar = QWidget()
+        self.history_bar.setObjectName("historybar")
+        self.history_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.history_bar.setStyleSheet("#historybar { background: #1f3b57; } QLabel { color: #e8e8e8; }")
+        hb = QHBoxLayout(self.history_bar)
+        hb.setContentsMargins(10, 3, 10, 3)
+        self.history_label = QLabel("")
+        hb.addWidget(self.history_label)
+        self.history_progress = QProgressBar()
+        self.history_progress.setMaximumWidth(260)
+        self.history_progress.setMaximumHeight(14)
+        self.history_progress.setTextVisible(False)
+        hb.addWidget(self.history_progress)
+        hb.addStretch()
+        self.history_bar.hide()
+        central_lay.addWidget(self.history_bar)
         central_lay.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self.tabs.addTab(self._build_download_tab(), "Download")
@@ -680,6 +698,7 @@ class MainWindow(QMainWindow):
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
         self.computers.banner.connect(self.show_banner)
+        self.computers.history.connect(self.show_history)
         if self.checklist.trader is not None:
             self.checklist.trader.blocked = self.computers.block_reason
             # the orders and positions: read by the main server, once for all my computers
@@ -2568,6 +2587,16 @@ class MainWindow(QMainWindow):
         if self.chart.selected is not None and self.chart._find_drawing(self.chart.selected) is None:
             self.chart.selected = None
         self.chart.update()
+
+    def show_history(self, done, total, source):
+        """The recording's missed periods coming from the main server: a line with its progress."""
+        busy = total > 0 and done < total
+        if busy:
+            self.history_label.setText(f"Updating history from {source or 'the main server'}... "
+                                       f"({done} of {total} day{'s' if total != 1 else ''})")
+            self.history_progress.setRange(0, total)
+            self.history_progress.setValue(done)
+        self.history_bar.setVisible(busy)
 
     def show_banner(self, text):
         self.banner.setText(text)

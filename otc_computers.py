@@ -30,6 +30,7 @@ GREEN, RED, GRAY, YELLOW = "#4caf50", "#ff5252", "#a8a8a8", "#f2c200"
 class ComputersPanel(QWidget):
     summary = pyqtSignal(str, str)          # a short text for the tabs line, its colour ("" = hidden)
     banner = pyqtSignal(str)                # the yellow line at the top: no main server now ("" = none)
+    history = pyqtSignal(int, int, str)     # fetching the recording's missed periods: done, total (0: none), from
 
     def __init__(self, settings: dict, save_settings, link, shared, parent=None):
         super().__init__(parent)
@@ -125,6 +126,8 @@ class ComputersPanel(QWidget):
     def on_connected(self, ok):
         self.local_down = not ok
         if not ok:
+            self.history.emit(0, 0, "")
+        if not ok:
             self.head.setText("The server stopped: starting it again...")
             self.summary.emit("Server: restarting...", YELLOW)
         self.update_banner()
@@ -173,6 +176,8 @@ class ComputersPanel(QWidget):
                 self.show_cluster(msg["cluster"])
         elif kind == "event":
             self.add_event(msg)
+        elif kind == "history":
+            self.history.emit(int(msg.get("done") or 0), int(msg.get("total") or 0), msg.get("from") or "")
         elif kind == "cluster":
             self.show_cluster(msg)
         elif kind == "streamed":

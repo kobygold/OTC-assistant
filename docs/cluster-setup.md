@@ -102,6 +102,15 @@ computer not used any more (only while it is offline).
 | Login needed | Renew Schwab login (on any computer) |
 | No main server answers, and this computer can't be it | Add the Schwab keys to its settings.json, or start the main server |
 
+## The recording on every computer
+
+Every computer records everything the main server streams (`market_log/`, 14 days), and notes the
+periods it recorded (`_coverage.json` in each day's folder). When a computer connects to the main
+server (it was off, asleep, or just started), it fetches the periods it missed, newest day first, in
+the background: a blue line at the top shows "Updating history from home-pc... (1 of 3 days)" with its
+progress; everything else works meanwhile. To have the full history, keep the main server (the
+desktop) running; a period no running computer recorded stays a gap.
+
 ## Files on each computer (none of them in git)
 
 | File | What it is |

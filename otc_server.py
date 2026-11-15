@@ -23,7 +23,9 @@ What it does:
   25 min); the clients get the whole token (to take over one day) and write it to their file. The
   apps get the access token without the refresh token; one refused asks the server (token_request);
 - a new browser login made in any app comes to the main server (login), which sends it to all;
-- recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept;
+- recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept, on
+  every computer (a client records all the main server streams); a client that connects fetches
+  the periods it missed (it was off, or asleep) from the main server, newest day first;
 - the account reads (main server): every account's orders and positions, read once for all the
   computers: on an order event, when the stream connects, and when an app asks (asks from several
   computers within READ_BATCH_S share one read); the results go to every app (orders, positions);
@@ -60,13 +62,18 @@ Between servers (client -> main): hello {role "peer", secret: cluster_secret, na
 version}, want {symbols, extra, track, on}, token_request, login, change; main -> client: welcome
 {leader, token (whole), store, activity}, l1 {c, t}, l2 {s, c, t}, q {ticker, q} (as Schwab sent
 them), order_event, activity, token (whole), changed, refused, streamed, cluster, login_needed.
+History: client -> main history_index; main -> client history_index {days: {day: coverage}}; client
+-> main history_get {day, ranges}; main -> client history_part {day, name, data (gzip, base64)} ...
+history_done {day}. The apps get history {done, total, from} while it goes on.
 
 Run by the app; by hand: pythonw otc_server.py [--port N] [--settings path] [--token path]
 """
 
 import argparse
 import asyncio
+import base64
 import collections
+import gzip
 import hashlib
 import hmac
 import json
@@ -82,7 +89,7 @@ from datetime import datetime
 from pathlib import Path
 
 from otc_orders import account_numbers, read_orders, read_positions
-from otc_recorder import Recorder
+from otc_recorder import Recorder, subtract_ranges
 from otc_shared import SharedStore
 
 APP_DIR = Path(__file__).resolve().parent
@@ -106,6 +113,7 @@ TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 60))   # a higher-prio
                                 # takes over after running this long
 FAKE_STREAM = os.environ.get("OTC_FAKE_STREAM") == "1"      # tests: no Schwab connection at all
 FAKE_ACCOUNTS = os.environ.get("OTC_FAKE_ACCOUNTS")         # tests: the accounts' orders from this file
+MIN_GAP_MS = 2000               # a missed period shorter than this isn't fetched
 READ_BATCH_S = 0.5              # an app's ask to read waits this long: asks from all the computers together
 EVENT_READ_S = 0.7              # an order event's read waits this long: the events come a few together
 PROBE_TIMEOUT_S = 2             # asking a computer who the main server is
@@ -212,7 +220,7 @@ class Conn:
         if not self.on:
             return False
         if self.peer:
-            return ticker in self.symbols or ticker in self.extra or ticker in self.track
+            return True             # a client records all that's streamed (the same files everywhere)
         return ticker == self.symbol or ticker in self.extra
 
     def put(self, msg):
@@ -282,6 +290,11 @@ class Server:
         self.lost_logged = False
         self.last_heard = time.time()
         self.read_wanted = {}                   # (main server) (what, account or "*") -> when it is due
+        self.history_task = None                # (client) fetching the periods missed
+        self.hist_wait = None                   # (client) the main server's next history answer
+        self.hist_writes = []
+        self.hist_bytes = 0
+        self.history_msg = None                 # the apps' progress line: {done, total, from}
         self.last_reads = {}                    # (what, account) -> the latest orders / positions message
         self.account_hashes = None              # (main server) [(last 3 digits, hash)]
 
@@ -387,6 +400,8 @@ class Server:
             conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
         for m in list(self.last_reads.values()):        # the latest orders and positions
             conn.put(m)
+        if self.history_msg:
+            conn.put(self.history_msg)
         log(f"App connected ({len(self.conns)} now)")
         try:
             async for raw in ws:
@@ -485,6 +500,10 @@ class Server:
                     await self.on_login(msg.get("token"))
                 elif kind == "takeover_request":
                     asyncio.create_task(self.hand_over(conn))
+                elif kind == "history_index":
+                    conn.put({"type": "history_index", "days": await asyncio.to_thread(self.recorder.coverage_index)})
+                elif kind == "history_get":
+                    asyncio.create_task(self.serve_history(conn, str(msg.get("day")), msg.get("ranges") or []))
         except ConnectionClosed:
             pass
         finally:
@@ -907,7 +926,12 @@ class Server:
                     t.cancel()
             was = self.up is not None
             self.up = None
-            if was and not handed and not self.lost_logged:
+            self.recorder.live(False)
+            if self.history_task is not None:
+                self.history_task.cancel()
+                self.history_task = None
+                self.set_history(0, 0)
+            if was and not handed and not self.lost_logged and not self.stop_event.is_set():
                 self.event(f"The main server {name} closed the connection")
             self.lost_logged = False
             if not handed:
@@ -988,18 +1012,25 @@ class Server:
         for m in waiting:
             self.up.put(m)
         self.set_state("connected", "")
+        self.recorder.live(True)
+        if self.history_task is not None:
+            self.history_task.cancel()
+        self.history_task = asyncio.create_task(self.catch_up())
 
     def on_up_message(self, m):
         kind = m.get("type")
         if kind == "hb":
             return
         if kind == "l1":
+            self.l1.setdefault(m["c"].get("key"), {})
             self.on_level1({"content": [m["c"]], "timestamp": m.get("t")})
         elif kind == "l2":
+            self.books.setdefault(m["c"].get("key"), {})
             self.on_book(m["s"], {"content": [m["c"]], "timestamp": m.get("t")})
         elif kind == "q":
             t = m["ticker"]
-            if t in self.l1:
+            if t:
+                self.books.setdefault(t, {})
                 self.l1[t] = dict(m["q"])
                 self.recorder.quote(t, self.l1[t])
                 self.broadcast({"type": "quote", "ticker": t, "q": dict(self.l1[t])},
@@ -1007,6 +1038,11 @@ class Server:
         elif kind == "order_event":
             self.recorder.account(m["kind"], m["order_id"])
             self.broadcast(m)
+        elif kind in ("history_index", "history_done"):
+            if self.hist_wait is not None and not self.hist_wait.done():
+                self.hist_wait.set_result(m)
+        elif kind == "history_part":
+            self.hist_writes.append(asyncio.create_task(self.take_history_part(m)))
         elif kind in ("orders", "positions"):
             if m.get("data") is not None:
                 self.last_reads[(kind, m.get("account"))] = m
@@ -1117,6 +1153,71 @@ class Server:
             if client is None:
                 raise RuntimeError("no Schwab login")
             return (read_orders if what == "orders" else read_positions)(client, account_hash)
+
+    # ------------------------------------------------------------ the periods missed (history) ---
+    async def serve_history(self, conn, day, ranges):
+        """(main server) A client's missed lines of a day: one message per ticker, compressed."""
+        try:
+            parts = await asyncio.to_thread(self.recorder.lines_in, day, ranges)
+        except Exception as e:
+            log(f"History of {day} for {conn.name} failed: {type(e).__name__}: {e}")
+            parts = {}
+        for name, lines in parts.items():
+            data = base64.b64encode(gzip.compress("\n".join(lines).encode("utf-8"))).decode("ascii")
+            conn.put({"type": "history_part", "day": day, "name": name, "data": data})
+        conn.put({"type": "history_done", "day": day, "lines": sum(len(v) for v in parts.values())})
+
+    async def take_history_part(self, m):
+        raw = base64.b64decode(m["data"])
+        self.hist_bytes += len(raw)
+        lines = [line for line in gzip.decompress(raw).decode("utf-8").split("\n") if line]
+        await asyncio.to_thread(self.recorder.take_fetched, str(m["day"]), str(m["name"]), lines)
+
+    def set_history(self, done, total):
+        self.history_msg = {"type": "history", "done": done, "total": total, "from": self.leader_name} if total else None
+        self.broadcast(self.history_msg or {"type": "history", "done": 0, "total": 0, "from": ""})
+
+    async def ask_history(self, msg, timeout):
+        self.hist_wait = self.loop.create_future()
+        self.up.put(msg)
+        try:
+            return await asyncio.wait_for(self.hist_wait, timeout)
+        finally:
+            self.hist_wait = None
+
+    async def catch_up(self):
+        """(client) The periods the main server recorded and this computer didn't (it was off,
+        asleep, or not connected): fetched, newest day first, into this computer's files."""
+        try:
+            await asyncio.sleep(2)              # (after the welcome's first messages)
+            index = await self.ask_history({"type": "history_index"}, 30)
+            mine = await asyncio.to_thread(self.recorder.coverage_index)
+            todo = []
+            for day in sorted(index.get("days") or {}, reverse=True):
+                missing = [r for r in subtract_ranges(index["days"][day], mine.get(day, []))
+                           if r[1] - r[0] >= MIN_GAP_MS]
+                if missing:
+                    todo.append((day, missing))
+            if not todo:
+                return
+            start, self.hist_bytes = time.time(), 0
+            self.set_history(0, len(todo))
+            for i, (day, ranges) in enumerate(todo):
+                self.hist_writes = []
+                await self.ask_history({"type": "history_get", "day": day, "ranges": ranges}, 600)
+                await asyncio.gather(*self.hist_writes)
+                self.recorder.add_coverage(day, ranges)
+                self.set_history(i + 1, len(todo))
+            self.event(f"History: fetched what was missed of {len(todo)} day{'s' if len(todo) != 1 else ''} "
+                       f"({self.hist_bytes / 1e6:.1f} MB) from {self.leader_name} in {time.time() - start:.0f} s")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event(f"History: fetching from {self.leader_name} stopped ({type(e).__name__}: {e}); "
+                       "tried again at the next connection")
+        finally:
+            if self.history_msg:
+                self.set_history(0, 0)
 
     # ------------------------------------------------------------ token ---
     def read_token(self):
@@ -1294,6 +1395,7 @@ class Server:
         if FAKE_STREAM:                 # tests: "streaming" without Schwab
             self.streaming = True
             self.event("Schwab stream connected (pretend)")
+            self.recorder.live(True)
             self.schedule_read("orders", None, 0)
             self.schedule_read("positions", None, 0)
             try:
@@ -1304,6 +1406,7 @@ class Server:
                         self.books.setdefault(t, {})
                     await asyncio.sleep(POLL_SECONDS)
             finally:
+                self.recorder.live(False)
                 self.streaming = False
                 self.symbols = set()
             return
@@ -1311,6 +1414,7 @@ class Server:
         stream = StreamClient(client)
         await stream.login()
         self.event("Schwab stream connected")
+        self.recorder.live(True)
         # Handlers before subscribing: messages without one are dropped
         stream.add_nasdaq_book_handler(lambda m: self.on_book("NASDAQ_BOOK", m))
         stream.add_nyse_book_handler(lambda m: self.on_book("NYSE_BOOK", m))
@@ -1338,6 +1442,7 @@ class Server:
                 except asyncio.TimeoutError:
                     pass
         finally:
+            self.recorder.live(False)
             self.streaming = False
             self.set_activity(False)
             self.symbols = set()
