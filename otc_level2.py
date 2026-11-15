@@ -104,12 +104,14 @@ class ServerFeed(QObject):
     login_needed = pyqtSignal(str)         # why
     order_event = pyqtSignal(str, str)     # the account activity stream: an event type, its Schwab order id
     activity = pyqtSignal(bool)            # the account activity stream is on (True) or off
+    streamed = pyqtSignal(int, int, int)   # tickers streamed, wanted, Schwab's most
 
     def __init__(self, link):
         super().__init__()
         self.link = link
         self._want = None                  # the ticker to follow, None for none
-        self._extra = set()                # more tickers to stream (the open ATM trades)
+        self._extra = []                   # more tickers to stream (the open ATM trades)
+        self._track = []                   # more to stream for the record only (favorites...)
         self._on = False                   # streaming wanted at all
         link.message.connect(self._on_message)
         link.connected.connect(self._on_connected)
@@ -122,8 +124,15 @@ class ServerFeed(QObject):
 
     def set_extra(self, tickers):
         """More tickers to stream besides the one followed."""
-        self._extra = {t for t in tickers if t}
+        self._extra = [t for t in tickers if t]
         if self._extra:
+            self._on = True
+        self._send()
+
+    def set_track(self, tickers):
+        """More tickers to stream for the record only (in order of priority)."""
+        self._track = [t for t in tickers if t]
+        if self._track:
             self._on = True
         self._send()
 
@@ -148,7 +157,7 @@ class ServerFeed(QObject):
                 pass
 
     def _send(self):
-        self.link.want(self._want, self._extra, self._on)
+        self.link.want(self._want, self._extra, self._track, self._on)
 
     def _on_connected(self, ok):
         if not ok:
@@ -169,6 +178,8 @@ class ServerFeed(QObject):
             self.order_event.emit(msg["kind"], msg["order_id"])
         elif kind == "activity":
             self.activity.emit(bool(msg["on"]))
+        elif kind == "streamed":
+            self.streamed.emit(int(msg["count"]), int(msg["wanted"]), int(msg["max"]))
         elif kind == "welcome":
             self.activity.emit(bool(msg.get("activity")))
             if msg.get("login_needed"):
@@ -185,6 +196,7 @@ class Level2Panel(QWidget):
     logged_in = pyqtSignal()                      # a new browser login was saved to the token file
     order_event = pyqtSignal(str, str)            # the account activity stream's event type, Schwab order id
     activity_live = pyqtSignal(bool)              # the account activity stream is on / off
+    streamed = pyqtSignal(int, int, int)          # tickers streamed, wanted, Schwab's most
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -202,7 +214,9 @@ class Level2Panel(QWidget):
         # ticker -> [{"side", "price", "shares", "account", ...}] (set by the app)
         self.my_orders = lambda ticker: []
         self.shown_book = ([], [])             # the shown ticker's bids and asks, as streamed
-        self.extra = set()                     # the open ATM trades' tickers, streamed too
+        self.extra = []                        # the open ATM trades' tickers, streamed too
+        self.tracked = []                      # more tickers streamed for the record (favorites...)
+        self.off = False                       # Level II turned off: no stream at all
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
         self.prev_quote = {}                   # bid/ask price and size at the last quote update
@@ -311,15 +325,27 @@ class Level2Panel(QWidget):
             if self.feed:
                 self.feed.set_symbol(None)
             return
+        self.off = False
         self._make_feed()
         if self.feed:
             self.feed.set_symbol(ticker)
 
     def watch(self, tickers):
         """Streams these tickers too (the open ATM trades), while Level II is on."""
-        self.extra = set(tickers)
+        self.extra = list(tickers)
+        if self.extra and not self.off:
+            self._make_feed()
         if self.feed:
             self.feed.set_extra(self.extra)
+
+    def track(self, tickers):
+        """Streams these tickers too, for the record only (recorded by the server, not sent here),
+        in order of priority (Schwab streams up to 500 in all)."""
+        self.tracked = list(tickers)
+        if self.tracked and not self.off:
+            self._make_feed()
+        if self.feed:
+            self.feed.set_track(self.tracked)
 
     def _make_feed(self):
         key, secret, _ = self.keys()
@@ -334,7 +360,9 @@ class Level2Panel(QWidget):
             self.feed.login_needed.connect(self.on_login_needed)
             self.feed.order_event.connect(self.order_event)
             self.feed.activity.connect(self.activity_live)
+            self.feed.streamed.connect(self.streamed)
             self.feed.set_extra(self.extra)
+            self.feed.set_track(self.tracked)
 
     def on_quote(self, ticker, q):
         self.any_quote.emit(ticker, q)
@@ -350,9 +378,11 @@ class Level2Panel(QWidget):
         """Logs out of Schwab's stream and drops the connection, so another PC with the same
         login can stream (Schwab allows one stream per login). follow() connects again."""
         self.follow("")
+        self.off = True
         if self.feed:
             feed, self.feed = self.feed, None
-            for signal in (feed.book, feed.quote, feed.status, feed.login_needed, feed.order_event, feed.activity):
+            for signal in (feed.book, feed.quote, feed.status, feed.login_needed, feed.order_event, feed.activity,
+                           feed.streamed):
                 try:
                     signal.disconnect()
                 except TypeError:

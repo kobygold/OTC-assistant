@@ -139,7 +139,7 @@ class ServerLink(QObject):
         if sys.platform == "win32":
             flags = 0x00000008 | 0x00000200 | 0x08000000   # detached, own group, no window
         try:
-            subprocess.Popen([str(pythonw if pythonw.exists() else exe), str(SERVER_PATH), *self.server_args],
+            subprocess.Popen([str(pythonw if pythonw.exists() else exe), str(SERVER_PATH), "--port", str(self.port), *self.server_args],
                              cwd=str(APP_DIR), creationflags=flags, close_fds=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
@@ -164,9 +164,11 @@ class ServerLink(QObject):
             except Exception:
                 return False
 
-    def want(self, symbol, extra, on=True):
-        """What to stream: the chart's ticker, more tickers; on=False: no stream at all."""
-        self._want = {"type": "want", "symbol": symbol or None, "extra": sorted(t for t in extra if t), "on": bool(on)}
+    def want(self, symbol, extra, track=(), on=True):
+        """What to stream: the chart's ticker, more tickers (sent here too), more for the record
+        only (in order of priority); on=False: no stream at all."""
+        self._want = {"type": "want", "symbol": symbol or None, "extra": [t for t in extra if t],
+                      "track": [t for t in track if t], "on": bool(on)}
         self.send(self._want)
 
     def login(self, wrapped) -> bool:

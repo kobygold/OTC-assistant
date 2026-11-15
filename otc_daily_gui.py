@@ -985,6 +985,7 @@ class MainWindow(QMainWindow):
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json", self.server,
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
+        self.level2.off = not self.level2_show.isChecked()     # hidden: no stream at all
         self.level2.live_quote.connect(self.on_live_quote)
         self.level2.logged_in.connect(self.on_logged_in)
         self.minute_loader = MinuteLoader(self.settings, APP_DIR / "schwab_token.json")
@@ -1015,6 +1016,7 @@ class MainWindow(QMainWindow):
         self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(
             self, self.chart.ticker, side, price, self.chart_quotes))
         self.level2.watch(atm_trades.stream_tickers())
+        self.update_tracked()
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
@@ -1702,6 +1704,10 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.level2.setVisible(checked)
         # Hidden, it stops following the ticker, so nothing streams for nothing
+        if checked:
+            self.level2.off = False
+            self.level2.watch(self.level2.extra)
+            self.level2.track(self.level2.tracked)
         if checked and self.chart_fav_ticker:
             self.level2.follow(self.chart_fav_ticker, self.chart_name)
         elif not checked:
@@ -2345,6 +2351,12 @@ class MainWindow(QMainWindow):
         self.schwab_status = QLabel("")
         self.schwab_status.setStyleSheet("color: #a8a8a8;")
         row.addWidget(self.schwab_status)
+        # how many tickers the server streams (and records), of Schwab's 500
+        self.stream_count = QLabel("")
+        self.stream_count.setStyleSheet("color: #a8a8a8;")
+        row.addWidget(self.stream_count)
+        self.stream_full_told = False
+        self.level2.streamed.connect(self.on_streamed)
         self.after_tabs = AfterTabs(self.tabs, corner)
         self.renew_snoozed = False
         self.renew_asking = False
@@ -2401,9 +2413,36 @@ class MainWindow(QMainWindow):
         self.show_schwab_accounts()
         return tab
 
+    def update_tracked(self):
+        """Streamed and recorded by the server, besides what the app shows: every account's
+        orders' and stocks owned's tickers, then the favorites (by group)."""
+        favs = sorted(self.favs, key=lambda t: (self.favs[t].get("group", 9), t))
+        self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + favs)))
+
+    def on_streamed(self, count, wanted, most):
+        """The server's count of streamed tickers, next to the account selector."""
+        if wanted > most:
+            color, text = "#ff5252", f"Streaming {count} of {wanted} tickers (Schwab's most: {most})"
+        elif count >= most * 0.9:
+            color, text = "#f2c200", f"Streaming {count} tickers (of Schwab's {most})"
+        else:
+            color, text = "#a8a8a8", f"Streaming {count} tickers"
+        self.stream_count.setText(text)
+        self.stream_count.setStyleSheet(f"color: {color};")
+        self.stream_count.setToolTip(
+            f"The server streams (and records) {count} tickers: the chart's, the ATM trades', every "
+            f"account's orders and stocks owned, and the favorites. Schwab streams up to {most}; "
+            "past that, the favorites last in the list aren't streamed.")
+        if wanted > most and not self.stream_full_told:
+            self.stream_full_told = True
+            QMessageBox.warning(self, "Too many tickers to stream",
+                                f"{wanted} tickers are wanted, and Schwab streams up to {most}: the last "
+                                f"{wanted - most} (favorites first) aren't streamed or recorded.")
+
     def on_atm_changed(self):
         # streamed: the ATM trades', the other orders' and the stocks owned's tickers (as read now)
         self.level2.watch(self.checklist.atm.stream_tickers())
+        self.update_tracked()
         self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
 
@@ -2986,6 +3025,7 @@ class MainWindow(QMainWindow):
         else:
             self.favs.setdefault(ticker, {})["group"] = group
         save_favorites(self.favs)
+        self.update_tracked()
         # Later, so no table replaces its cells while it is still handling the click
         QTimer.singleShot(0, lambda: self.refresh_fav_views(ticker))
 

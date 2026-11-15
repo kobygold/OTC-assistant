@@ -11,11 +11,17 @@ What it does:
 - the token: it is the only one that renews the access token (5 minutes before it runs out, ~every
   25 min) and writes schwab_token.json. The app gets the access token without the refresh token
   for its own Schwab requests; one refused asks the server again (token_request);
-- a new browser login made in the app comes here (login) and is saved.
+- a new browser login made in the app comes here (login) and is saved;
+- recording: everything streamed is saved to market_log/ (otc_recorder.py), 14 days kept.
+
+What is streamed: each app's chart ticker, its extra tickers (sent to it: the open ATM trades,
+orders, stocks owned) and its tracked tickers (recorded only: the favorites...), in that order of
+priority, up to MAX_TICKERS (Schwab's limit); the count goes to the apps (streamed).
 
 Messages (JSON, one per WebSocket message), app -> server:
   hello {secret}             first; a wrong secret closes the connection
-  want {symbol, extra, on}   the chart's ticker, more tickers to stream, False = no stream at all
+  want {symbol, extra, track, on}   the chart's ticker, more tickers to stream (and send to it),
+                             more to stream for the record only; on False = no stream at all
   token_request {old}        "this access token was refused": renewed (if it is still the current
                              one) and sent back
   login {token}              a new browser login (the token as schwab-py writes it)
@@ -25,6 +31,7 @@ server -> app:
   token {token: {token, created}}   after every renewal / login
   quote {ticker, q}  book {ticker, bids, asks}  status {text}  login_needed {why}
   order_event {kind, order_id}  activity {on}
+  streamed {count, wanted, max}     the tickers streamed, of those wanted (more than max: the rest not)
 
 Run by the app; by hand: pythonw otc_server.py [--port N] [--settings path] [--token path]
 """
@@ -42,6 +49,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from otc_recorder import Recorder
+
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this (a new browser login)
@@ -53,6 +62,8 @@ FORCED_RENEW_GAP_S = 30         # a refused token renews at most this often
 IDLE_EXIT_S = 10                # no app connected for this long (after one was): the server ends
 START_GRACE_S = 30              # ... or, at the start, no app came at all
 LOG_MAX_BYTES = 1_000_000
+MAX_TICKERS = 500               # Schwab streams up to this many tickers per service
+TIDY_S = 3600                   # the recording's old days: compressed / deleted this often
 
 # Level 1 of Schwab's quote (REST) under the stream's names: the first quote of a new ticker
 REST_L1 = (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
@@ -113,13 +124,15 @@ class Conn:
     def __init__(self, ws):
         self.ws = ws
         self.symbol = None          # its chart's ticker
-        self.extra = set()          # more tickers it wants streamed
+        self.extra = []             # more tickers it wants streamed and sent to it
+        self.track = []             # more tickers it wants streamed for the record only
         self.on = False             # False: it wants no stream at all
         self.bye = False
         self.queue = asyncio.Queue()
 
-    def wanted(self):
-        return (({self.symbol} if self.symbol else set()) | self.extra) if self.on else set()
+    def sees(self, ticker):
+        """The ticker's quotes and books go to this app."""
+        return self.on and (ticker == self.symbol or ticker in self.extra)
 
     def put(self, msg):
         self.queue.put_nowait(msg)
@@ -131,7 +144,7 @@ class Conn:
 
 
 class Server:
-    def __init__(self, settings: dict, token_path: Path):
+    def __init__(self, settings: dict, token_path: Path, market_log: Path):
         self.key = settings.get("schwab_app_key", "").strip()
         self.app_secret = settings.get("schwab_app_secret", "").strip()
         self.secret = str(settings.get("server_secret", ""))
@@ -144,6 +157,8 @@ class Server:
         self.books = {}                         # ticker -> {service -> (bids, asks)}
         self.l1 = {}                            # ticker -> its Level 1 fields so far
         self.symbols = set()                    # the tickers subscribed now
+        self.counted = None                     # (streamed, wanted) as last sent to the apps
+        self.recorder = Recorder(market_log, log)
         self.streaming = False                  # the stream is logged in
         self.activity_on = False
         self.status_text = ""
@@ -169,14 +184,15 @@ class Server:
             return
         log(f"Server started (port {port}, code {self.code})")
         tasks = [asyncio.create_task(self.stream_loop()), asyncio.create_task(self.renew_loop()),
-                 asyncio.create_task(self.idle_loop())]
+                 asyncio.create_task(self.idle_loop()), asyncio.create_task(self.tidy_loop())]
         await self.stop_event.wait()
         server.close()
         for t in tasks:
             t.cancel()
         # the stream logs out (up to 3 s); then the process ends, whatever else is still waiting
         await asyncio.wait(tasks, timeout=6)
-        log("Server ended")
+        self.recorder.close()
+        log(f"Server ended ({self.recorder.lines:,} lines recorded)")
         del websockets
         os._exit(0)
 
@@ -184,9 +200,18 @@ class Server:
         log(f"Ending: {why}")
         self.stop_event.set()
 
+    async def tidy_loop(self):
+        while True:
+            try:
+                await asyncio.to_thread(self.recorder.tidy)
+            except Exception as e:
+                log(f"Recording: tidying failed: {type(e).__name__}: {e}")
+            await asyncio.sleep(TIDY_S)
+
     async def idle_loop(self):
         while True:
             await asyncio.sleep(1)
+            self.recorder.flush()
             if self.conns:
                 self.idle_since = time.time()
             elif self.had_app and time.time() - self.idle_since > IDLE_EXIT_S:
@@ -211,6 +236,8 @@ class Server:
         writer = asyncio.create_task(conn.writer())
         conn.put({"type": "welcome", "code": self.code, "token": self.app_token(), "status": self.status_text,
                   "activity": self.activity_on, "login_needed": self.login_why})
+        if self.counted:
+            conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
         log(f"App connected ({len(self.conns)} now)")
         try:
             async for raw in ws:
@@ -253,7 +280,8 @@ class Server:
     def on_want(self, conn, msg):
         old = conn.symbol if conn.on else None
         conn.symbol = msg.get("symbol") or None
-        conn.extra = {t for t in msg.get("extra") or [] if t}
+        conn.extra = [t for t in msg.get("extra") or [] if t]
+        conn.track = [t for t in msg.get("track") or [] if t]
         conn.on = bool(msg.get("on", True))
         if conn.on and conn.symbol and conn.symbol != old:
             if conn.symbol in self.symbols and self.streaming:
@@ -263,16 +291,33 @@ class Server:
                 self.emit_book(conn.symbol, [conn])
         elif conn.on and not conn.symbol and old:
             conn.put({"type": "status", "text": "Level II paused."})
+        self.wanted()                   # the count to the apps, if it changed
         self.wants_changed.set()
 
     def wanted(self):
-        out = set()
-        for c in self.conns:
-            out |= c.wanted()
-        return out
+        """The tickers to stream: the apps' chart tickers first, then their extra ones, then the
+        tracked ones, up to MAX_TICKERS. The count goes to the apps when it changes."""
+        order = []
+        on = [c for c in self.conns if c.on]
+        for c in on:
+            order += [c.symbol] if c.symbol else []
+        for c in on:
+            order += c.extra
+        for c in on:
+            order += c.track
+        order = list(dict.fromkeys(order))
+        streamed = order[:MAX_TICKERS]
+        counted = (len(streamed), len(order))
+        if counted != self.counted:
+            self.counted = counted
+            if counted[1] > MAX_TICKERS:
+                log(f"More tickers wanted than Schwab streams: {counted[1]} (the last "
+                    f"{counted[1] - MAX_TICKERS} aren't streamed)")
+            self.broadcast({"type": "streamed", "count": counted[0], "wanted": counted[1], "max": MAX_TICKERS})
+        return set(streamed)
 
     def stream_wanted(self):
-        return bool(self.wanted())
+        return any(c.on and (c.symbol or c.extra or c.track) for c in self.conns)
 
     def set_status(self, text, to=None):
         if to is None:
@@ -521,8 +566,9 @@ class Server:
             for rest, name in REST_L1:
                 if q.get(rest) is not None:
                     self.l1[s][name] = q[rest]
-            to = [c for c in self.conns if s in c.wanted()]
+            to = [c for c in self.conns if c.sees(s)]
             if self.l1[s]:
+                self.recorder.quote(s, self.l1[s])
                 self.broadcast({"type": "quote", "ticker": s, "q": dict(self.l1[s])}, to)
             self.broadcast({"type": "book", "ticker": s, "bids": [], "asks": []}, to)
             self.set_status(f"Live: waiting for {s}'s book...", [c for c in to if c.symbol == s])
@@ -547,6 +593,7 @@ class Server:
                 order_id = str(json.loads(c.get("MESSAGE_DATA") or "{}").get("SchwabOrderID") or "")
             except (ValueError, AttributeError):
                 order_id = ""
+            self.recorder.account(kind, order_id, msg.get("timestamp"))
             self.broadcast({"type": "order_event", "kind": kind, "order_id": order_id})
 
     def on_level1(self, msg):
@@ -554,9 +601,11 @@ class Server:
             key = c.get("key")
             if key in self.l1:
                 # After the first message only changed fields come
-                self.l1[key].update({k: v for k, v in c.items() if k.isupper()})
+                changed = {k: v for k, v in c.items() if k.isupper()}
+                self.l1[key].update(changed)
+                self.recorder.level1(key, changed, msg.get("timestamp"))
                 self.broadcast({"type": "quote", "ticker": key, "q": dict(self.l1[key])},
-                               [x for x in self.conns if key in x.wanted()])
+                               [x for x in self.conns if x.sees(key)])
 
     def on_book(self, service, msg):
         for c in msg.get("content", []):
@@ -564,6 +613,7 @@ class Server:
             if key not in self.books:
                 continue            # still arriving for a ticker just left
             self.books[key][service] = (book_side(c.get("BIDS", []), "BID"), book_side(c.get("ASKS", []), "ASK"))
+            self.recorder.book(key, service, c, c.get("BOOK_TIME") or msg.get("timestamp"))
             self.emit_book(key)
 
     def emit_book(self, key, to=None):
@@ -571,7 +621,7 @@ class Server:
         # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
         bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
         asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
-        to = [c for c in self.conns if key in c.wanted()] if to is None else to
+        to = [c for c in self.conns if c.sees(key)] if to is None else to
         self.broadcast({"type": "book", "ticker": key, "bids": with_levels(bids), "asks": with_levels(asks)}, to)
         if books:
             self.set_status(f"Live · {time.strftime('%H:%M:%S')}" if bids or asks else
@@ -586,6 +636,7 @@ def main():
     p.add_argument("--settings", default=str(APP_DIR / "settings.json"))
     p.add_argument("--token", default=str(APP_DIR / "schwab_token.json"))
     p.add_argument("--log", default=str(APP_DIR / "server_log.txt"))
+    p.add_argument("--market-log", default=str(APP_DIR / "market_log"))
     args = p.parse_args()
     LOG_PATH = Path(args.log)
     try:
@@ -594,7 +645,7 @@ def main():
         settings = {}
     port = args.port or int(settings.get("server_port") or DEFAULT_PORT)
     try:
-        asyncio.run(Server(settings, Path(args.token)).run(port))
+        asyncio.run(Server(settings, Path(args.token), Path(args.market_log)).run(port))
     except Exception:
         log("Server crashed:\n" + traceback.format_exc())
         sys.exit(1)

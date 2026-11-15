@@ -1472,6 +1472,20 @@ class AtmTrades(QObject):
     def chosen_account(self):
         return self.settings.get("schwab_account") or ""
 
+    def all_accounts(self):
+        """The login's accounts (last 3 digits), once read."""
+        return [t for t, _, _ in getattr(self.trader.session, "accounts", [])] if self.trader else []
+
+    def tracked_tickers(self):
+        """The tickers to stream and record: the open ATM trades', and every account's open orders'
+        and stocks owned (as last read), in that order."""
+        out = list(self.open_tickers())
+        for account in sorted(self.schwab_orders):
+            out += [o["ticker"] for o in self.schwab_orders[account] if o.get("open")]
+        for account in sorted(self.positions):
+            out += [p["ticker"] for p in self.positions[account]]
+        return list(dict.fromkeys(t for t in out if t))
+
     def tracked_ids(self):
         """The order ids the ATM trades follow, now or before."""
         ids = set()
@@ -1912,12 +1926,12 @@ class AtmTrades(QObject):
                 self.trader.check(e["id"], "SELL", e["sell_id"], e.get("account"))
         # the accounts' orders: the chosen one's are drawn on the chart; an open trade's show a
         # change made in thinkorswim
-        accounts = {self.chosen_account()} | {e.get("account") for e in self.entries
-                                               if e.get("state") in ("buy_open", "sell_open")}
+        # every account's: their tickers are streamed and recorded (tracked_tickers)
+        accounts = {self.chosen_account()} | set(self.all_accounts()) | {
+            e.get("account") for e in self.entries if e.get("state") in ("buy_open", "sell_open")}
         for account in sorted(a for a in accounts if a):
             self.trader.read_orders(account)
-        if self.chosen_account():       # the stocks owned there (the Schwab tab's list)
-            self.trader.read_positions(self.chosen_account())
+            self.trader.read_positions(account)     # the stocks owned (the chosen one's: the Schwab tab's list)
 
     def _check_quotes(self):
         # the open trades' tickers, and the chosen account's other orders' and stocks owned (the
