@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import sys
 import threading
 import time
@@ -173,9 +174,11 @@ class Server:
         server.close()
         for t in tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # the stream logs out (up to 3 s); then the process ends, whatever else is still waiting
+        await asyncio.wait(tasks, timeout=6)
         log("Server ended")
         del websockets
+        os._exit(0)
 
     def quit(self, why):
         log(f"Ending: {why}")
@@ -406,10 +409,13 @@ class Server:
 
     # ------------------------------------------------------------ the stream ---
     async def wait_for(self, event, seconds=None):
+        """Until the event is set, or `seconds` passed (asyncio.wait: unlike wait_for, it never
+        swallows the task's cancelling at the end)."""
+        waiter = asyncio.ensure_future(event.wait())
         try:
-            await asyncio.wait_for(event.wait(), seconds)
-        except asyncio.TimeoutError:
-            pass
+            await asyncio.wait({waiter}, timeout=seconds)
+        finally:
+            waiter.cancel()
         event.clear()
 
     async def stream_loop(self):
