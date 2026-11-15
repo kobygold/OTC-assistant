@@ -54,7 +54,9 @@ The design is in [server-design.md](server-design.md).
 
 ## 3. Each client (laptop, work laptop...)
 
-Nothing to copy but the app: no Schwab keys, no login, no data files.
+Nothing to copy but the app: no Schwab keys, no login, no Massive key. Only the daily candles
+(`otc_daily.db`, for the charts and Zones) aren't shared: copy the file from another computer (with
+its app closed), or download them on the Download tab.
 
 1. Open the **Computers** tab:
    - **Cluster secret**: paste the main server's;
@@ -64,7 +66,8 @@ Nothing to copy but the app: no Schwab keys, no login, no data files.
 2. Within seconds the log shows "Connected to the main server home-pc" and the tabs line "Client of
    home-pc"; the main server's Computers tab lists the client as Online.
 3. The client gets from the main server:
-   - the Schwab login and the Schwab app's keys (saved to its `settings.json`: the status bar says so);
+   - the Schwab login, the Schwab app's keys and Massive's API key (saved to its `settings.json`: the
+     status bar says so);
      a login made on a client, with **Renew Schwab login...**, goes to the main server and to all;
    - the accounts (the account selector fills in), their orders and positions;
    - the favorites, drawings and ATM trades (its own old files aren't used);
@@ -133,7 +136,8 @@ desktop) running; a period no running computer recorded stays a gap.
 
 | File | What it is |
 |---|---|
-| `settings.json` | this computer's settings: Schwab keys (a client gets them from the main server), `server_name`, `cluster_secret`, `cluster_join` (Main server), `server_address` |
+| `settings.json` | this computer's settings: Schwab keys and Massive's key (a client gets them from the main server), `server_name`, `cluster_secret`, `cluster_join` (Main server), `server_address` |
+| `otc_daily.db` | the daily candles (Download tab), not shared: copied or downloaded on each computer |
 | `schwab_token.json` | the Schwab login (renewed by the main server, sent to the clients) |
 | `shared.json` | the shared data (the main server's copy; a client's is a copy of it) |
 | `market_log/` | the recorded stream, by day and ticker, 14 days |

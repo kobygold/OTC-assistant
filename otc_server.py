@@ -252,6 +252,7 @@ class Server:
         self.key = settings.get("schwab_app_key", "").strip()
         self.app_secret = settings.get("schwab_app_secret", "").strip()
         self.callback = settings.get("schwab_callback_url", "").strip()
+        self.massive_key = settings.get("api_key", "").strip()      # Massive's (the daily candles)
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
         self.name = str(settings.get("server_name") or socket.gethostname()).strip()
@@ -1023,20 +1024,26 @@ class Server:
             self.up.put(want)
 
     def keys(self):
-        """The Schwab app's keys (settings.json), for a client that hasn't them."""
-        if not (self.key and self.app_secret):
-            return None
-        return {"schwab_app_key": self.key, "schwab_app_secret": self.app_secret,
-                "schwab_callback_url": self.callback or "https://127.0.0.1"}
+        """The Schwab app's keys and Massive's API key (settings.json), for a client without them."""
+        keys = {}
+        if self.key and self.app_secret:
+            keys.update(schwab_app_key=self.key, schwab_app_secret=self.app_secret,
+                        schwab_callback_url=self.callback or "https://127.0.0.1")
+        if self.massive_key:
+            keys["api_key"] = self.massive_key
+        return keys or None
 
     def on_up_welcome(self, w):
-        keys = w.get("keys")
-        if keys and not (self.key and self.app_secret):
+        keys = w.get("keys") or {}
+        if keys.get("schwab_app_key") and not (self.key and self.app_secret):
             # this computer had none: the main server's, here and for the apps (they save them)
             self.key, self.app_secret = keys["schwab_app_key"], keys["schwab_app_secret"]
             self.callback = keys.get("schwab_callback_url", "")
             self.client = None
             self.event(f"Got the Schwab app's keys from the main server {self.leader_name}")
+        if keys.get("api_key") and not self.massive_key:
+            self.massive_key = keys["api_key"]
+            self.event(f"Got Massive's API key from the main server {self.leader_name}")
         if self.keys():
             self.broadcast({"type": "keys", "keys": self.keys()})
         if w.get("token"):

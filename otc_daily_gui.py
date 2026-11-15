@@ -58,7 +58,7 @@ from otc_computers import ComputersPanel
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.0.6"
+APP_VERSION = "2.0.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2745,10 +2745,17 @@ class MainWindow(QMainWindow):
         """The accounts weren't read (no login yet, or the server wasn't ready): read again as soon
         as the server has a login for this app. The Schwab app's keys, on a computer without them,
         come from the main server (through this computer's server): saved to settings.json."""
-        keys = msg.get("keys") if msg.get("type") in ("welcome", "keys") else None
-        if keys and not (self.settings.get("schwab_app_key", "").strip() and
-                         self.settings.get("schwab_app_secret", "").strip()):
-            self.settings.update(keys)
+        keys = (msg.get("keys") if msg.get("type") in ("welcome", "keys") else None) or {}
+        if keys.get("api_key") and not self.settings.get("api_key", "").strip():
+            # Massive's API key (the Download tab's): saved, and in its box
+            self.settings["api_key"] = keys["api_key"]
+            save_settings(self.settings)
+            self.key_edit.setText(keys["api_key"])
+            self.statusBar().showMessage("Massive's API key came from the main server and was saved.", 10000)
+        schwab = {k: v for k, v in keys.items() if k.startswith("schwab_")}
+        if schwab.get("schwab_app_key") and not (self.settings.get("schwab_app_key", "").strip() and
+                                                 self.settings.get("schwab_app_secret", "").strip()):
+            self.settings.update(schwab)
             save_settings(self.settings)
             self.statusBar().showMessage("The Schwab app's keys came from the main server and were saved.", 10000)
             if self.level2_show.isChecked() and self.chart_fav_ticker:     # Level II can start now
