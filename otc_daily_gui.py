@@ -54,6 +54,7 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
+from otc_node_link import NodeLink, set_link
 
 APP_NAME = "OTC Assistant"
 APP_VERSION = "1.1.0"
@@ -977,7 +978,11 @@ class MainWindow(QMainWindow):
         self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
         self.chart.avg_period = self.avg_period.value()
-        self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json",
+        # The node: the background process that holds the Schwab stream and the token (otc_node.py)
+        self.node = NodeLink(self.settings, save_settings)
+        set_link(self.node)
+        self.node.start()
+        self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json", self.node,
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
         self.level2.setVisible(self.level2_show.isChecked())
         self.level2.live_quote.connect(self.on_live_quote)
@@ -3180,6 +3185,7 @@ class MainWindow(QMainWindow):
             for j in running:
                 j.join(timeout=5)
         self.level2.stop()
+        self.node.stop()                # the node ends with the app
         self.settings["window_geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         save_settings(self.settings)
         if self.level2_show.isChecked():     # the chart / Level II split, for the next start

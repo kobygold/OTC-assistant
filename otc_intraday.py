@@ -51,9 +51,9 @@ class MinuteLoader(QObject):
         secret = self.settings.get("schwab_app_secret", "").strip()
         if not (key and secret and self.token_path.exists()):
             raise RuntimeError("log in to Schwab first (the Level II panel)")
-        from schwab.auth import client_from_token_file
+        from otc_node_link import make_client
         if self._client is None:
-            self._client = client_from_token_file(str(self.token_path), key, secret)
+            self._client = make_client(key, secret)     # on the node's token
         r = self._client.get_price_history_every_minute(
             ticker, start_datetime=datetime.now(timezone.utc) - timedelta(days=DAYS),
             need_extended_hours_data=True)

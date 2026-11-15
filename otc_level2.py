@@ -1,10 +1,9 @@
 """
 otc_level2.py - Live Level II (market makers' bids and asks) from the Schwab API, for the Chart tab.
 
-Level2Feed keeps one Schwab streaming connection in a background thread and follows one ticker
-at a time: when the chart opens another ticker it unsubscribes the old one and subscribes the new
-one. It streams NASDAQ_BOOK and NYSE_BOOK (OTC stocks come on NASDAQ_BOOK), and Level 1 quotes
-for the header line. Every book message is a full snapshot of that side's book, not a change.
+The Schwab stream itself is held by the node (otc_node.py, a background process the app starts):
+NodeFeed tells it the ticker followed (the chart's) and the extra ones, and gets their Level II
+(NASDAQ_BOOK and NYSE_BOOK; OTC stocks come on NASDAQ_BOOK) and Level 1 quotes for the header line.
 
 Level2Panel shows it like thinkorswim's Level II: bids on the left, asks on the right, one row per
 market maker, rows of the same price level sharing a color.
@@ -14,9 +13,7 @@ login token in schwab_token.json. The token lasts 7 days; then the panel asks to
 schwab-py is imported only when needed, so the app runs without it.
 """
 
-import asyncio
 import json
-import threading
 import time
 from pathlib import Path
 
@@ -30,9 +27,6 @@ from PyQt6.QtWidgets import (
 from otc_chart import GOLD, LEVEL_COLORS, fmt_price
 
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this
-BOOK_SERVICES = ("NASDAQ_BOOK", "NYSE_BOOK")
-RECONNECT_SECONDS = 15
-POLL_SECONDS = 0.3              # how often the stream loop checks for a new ticker
 
 # LEVEL_COLORS and GOLD (otc_chart): thinkorswim's Level II colors, also the chart's Level II tags
 GREEN = "#1db31d"       # a size that grew, a rise, the bid in the quote bar
@@ -100,14 +94,10 @@ def write_token(token_path: Path):
     return write
 
 
-def _login_expired(error: Exception) -> bool:
-    text = f"{type(error).__name__} {error}".lower()
-    return any(s in text for s in ("invalid_grant", "refresh_token", "unauthorized", "invalid_client", "401"))
-
-
-class Level2Feed(QObject):
-    """Streams Level II and Level 1 in a background thread: the ticker followed (the chart's) and
-    any extra ones (the open ATM trades). The signals arrive in the GUI thread, for every ticker."""
+class NodeFeed(QObject):
+    """Level II and Level 1 from the node (otc_node.py), which holds the Schwab stream: the ticker
+    followed (the chart's) and any extra ones (the open ATM trades). The signals arrive in the GUI
+    thread, for every ticker."""
     book = pyqtSignal(str, list, list)     # ticker, bids, asks: [(market maker, price, size, level)]
     quote = pyqtSignal(str, dict)          # ticker, Level 1 fields so far (stream names)
     status = pyqtSignal(str)               # what the connection is doing
@@ -115,233 +105,76 @@ class Level2Feed(QObject):
     order_event = pyqtSignal(str, str)     # the account activity stream: an event type, its Schwab order id
     activity = pyqtSignal(bool)            # the account activity stream is on (True) or off
 
-    def __init__(self, app_key: str, app_secret: str, token_path: Path):
+    def __init__(self, link):
         super().__init__()
-        self.app_key, self.app_secret, self.token_path = app_key, app_secret, token_path
+        self.link = link
         self._want = None                  # the ticker to follow, None for none
         self._extra = set()                # more tickers to stream (the open ATM trades)
-        self._symbols = set()              # the tickers subscribed now
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = None
-        self._current = None
-        self._books = {}                   # ticker -> {service -> (bids, asks)}
-        self._l1 = {}                      # ticker -> its Level 1 fields so far
+        self._on = False                   # streaming wanted at all
+        link.message.connect(self._on_message)
+        link.connected.connect(self._on_connected)
 
     def set_symbol(self, ticker):
-        with self._lock:
-            self._want = ticker or None
-            extra = bool(self._extra)
-        if (ticker or extra) and not (self._thread and self._thread.is_alive()):
-            self.start()
+        self._want = ticker or None
+        if ticker:
+            self._on = True
+        self._send()
 
     def set_extra(self, tickers):
         """More tickers to stream besides the one followed."""
-        with self._lock:
-            self._extra = {t for t in tickers if t}
-            want = self._want or self._extra
-        if want and not (self._thread and self._thread.is_alive()):
-            self.start()
+        self._extra = {t for t in tickers if t}
+        if self._extra:
+            self._on = True
+        self._send()
 
     def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="level2", daemon=True)
-        self._thread.start()
+        self._on = True
+        self._send()
 
     def stop(self):
-        self._stop.set()
+        self._on = False
+        self._send()
 
     def restart(self):
-        """After a new login: drop the old connection, if any, and connect again."""
+        """After a new login: the node starts its stream over by itself."""
+
+    def close(self):
+        """No stream wanted, and no more messages to this feed."""
         self.stop()
-        if self._thread:
-            self._thread.join(timeout=3)
-        self.start()
-
-    # ------------------------------------------------------------ thread ---
-    def _run(self):
-        try:
-            asyncio.run(self._main())
-        except Exception as e:      # never let the thread die silently
-            self.status.emit(f"Level II stopped: {e}")
-
-    async def _main(self):
-        try:
-            from schwab.auth import client_from_token_file
-        except ImportError:
-            self.status.emit("Level II needs schwab-py: run  pip install schwab-py  and restart the app.")
-            return
-        while not self._stop.is_set():
-            age = token_age_days(self.token_path)
-            if age is None:
-                self.login_needed.emit("Log in to Schwab to see Level II.")
-                return
-            if age >= TOKEN_DAYS:
-                self.login_needed.emit("The Schwab login has run out (it lasts 7 days). Log in again.")
-                return
+        for signal, slot in ((self.link.message, self._on_message), (self.link.connected, self._on_connected)):
             try:
-                self.status.emit("Connecting to Schwab...")
-                client = client_from_token_file(str(self.token_path), self.app_key, self.app_secret)
-                await self._stream(client)
-            except Exception as e:
-                if _login_expired(e):
-                    self.login_needed.emit(f"Schwab didn't accept the login ({e}). Log in again.")
-                    return
-                self.status.emit(f"Level II disconnected ({type(e).__name__}: {e}). "
-                                 f"Reconnecting in {RECONNECT_SECONDS} s...")
-                for _ in range(RECONNECT_SECONDS * 10):
-                    if self._stop.is_set():
-                        return
-                    await asyncio.sleep(0.1)
-
-    async def _stream(self, client):
-        from schwab.streaming import StreamClient
-        stream = StreamClient(client)
-        await stream.login()
-        # Handlers before subscribing: messages without one are dropped
-        stream.add_nasdaq_book_handler(lambda m: self._on_book("NASDAQ_BOOK", m))
-        stream.add_nyse_book_handler(lambda m: self._on_book("NYSE_BOOK", m))
-        stream.add_level_one_equity_handler(self._on_level1)
-        stream.add_account_activity_handler(self._on_activity)
-        self._current = None
-        self._symbols = set()
-        try:
-            # the account's order events (placed, changed, canceled, filled) as they happen: the
-            # app checks its orders at once, instead of waiting for the next regular check
-            try:
-                await stream.account_activity_sub()
-                self.activity.emit(True)
-            except Exception:
-                self.activity.emit(False)       # the regular checks do it all, as before
-            while not self._stop.is_set():
-                with self._lock:
-                    want, extra = self._want, set(self._extra)
-                if want != self._current or (({want} if want else set()) | extra) != self._symbols:
-                    await self._sync(client, stream, want, extra)
-                # Subscribing and reading share the socket, so the ticker check waits for a pause
-                try:
-                    await asyncio.wait_for(stream.handle_message(), timeout=POLL_SECONDS)
-                except asyncio.TimeoutError:
-                    pass
-        finally:
-            self.activity.emit(False)
-            try:
-                await asyncio.wait_for(stream.logout(), timeout=3)
-            except Exception:
+                signal.disconnect(slot)
+            except TypeError:
                 pass
 
-    async def _sync(self, client, stream, want, extra):
-        """Subscribes to the tickers wanted now, and leaves the others."""
-        wanted = ({want} if want else set()) | extra
-        gone, new = sorted(self._symbols - wanted), sorted(wanted - self._symbols)
-        if gone:
-            await stream.nasdaq_book_unsubs(gone)
-            await stream.nyse_book_unsubs(gone)
-            await stream.level_one_equity_unsubs(gone)
-            for s in gone:
-                self._books.pop(s, None)
-                self._l1.pop(s, None)
-        kept = self._symbols - set(gone)
-        for s in new:
-            self._books[s], self._l1[s] = {}, {}
-            # A quote right away, so the header has prices even when nothing is streaming
-            try:
-                r = await asyncio.to_thread(client.get_quote, s)
-                q = r.json().get(s, {}).get("quote", {}) if r.status_code == 200 else {}
-            except Exception:
-                q = {}
-            for rest, name in (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
-                               ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
-                               ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
-                               ("mark", "MARK"), ("markChange", "MARK_CHANGE"),
-                               ("markPercentChange", "MARK_CHANGE_PERCENT"), ("totalVolume", "TOTAL_VOLUME"),
-                               ("openPrice", "OPEN_PRICE"), ("highPrice", "HIGH_PRICE"), ("lowPrice", "LOW_PRICE"),
-                               ("tradeTime", "TRADE_TIME_MILLIS")):
-                if q.get(rest) is not None:
-                    self._l1[s][name] = q[rest]
-            if self._l1[s]:
-                self.quote.emit(s, dict(self._l1[s]))
-            self.book.emit(s, [], [])
-        if new:
-            # SUBS replaces a service's whole list, ADD adds to it
-            if kept:
-                await stream.nasdaq_book_add(new)
-                await stream.nyse_book_add(new)
-                await stream.level_one_equity_add(new)
-            else:
-                await stream.nasdaq_book_subs(new)
-                await stream.nyse_book_subs(new)
-                await stream.level_one_equity_subs(new)
-        self._symbols = wanted
-        if want != self._current:
-            self._current = want
-            if not want:
-                self.status.emit("Level II paused.")
-            elif want in new:
-                self.status.emit(f"Live: waiting for {want}'s book...")
-            else:       # streamed already (an ATM trade's ticker): what came so far, right away
-                if self._l1.get(want):
-                    self.quote.emit(want, dict(self._l1[want]))
-                self._emit_book(want)
+    def _send(self):
+        self.link.want(self._want, self._extra, self._on)
 
-    def _on_activity(self, msg):
-        for c in msg.get("content", []):
-            kind = c.get("MESSAGE_TYPE") or ""
-            if not kind or kind == "SUBSCRIBED":
-                continue
-            try:
-                order_id = str(json.loads(c.get("MESSAGE_DATA") or "{}").get("SchwabOrderID") or "")
-            except (ValueError, AttributeError):
-                order_id = ""
-            self.order_event.emit(kind, order_id)
+    def _on_connected(self, ok):
+        if not ok:
+            self.activity.emit(False)
+            self.status.emit("The Schwab connection stopped: starting it again...")
 
-    def _on_level1(self, msg):
-        for c in msg.get("content", []):
-            key = c.get("key")
-            if key in self._l1:
-                # After the first message only changed fields come
-                self._l1[key].update({k: v for k, v in c.items() if k.isupper()})
-                self.quote.emit(key, dict(self._l1[key]))
-
-    def _on_book(self, service, msg):
-        for c in msg.get("content", []):
-            key = c.get("key")
-            if key not in self._books:
-                continue            # still arriving for a ticker just left
-            self._books[key][service] = (self._side(c.get("BIDS", []), "BID"), self._side(c.get("ASKS", []), "ASK"))
-            self._emit_book(key)
-
-    def _emit_book(self, key):
-        books = self._books.get(key, {})
-        # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
-        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
-        asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
-        self.book.emit(key, self._levels(bids), self._levels(asks))
-        if key == self._current and books:
-            self.status.emit(f"Live · {time.strftime('%H:%M:%S')}" if bids or asks else
-                             f"Live · no quotes for {key} now (OTC quotes run 6:00-17:00 ET)")
-
-    @staticmethod
-    def _side(levels, side):
-        """[(market maker, price, size)] from one side of a book message."""
-        rows = []
-        for lv in levels:
-            price = lv.get(f"{side}_PRICE")
-            for p in lv.get(f"{side}S", []):
-                rows.append((p.get("EXCHANGE", "?"), price, p.get(f"{side}_VOLUME", 0)))
-        return rows
-
-    @staticmethod
-    def _levels(rows):
-        """Adds the price level number, 0 for the best price."""
-        out, level, last = [], -1, None
-        for mm, price, size in rows:
-            if price != last:
-                level, last = level + 1, price
-            out.append((mm, price, size, level))
-        return out
+    def _on_message(self, msg):
+        kind = msg.get("type")
+        if kind == "quote":
+            self.quote.emit(msg["ticker"], msg["q"])
+        elif kind == "book":
+            self.book.emit(msg["ticker"], [tuple(r) for r in msg["bids"]], [tuple(r) for r in msg["asks"]])
+        elif kind == "status":
+            self.status.emit(msg["text"])
+        elif kind == "login_needed":
+            self.login_needed.emit(msg["why"])
+        elif kind == "order_event":
+            self.order_event.emit(msg["kind"], msg["order_id"])
+        elif kind == "activity":
+            self.activity.emit(bool(msg["on"]))
+        elif kind == "welcome":
+            self.activity.emit(bool(msg.get("activity")))
+            if msg.get("login_needed"):
+                self.login_needed.emit(msg["login_needed"])
+            elif msg.get("status"):
+                self.status.emit(msg["status"])
 
 
 class Level2Panel(QWidget):
@@ -356,10 +189,11 @@ class Level2Panel(QWidget):
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
 
-    def __init__(self, settings: dict, token_path: Path, mm_icons=None, parent=None):
-        """mm_icons: {1: yellow sign, 2: red sign} for the market makers in MM_YELLOW / MM_RED."""
+    def __init__(self, settings: dict, token_path: Path, link, mm_icons=None, parent=None):
+        """link: the app's NodeLink (otc_node_link). mm_icons: {1: yellow sign, 2: red sign} for
+        the market makers in MM_YELLOW / MM_RED."""
         super().__init__(parent)
-        self.settings, self.token_path = settings, token_path
+        self.settings, self.token_path, self.link = settings, token_path, link
         self.mm_icons = mm_icons or {}
         self.ticker = ""
         self.name = ""
@@ -493,7 +327,7 @@ class Level2Panel(QWidget):
             self.set_status("Add schwab_app_key and schwab_app_secret to settings.json to see Level II.")
             return
         if self.feed is None:
-            self.feed = Level2Feed(key, secret, self.token_path)
+            self.feed = NodeFeed(self.link)
             self.feed.book.connect(self.show_book)
             self.feed.quote.connect(self.on_quote)
             self.feed.status.connect(self.set_status)
@@ -523,7 +357,7 @@ class Level2Panel(QWidget):
                     signal.disconnect()
                 except TypeError:
                     pass
-            feed.stop()         # its thread logs out and ends by itself
+            feed.close()        # the node logs out of the stream
             self.activity_live.emit(False)
         self.login_btn.hide()
         self.set_status("Off · not connected to Schwab")
@@ -555,8 +389,12 @@ class Level2Panel(QWidget):
         url = url.strip()
         if not ok or not url:
             return
+        def to_node(wrapped, *args, **kwargs):
+            # the node keeps the token (and renews it): sent to it; saved here only without a node
+            if not self.link.login(wrapped):
+                write_token(self.token_path)(wrapped)
         try:
-            client_from_received_url(key, secret, ctx, url, write_token(self.token_path))
+            client_from_received_url(key, secret, ctx, url, to_node)
         except Exception as e:
             QMessageBox.warning(self, "Schwab login failed",
                                 f"{e}\n\n\"invalid_grant\" usually means the address was pasted too late. Try again.")
