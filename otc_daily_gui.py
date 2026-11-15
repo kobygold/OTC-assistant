@@ -56,7 +56,7 @@ from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.16"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1608,6 +1608,8 @@ class MainWindow(QMainWindow):
             self.refresh_screener_dates()
         if index == self.schwab_tab_index and not self.schwab_accounts_read:
             self.read_schwab_accounts()
+        # the Schwab tab's lists are read while it is shown (and on order events), not all the time
+        self.checklist.atm.set_tab_open(index == self.schwab_tab_index)
         if index == self.fav_tab_index:
             if self.tickers_stale:
                 self.refresh_ticker_list()
