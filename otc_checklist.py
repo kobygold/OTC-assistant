@@ -1340,7 +1340,19 @@ class AtmTrades(QObject):
         """The trades as the shared data has them now (changed elsewhere, or a change refused)."""
         if getattr(self, "shared", None) is None:
             return
-        self.entries = self._fixed(list(self.shared.get("atm/").values()))
+        # Each trade kept as the same object, updated in place: the Schwab tab's rows (rebuilt only
+        # when what they show changes) hold their trade, and an old copy there would make Clear or a
+        # new Sell-at price act on a trade that isn't in the list any more
+        old = {e["id"]: e for e in self.entries}
+        entries = []
+        for e in self._fixed(list(self.shared.get("atm/").values())):
+            same = old.get(e["id"])
+            if same is not None:
+                same.clear()
+                same.update(e)
+                e = same
+            entries.append(e)
+        self.entries = entries
         self.changed.emit()
 
     def shared_key(self, e):
@@ -1914,7 +1926,7 @@ class AtmTrades(QObject):
         """Takes a sold or canceled trade out of atm.json."""
         if e.get("state") not in ("sold", "canceled"):
             return
-        self.entries = [x for x in self.entries if x is not e]
+        self.entries = [x for x in self.entries if x["id"] != e["id"]]
         self.save()
         self.changed.emit()
 
