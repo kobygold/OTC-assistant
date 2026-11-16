@@ -51,7 +51,7 @@ import otc_checklist as checklist
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
-from otc_checklist import ChecklistPanel
+from otc_checklist import ChecklistPanel, copy_value
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
 from otc_computers import ComputersPanel
@@ -59,7 +59,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -539,6 +539,21 @@ class AfterTabs(QObject):
             self.on_place()
 
 
+class ClickLabel(QLabel):
+    """A label that does on_click() when clicked (a pointing hand over it)."""
+
+    def __init__(self, text, on_click, tip=""):
+        super().__init__(text)
+        self.on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tip)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.on_click()
+        super().mousePressEvent(e)
+
+
 class SelectAllLineEdit(QLineEdit):
     """Selects all its text when it gets the focus, so typing replaces it. Clicking into it places the
     cursor after the focus arrives, so the selection waits until the click is handled. A click while
@@ -886,7 +901,11 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         root = QVBoxLayout(tab)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Ticker:"))
+        # a click on "Ticker:" copies the chart's ticker
+        self.ticker_label = ClickLabel("Ticker:", lambda: copy_value(self.chart.ticker or self.chart_ticker.text(),
+                                                                     self.ticker_label),
+                                       "Click: copy the chart's ticker")
+        row.addWidget(self.ticker_label)
         self.chart_ticker = SelectAllLineEdit()
         self.chart_ticker.setPlaceholderText("e.g. CVAT")
         self.chart_ticker.setValidator(UpperValidator(self.chart_ticker))
