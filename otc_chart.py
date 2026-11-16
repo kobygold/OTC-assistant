@@ -233,7 +233,7 @@ class CandleChart(DrawingsMixin, QWidget):
         self.cursor_point = None    # (bar index, price, now) under the crosshair, as last drawn; now: at a
                                     # Bid/Ask tag's point, whose index is a fraction and whose time is now
         self.measure = None         # the cursor_point where Shift was pressed, while it's held
-        self.ruler = None           # a ruler being dragged: (axis, mouse at the press, axis state then)
+        self.ruler = None           # a ruler being dragged: (axis, mouse at the press, axis state then, pan)
         self.y_zoom = None          # (low, high) of the price axis zoomed by its ruler; None = fit the candles
         self.v_zoom = None          # the top of the volume axis zoomed by its ruler; None = fit the bars
         self._scale = (0.0, 1.0)    # the price axis's (low, high) and the volume axis's top as last drawn
@@ -1349,10 +1349,16 @@ class CandleChart(DrawingsMixin, QWidget):
                 "time": Qt.CursorShape.SizeHorCursor}.get(axis, Qt.CursorShape.CrossCursor)
 
     def _drag_ruler(self, pos):
-        """Zooms the dragged ruler's axis around the point where it was grabbed."""
-        axis, start, state = self.ruler
+        """Zooms the dragged ruler's axis around the point where it was grabbed; the price ruler
+        dragged with Ctrl pans it instead (the prices move with the mouse, the zoom stays)."""
+        axis, start, state, pan = self.ruler
         price, vol = self._layout()
-        if axis == "price":
+        if axis == "price" and pan:
+            lo0, hi0 = state
+            top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
+            shift = (pos.y() - start.y()) / (bot - top) * (hi0 - lo0)      # down: higher prices come into view
+            self.y_zoom = (lo0 + shift, hi0 + shift)
+        elif axis == "price":
             lo0, hi0 = state
             top, bot = price.top() + PRICE_MARGIN_PX, price.bottom() - PRICE_MARGIN_PX
             grabbed = hi0 - (start.y() - top) / (bot - top) * (hi0 - lo0)     # the price under the press
@@ -1386,6 +1392,8 @@ class CandleChart(DrawingsMixin, QWidget):
                            (Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
                             Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
                             Qt.CursorShape.PointingHandCursor if self._on_title(e.position()) else
+                            Qt.CursorShape.OpenHandCursor if self._ruler_at(e.position()) == "price"
+                            and e.modifiers() & Qt.KeyboardModifier.ControlModifier else     # Ctrl: pans it
                             self._ruler_cursor(self._ruler_at(e.position()))))
         if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.measure = None
@@ -1421,8 +1429,9 @@ class CandleChart(DrawingsMixin, QWidget):
         axis = self._ruler_at(e.position())
         if axis:
             state = {"price": self._scale, "volume": self._vmax, "time": (self.first, self.count)}[axis]
-            self.ruler = (axis, e.position(), state)
-            self.setCursor(self._ruler_cursor(axis))
+            pan = axis == "price" and bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            self.ruler = (axis, e.position(), state, pan)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor if pan else self._ruler_cursor(axis))
             return
         self.drag = (e.position().x(), self.first)
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
