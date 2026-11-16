@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
 
-from PyQt6.QtCore import QObject, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
@@ -35,7 +35,7 @@ VOL_DAYS = 30           # market days in the volume checks
 SPIKE_X = 2.0           # a day with this many times the average volume is unusual
 MAX_DEAD = 5            # most days without trades in VOL_DAYS for a steady volume
 VOL_PART = 2.0          # the median volume must be at least this many times our amount of stocks
-COPIED_MS = 1000        # how long the "Copied" note stays, in ms
+COPIED_MS = 1200        # how long the "Copied" popup stays, in ms
 RANGE_DAYS = 30         # calendar days the bounce range must have lasted
 NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
@@ -225,8 +225,32 @@ def copy_value(text, widget, as_is=False):
     if not as_is:
         text = text.replace("$", "").replace(",", "")
     QApplication.clipboard().setText(text)
-    QToolTip.showText(QCursor.pos(), f"Copied:\n{text}" if as_is else f"Copied: {text}", widget,
-                      QRect(), COPIED_MS)
+    show_copied(f"Copied:\n{text}" if as_is else f"Copied: {text}")
+
+
+_COPIED_POPUP = None
+
+
+def show_copied(text, ms=COPIED_MS):
+    """A small popup by the mouse for a moment (not a tooltip: those go at the click's release)."""
+    global _COPIED_POPUP
+    if _COPIED_POPUP is not None:
+        try:
+            _COPIED_POPUP.close()       # the one before, at once
+        except RuntimeError:            # (already gone)
+            pass
+    pop = QLabel(text)
+    pop.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+    pop.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    pop.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    pop.setStyleSheet("QLabel { background: #2a2f34; color: #ffffff; border: 1px solid #5a6670; "
+                      "border-radius: 3px; padding: 3px 7px; font-weight: bold; }")
+    pop.adjustSize()
+    pop.move(QCursor.pos() + QPoint(12, 14))
+    pop.show()
+    _COPIED_POPUP = pop
+    pop.destroyed.connect(lambda *_: globals().update(_COPIED_POPUP=None) if _COPIED_POPUP is pop else None)
+    QTimer.singleShot(ms, pop.close)
 
 
 def copy_icon():

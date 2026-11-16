@@ -1317,8 +1317,8 @@ class CandleChart(DrawingsMixin, QWidget):
         return bool(self.ticker and self.dates) and self._title_rect.contains(QPointF(pos))
 
     def _copy_ticker(self, pos):
-        QApplication.clipboard().setText(self.ticker)
-        QToolTip.showText(self.mapToGlobal(pos.toPoint()), f"Copied: {self.ticker}", self, QRect(), 1500)
+        from otc_checklist import copy_value
+        copy_value(self.ticker, self)
 
     def _ruler_at(self, pos):
         """"price", "volume" or "time" for a point on one of the rulers, else None."""
