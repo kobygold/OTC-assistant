@@ -221,6 +221,7 @@ class CandleChart(DrawingsMixin, QWidget):
         self.intraday = False          # 1-minute candles (the 1D view) instead of days
         self.times = []                # 1D view: each candle's Israel time
         self.risk_icon = None
+        self._title_rect = QRectF()     # the ticker's box (top left): a click copies the ticker
         self.risk_tip = ""
         self.message = "Type a ticker above and press Enter."
         self._set_rows([])
@@ -1000,6 +1001,9 @@ class CandleChart(DrawingsMixin, QWidget):
             title = f"{self.ticker}  {self.range_label}  1D  [OTC]"
             when = f"D: {fmt_date(d)}"
         items = [(title, QColor("#ffffff"), True)]
+        bold = QFont(p.font())
+        bold.setBold(True)
+        self._title_rect = QRectF(INFO_X, 3, QFontMetrics(bold).horizontalAdvance(title) + 12, INFO_H - 6)
         if self.subtitle:
             items.append((self.subtitle, INFO_TEXT, False))
         items += [
@@ -1302,10 +1306,19 @@ class CandleChart(DrawingsMixin, QWidget):
                 QToolTip.showText(e.globalPos(), self.risk_tip, self)
             elif tag:
                 QToolTip.showText(e.globalPos(), tag, self)
+            elif self._on_title(e.pos()):
+                QToolTip.showText(e.globalPos(), f"Click: copy {self.ticker}", self)
             else:
                 QToolTip.hideText()
             return True
         return super().event(e)
+
+    def _on_title(self, pos):
+        return bool(self.ticker and self.dates) and self._title_rect.contains(QPointF(pos))
+
+    def _copy_ticker(self, pos):
+        QApplication.clipboard().setText(self.ticker)
+        QToolTip.showText(self.mapToGlobal(pos.toPoint()), f"Copied: {self.ticker}", self, QRect(), 1500)
 
     def _ruler_at(self, pos):
         """"price", "volume" or "time" for a point on one of the rulers, else None."""
@@ -1361,6 +1374,7 @@ class CandleChart(DrawingsMixin, QWidget):
             self.setCursor(self._drawing_cursor(e.position()) or
                            (Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
                             Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
+                            Qt.CursorShape.PointingHandCursor if self._on_title(e.position()) else
                             self._ruler_cursor(self._ruler_at(e.position()))))
         if self.measure is not None and not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.measure = None
@@ -1377,6 +1391,9 @@ class CandleChart(DrawingsMixin, QWidget):
 
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton or not self.dates:
+            return
+        if self.placing is None and self._on_title(e.position()):
+            self._copy_ticker(e.position())
             return
         if self.placing is None:
             key = self._order_x_at(e.position())
