@@ -59,6 +59,7 @@ LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
 LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
 GOLD = "#e3b23c"
 HELD = "#8c8c8c"            # the Level II's text while it holds the last close (not live)
+HELD_LEVELS = ["#4a4a4a", "#3d3d3d", "#333333", "#2b2b2b", "#242424", "#1d1d1d"]   # its price levels' shades then
 BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis, and the Level II's
 ASK_TAG = QColor("#9c2a35")
 TAG_H = 16                  # the right axis tags' height
@@ -635,7 +636,8 @@ class CandleChart(DrawingsMixin, QWidget):
                     y = py(value)
                     if value == self.live.get(k) or not price.top() <= y <= price.bottom():
                         continue
-                    bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
+                    shades = HELD_LEVELS if self.held else LEVEL_COLORS
+                    bg = QColor(shades[min(level, len(shades) - 1)])
                     tip = self._axis_tag(p, price.right() - 2, y, f"{fmt_axis(value)}{TAG_SEP}{fmt_shares(total)}",
                                          bg, QColor(HELD if self.held else GOLD), arrow="inside")
                     self._tag_points.append((tip.x(), tip.y(), value, 1))

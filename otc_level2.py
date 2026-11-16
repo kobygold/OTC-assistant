@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from otc_chart import GOLD, HELD, LEVEL_COLORS, fmt_price
+from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS, fmt_price
 from otc_recorder import in_session, last_close
 
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this
@@ -634,7 +634,8 @@ class Level2Panel(QWidget):
                 if mm in prev and size != prev[mm]:
                     trend[mm] = 1 if size > prev[mm] else -1
                 prev[mm] = size
-            bg = QColor(MINE if mine else LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
+            shades = HELD_LEVELS if self.held else LEVEL_COLORS     # gray: the last close, not live
+            bg = QColor(MINE if mine else shades[min(level, len(shades) - 1)])
             cells = [QTableWidgetItem(mm), QTableWidgetItem(tos_price(price)), QTableWidgetItem(f"{size:,}")]
             if mine:
                 cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
