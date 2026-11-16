@@ -6,7 +6,9 @@ Everything the server streams is written, as it comes:
   market_log/YYYY-MM-DD/_account.jsonl   the account's order events
 
 A line: {"t": Schwab's time in ms, "k": kind, "d": data}
-  k "Q":  the first quote of a ticker when it starts streaming (Schwab's REST quote, stream names)
+  k "Q":  the first quote of a ticker when it starts streaming (Schwab's REST quote, stream names), and
+          all its Level 1 fields so far at its first Level 1 update of each market day (so a day's
+          file has the whole quote, not only what changed)
   k "L1": the Level 1 fields that changed (stream names: BID_PRICE, ASK_SIZE, LAST_PRICE...)
   k "L2": one book (service "N" NASDAQ_BOOK / "Y" NYSE_BOOK), whole, as Schwab sends it:
           {"s": "N", "b": [[price, [[market maker, size], ...]], ...], "a": [...]}  best price first
@@ -19,6 +21,10 @@ Coverage: market_log/YYYY-MM-DD/_coverage.json holds the periods ([start ms, end
 was recording live (connected to the stream). A computer that was off compares its coverage with the
 main server's and fetches the lines of the periods it missed (lines_in / take_fetched): they go into
 TICKER.jsonl.gz, and read_day gives every line of a day in time order.
+
+Market hours (US Eastern, the app's "hold at the close"): session(day), in_session(millis),
+last_close(millis), and at_close(folder, ticker, day, close) - a ticker's Level 1 and Level II as
+they were at a session's close, from the record.
 """
 
 import gzip
@@ -82,6 +88,123 @@ def market_date(millis: float) -> date:
     return (when - timedelta(hours=4 if _us_dst(when) else 5)).date()
 
 
+# ---------------------------------------------------------------- market hours ---
+OPEN_MIN = 9 * 60 + 30      # the regular session, US Eastern: 9:30-16:00 (OTC Markets' too)
+CLOSE_MIN = 16 * 60
+EARLY_CLOSE_MIN = 13 * 60   # the half days
+
+
+def _easter(y):
+    """Easter Sunday (the Gregorian computus)."""
+    a, b, c = y % 19, y // 100, y % 100
+    d, e = b // 4, b % 4
+    g = (8 * b + 13) // 25
+    h = (19 * a + b - d - g + 15) % 30
+    j, k = c // 4, c % 4
+    m = (a + 11 * h) // 319
+    r = (2 * e + 2 * j - k - h + m + 32) % 7
+    n = (h - m + r + 90) // 25
+    return date(y, n, (h - m + r + n + 19) % 32)
+
+
+def _nth(y, month, weekday, n):
+    """The n-th weekday (0 Monday) of a month; n=-1: the last."""
+    if n > 0:
+        first = date(y, month, 1)
+        return first + timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+    last = date(y, month + 1, 1) - timedelta(days=1) if month < 12 else date(y, 12, 31)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _observed(d):
+    """A holiday on a Saturday is kept on the Friday before, on a Sunday on the Monday after."""
+    return d - timedelta(days=1) if d.weekday() == 5 else d + timedelta(days=1) if d.weekday() == 6 else d
+
+
+def market_holidays(y):
+    """{day: None (closed) or the close in minutes (a half day)} of the US stock markets (NYSE's
+    calendar, which OTC Markets keeps)."""
+    days = {_observed(date(y, 1, 1)): None, _nth(y, 1, 0, 3): None, _nth(y, 2, 0, 3): None,
+            _easter(y) - timedelta(days=2): None, _nth(y, 5, 0, -1): None, _observed(date(y, 7, 4)): None,
+            _nth(y, 9, 0, 1): None, _nth(y, 11, 3, 4): None, _observed(date(y, 12, 25)): None}
+    if y >= 2022:
+        days[_observed(date(y, 6, 19))] = None         # Juneteenth
+    days.setdefault(_nth(y, 11, 3, 4) + timedelta(days=1), EARLY_CLOSE_MIN)    # the day after Thanksgiving
+    for half in (date(y, 7, 3), date(y, 12, 24)):
+        if half.weekday() < 5:
+            days.setdefault(half, EARLY_CLOSE_MIN)
+    return {d: v for d, v in days.items() if d.year == y}
+
+
+def _et_offset_ms(day: date):
+    """Eastern time's offset from UTC on a day, in ms (at noon: past the 2:00 change)."""
+    noon = datetime(day.year, day.month, day.day, 17, tzinfo=timezone.utc)
+    return (4 if _us_dst(noon) else 5) * 3600_000
+
+
+def session(day: date):
+    """(open, close) of a market day's regular session, in ms since 1970; None on a weekend or holiday."""
+    if day.weekday() >= 5:
+        return None
+    holidays = market_holidays(day.year)
+    if day in holidays and holidays[day] is None:
+        return None
+    close = holidays.get(day) or CLOSE_MIN
+    midnight = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000) + _et_offset_ms(day)
+    return midnight + OPEN_MIN * 60_000, midnight + close * 60_000
+
+
+def in_session(millis=None) -> bool:
+    millis = millis if millis is not None else time.time() * 1000
+    times = session(market_date(millis))
+    return times is not None and times[0] <= millis < times[1]
+
+
+def last_close(millis=None):
+    """(the day, its close in ms) of the last session that ended by `millis` (now)."""
+    millis = millis if millis is not None else time.time() * 1000
+    day = market_date(millis)
+    for _ in range(15):
+        times = session(day)
+        if times is not None and times[1] <= millis:
+            return day, times[1]
+        day -= timedelta(days=1)
+    return None, None
+
+
+def at_close(folder: Path, ticker: str, day: str, close: int, back_days=KEEP_DAYS):
+    """The ticker's market at a session's close, from the record: {"q": its Level 1 fields, "books":
+    {"N"/"Y": (bids, asks) as [(market maker, price, size)]}, "at": its last line's time}, or None
+    when it wasn't recorded that day before the close. Only what came before the close counts;
+    the quote starts from the last full one ("Q"), looking back over the days before if needed."""
+    folder = Path(folder)
+    days = sorted((d.name for d in folder.iterdir() if d.is_dir() and d.name <= day), reverse=True) \
+        if folder.exists() else []
+    if not days or days[0] != day:
+        return None
+    chunks = []         # each day's lines up to the close, the day itself first
+    for d in days[:back_days]:
+        lines = [line for line in read_day(folder, d, ticker) if line.get("t", 0) <= close]
+        if d == day and not lines:
+            return None         # not streamed that day (before the close)
+        chunks.append(lines)
+        if any(line.get("k") == "Q" for line in lines):
+            break
+    lines = [line for chunk in reversed(chunks) for line in chunk]      # oldest first
+    q, books = {}, {}
+    for line in lines:
+        kind, data = line.get("k"), line.get("d") or {}
+        if kind == "Q":
+            q = dict(data)
+        elif kind == "L1":
+            q.update(data)
+        elif kind == "L2":
+            books[data.get("s", "N")] = (
+                [(mm, price, size) for price, mms in data.get("b") or [] for mm, size in mms],
+                [(mm, price, size) for price, mms in data.get("a") or [] for mm, size in mms])
+    return {"q": q, "books": books, "at": lines[-1].get("t") if lines else None}
+
+
 def compact_book(levels, side):
     """[[price, [[market maker, size], ...]], ...] from one side of a Schwab book message."""
     out = []
@@ -101,6 +224,7 @@ class Recorder:
         self.lines = 0              # written since the start (for the log)
         self.gz_lock = threading.Lock()     # one writer of a .jsonl.gz at a time (tidy, fetched lines)
         self.live_range = None      # (day, [start, end]): the period being recorded live now
+        self.full_day = {}          # ticker -> the market day its full Level 1 was last written
 
     def write(self, name, kind, millis, data):
         """A line in name's file of the day of `millis` (None: now)."""
@@ -233,9 +357,17 @@ class Recorder:
 
     # ------------------------------------------------------------ the record ---
     def quote(self, ticker, fields, millis=None):
+        self.full_day[ticker] = market_date(millis or time.time() * 1000)
         self.write(ticker, "Q", millis, fields)
 
-    def level1(self, ticker, fields, millis=None):
+    def level1(self, ticker, fields, millis=None, full=None):
+        """The Level 1 fields that changed; the first update of a market day writes all of them
+        (`full`: the ticker's fields so far), so each day's file has the whole quote."""
+        day = market_date(millis or time.time() * 1000)
+        if full is not None and self.full_day.get(ticker) != day:
+            self.full_day[ticker] = day
+            self.write(ticker, "Q", millis, dict(full))
+            return
         self.write(ticker, "L1", millis, fields)
 
     def book(self, ticker, service, content, millis=None):

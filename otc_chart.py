@@ -58,6 +58,7 @@ LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
 # same on both sides; market makers, prices and sizes in gold (also the chart's Bid/Ask and Level II tags' text).
 LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
 GOLD = "#e3b23c"
+HELD = "#8c8c8c"            # the Level II's text while it holds the last close (not live)
 BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis, and the Level II's
 ASK_TAG = QColor("#9c2a35")
 TAG_H = 16                  # the right axis tags' height
@@ -217,6 +218,7 @@ class CandleChart(DrawingsMixin, QWidget):
         self.show_expirations = True
         self.show_last_tags = True     # the last price tag on the right axis
         self.show_bid_ask_tags = True  # the live bid and ask tags on the right
+        self.held = False           # the bid, ask and book are the last close's (gray text), not live
         self.avg_period = AVG_PERIOD   # days in the volume average and median
         self.intraday = False          # 1-minute candles (the 1D view) instead of days
         self.times = []                # 1D view: each candle's Israel time
@@ -308,6 +310,12 @@ class CandleChart(DrawingsMixin, QWidget):
             self._load(rows)
         self.live = live
         if changed:
+            self.update()
+
+    def set_held(self, held):
+        """The bid, ask and book shown are the last close's (gray), or live again."""
+        if held != self.held:
+            self.held = held
             self.update()
 
     def set_book(self, ticker="", bids=(), asks=()):
@@ -629,7 +637,7 @@ class CandleChart(DrawingsMixin, QWidget):
                         continue
                     bg = QColor(LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)])
                     tip = self._axis_tag(p, price.right() - 2, y, f"{fmt_axis(value)}{TAG_SEP}{fmt_shares(total)}",
-                                         bg, QColor(GOLD), arrow="inside")
+                                         bg, QColor(HELD if self.held else GOLD), arrow="inside")
                     self._tag_points.append((tip.x(), tip.y(), value, 1))
             tags = []
             for k, label, bg in (("ask", "Ask", ASK_TAG), ("bid", "Bid", BID_TAG)):
@@ -646,7 +654,8 @@ class CandleChart(DrawingsMixin, QWidget):
                 mid = min(max(mid, price.top() + TAG_H + 1), price.bottom() - TAG_H - 1)
                 tags = [(mid - (TAG_H + 1) / 2, *tags[0][1:]), (mid + (TAG_H + 1) / 2, *tags[1][1:])]
             for y, text, bg, value in tags:      # (bold: they stand out from the book's other prices)
-                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor(GOLD), bold=True, arrow="inside")
+                tip = self._axis_tag(p, price.right() - 2, y, text, bg, QColor(HELD if self.held else GOLD), bold=True,
+                                     arrow="inside")
                 self._tag_points.append((tip.x(), tip.y(), value, 0))
         if self.show_last_tags:
             now = self.live.get("price", self.c[last])

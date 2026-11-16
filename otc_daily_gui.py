@@ -59,7 +59,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.1.5"
+APP_VERSION = "2.1.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1022,6 +1022,18 @@ class MainWindow(QMainWindow):
         row.addWidget(self.level2_show)
         row.addSpacing(16)
 
+        self.hold_close = QCheckBox("Hold last L1/L2 at end of day")
+        self.hold_close.setChecked(bool(self.settings.get("hold_close", True)))
+        self.hold_close.setToolTip(
+            "Outside the market's hours (9:30-16:00 US Eastern: 16:30-23:00 here most of the year; "
+            "weekends and US holidays), show the chart's ticker's Level 1 and Level II as they were at "
+            "the last close, from the record, in gray. What streams after the close is ignored: it often "
+            "differs a lot. The checklist uses them too. Empty when the ticker wasn't recorded before "
+            "the close. Off: whatever the stream has now.")
+        self.hold_close.toggled.connect(self.on_hold_close_toggled)
+        row.addWidget(self.hold_close)
+        row.addSpacing(16)
+
         self.last_tags_show = QCheckBox("Price tag")
         self.last_tags_show.setChecked(bool(self.settings.get("last_tags_show", True)))
         self.last_tags_show.setToolTip(
@@ -1137,6 +1149,10 @@ class MainWindow(QMainWindow):
         self.level2.live_quote.connect(self.checklist.set_quote)
         self.level2.book_changed.connect(self.checklist.set_book)
         self.level2.book_changed.connect(self.chart.set_book)      # its prices' tags on the chart
+        # held at the close (outside the market's hours): gray, and the live values dropped first
+        self.level2.held_changed.connect(self.chart.set_held)
+        self.level2.market_reset.connect(self.on_market_reset)
+        self.level2.check_hold()
         root.addWidget(self.checklist_split, 1)
         return tab
 
@@ -1849,6 +1865,18 @@ class MainWindow(QMainWindow):
             if dates:
                 rng = atm.recent_range(dates, data, first_day, self.af_tol.value() / 100, self.af_gap.value() / 100)
         self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
+
+    def on_hold_close_toggled(self, checked):
+        self.settings["hold_close"] = checked
+        save_settings(self.settings)
+        self.level2.set_hold(checked)
+
+    def on_market_reset(self):
+        """The Level II panel switched between the last close and the stream: the old values go first."""
+        self.last_quote = ("", None)
+        self.chart.set_live()
+        self.chart.set_book()
+        self.checklist.clear_live()
 
     def on_live_quote(self, ticker, q):
         """The live quote: today's candle and volume bar, and the right axis tags. It's kept, so

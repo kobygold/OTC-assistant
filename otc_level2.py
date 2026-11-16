@@ -8,6 +8,12 @@ ServerFeed tells it the ticker followed (the chart's) and the extra ones, and ge
 Level2Panel shows it like thinkorswim's Level II: bids on the left, asks on the right, one row per
 market maker, rows of the same price level sharing a color.
 
+Hold at the close (on by default): outside the regular session (9:30-16:00 US Eastern, 16:30-23:00 in
+Israel most of the year) the chart's ticker shows its Level 1 and Level II as they were at the last
+close, from the record (the server's at_close), in gray: what streams after the close is ignored
+(it often differs a lot). The chart and the checklist get those values too; the open ATM trades
+keep the live ones. At the open the live stream is shown again.
+
 The keys are in settings.json (schwab_app_key, schwab_app_secret, schwab_callback_url) and the
 login token in schwab_token.json. The token lasts 7 days; then the panel asks to log in again.
 schwab-py is imported only when needed, so the app runs without it.
@@ -15,16 +21,18 @@ schwab-py is imported only when needed, so the app runs without it.
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from otc_chart import GOLD, LEVEL_COLORS, fmt_price
+from otc_chart import GOLD, HELD, LEVEL_COLORS, fmt_price
+from otc_recorder import in_session, last_close
 
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this
 
@@ -41,6 +49,7 @@ MM_YELLOW = {"OTCN", "OTCX", "CDEL", "INTL", "VIRT"}                            
 MM_TIPS = {2: "Dilutive Market Maker! Don't buy this stock!",
            1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks."}
 SIGN_W = 16             # the Ask table's sign column
+HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
 
 PANEL_STYLE = f"""
 #level2 {{ background: #000000; }}
@@ -105,6 +114,7 @@ class ServerFeed(QObject):
     order_event = pyqtSignal(str, str)     # the account activity stream: an event type, its Schwab order id
     activity = pyqtSignal(bool)            # the account activity stream is on (True) or off
     streamed = pyqtSignal(int, int, int)   # tickers streamed, wanted, Schwab's most
+    closed = pyqtSignal(dict)              # a ticker's market at the last close (the server's at_close)
 
     def __init__(self, link):
         super().__init__()
@@ -180,6 +190,8 @@ class ServerFeed(QObject):
             self.activity.emit(bool(msg["on"]))
         elif kind == "streamed":
             self.streamed.emit(int(msg["count"]), int(msg["wanted"]), int(msg["max"]))
+        elif kind == "at_close":
+            self.closed.emit(msg)
         elif kind == "welcome":
             self.activity.emit(bool(msg.get("activity")))
             if msg.get("login_needed"):
@@ -197,6 +209,8 @@ class Level2Panel(QWidget):
     order_event = pyqtSignal(str, str)            # the account activity stream's event type, Schwab order id
     activity_live = pyqtSignal(bool)              # the account activity stream is on / off
     streamed = pyqtSignal(int, int, int)          # tickers streamed, wanted, Schwab's most
+    held_changed = pyqtSignal(bool)               # showing the last close (True), or the live stream again
+    market_reset = pyqtSignal()                   # the shown ticker's quote and book start over (held / live)
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
     side by side on black, one row per market maker, darker blue for each price level further out."""
@@ -220,6 +234,13 @@ class Level2Panel(QWidget):
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
         self.prev_quote = {}                   # bid/ask price and size at the last quote update
+        # Hold at the close: outside the market's hours, the last close instead of the stream
+        self.hold = bool(settings.get("hold_close", True))
+        self.held = False                      # showing the close now
+        self.close_info = None                 # the shown ticker's close (the server's answer), when held
+        self.live_q = {}                       # the shown ticker's latest streamed quote and book
+        self.live_book = ([], [])
+        self.live_status = ""
         self.setObjectName("level2")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(PANEL_STYLE)
@@ -276,6 +297,9 @@ class Level2Panel(QWidget):
         sides.addWidget(self.ask_table)
         root.addLayout(sides, 1)
         self.show_quote({})
+        self.hold_timer = QTimer(self)
+        self.hold_timer.timeout.connect(self.check_hold)
+        self.hold_timer.start(HOLD_CHECK_MS)
 
     @staticmethod
     def _table(titles, sign_col=False):
@@ -319,8 +343,11 @@ class Level2Panel(QWidget):
             self.prev_quote = {}
             self.ticker, self.name = ticker, name
             self.shown_book = ([], [])
+            self.live_q, self.live_book, self.close_info = {}, ([], []), None
             self.refresh_mine()                # my orders show until the book comes
             self.show_quote({})
+            if self.held:
+                self.ask_close()
         if not ticker:
             if self.feed:
                 self.feed.set_symbol(None)
@@ -361,14 +388,92 @@ class Level2Panel(QWidget):
             self.feed.order_event.connect(self.order_event)
             self.feed.activity.connect(self.activity_live)
             self.feed.streamed.connect(self.streamed)
+            self.feed.closed.connect(self.on_close)
             self.feed.set_extra(self.extra)
             self.feed.set_track(self.tracked)
 
     def on_quote(self, ticker, q):
-        self.any_quote.emit(ticker, q)
+        self.any_quote.emit(ticker, q)      # (the ATM trades: always the live market)
         if ticker == self.ticker:
-            self.show_quote(q)
-            self.live_quote.emit(ticker, q)
+            self.live_q = q
+            if not self.held:
+                self.show_quote(q)
+                self.live_quote.emit(ticker, q)
+
+    # ------------------------------------------------------------ hold at the close ---
+    def set_hold(self, on):
+        self.hold = bool(on)
+        self.check_hold()
+
+    def check_hold(self):
+        """Holds the close outside the market's hours (when on), and goes back to the stream in them."""
+        held = self.hold and not in_session()
+        if held == self.held:
+            if held and self.close_info is not None and self.close_info.get("day") != self._close_day():
+                self.ask_close()        # (the next close passed while held: a new day's)
+            return
+        self.held = held
+        self.held_changed.emit(held)
+        self.prev = {"BID": {}, "ASK": {}}
+        self.trend = {"BID": {}, "ASK": {}}
+        self.prev_quote = {}
+        if held:
+            self.close_info = None
+            self.market_reset.emit()
+            self.shown_book = ([], [])
+            self.show_quote({})
+            self.refresh_mine()
+            self.ask_close()
+        else:       # the stream's latest again
+            self.close_info = None
+            self.shown_book = self.live_book
+            self.show_quote(self.live_q)
+            self.refresh_mine()
+            self.status_label.setText(self.live_status)
+            self.market_reset.emit()
+            if self.ticker:
+                self.live_quote.emit(self.ticker, self.live_q)
+                self.book_changed.emit(self.ticker, *self.live_book)
+
+    @staticmethod
+    def _close_day():
+        day, _ = last_close()
+        return day.isoformat() if day else None
+
+    def ask_close(self):
+        """The shown ticker's last close, from this computer's server (on_close answers)."""
+        if not self.ticker:
+            return
+        self._show_status(f"Held at the close · reading {self.ticker}'s close...")
+        if not self.link.send({"type": "at_close", "ticker": self.ticker}):
+            # the server isn't there yet (the app starting): again in a moment
+            QTimer.singleShot(1000, lambda t=self.ticker: self.held and self.close_info is None
+                              and t == self.ticker and self.ask_close())
+
+    def on_close(self, msg):
+        if not self.held or msg.get("ticker") != self.ticker:
+            return
+        self.close_info = msg
+        self.market_reset.emit()
+        q = msg.get("q") or {}
+        bids = [tuple(r) for r in msg.get("bids") or []]
+        asks = [tuple(r) for r in msg.get("asks") or []]
+        self.shown_book = (bids, asks)
+        self.show_quote(q)
+        self.refresh_mine()
+        close = msg.get("close")
+        when = datetime.fromtimestamp(close / 1000).strftime("%a %b %d, %H:%M") if close else "?"
+        if msg.get("q") is None:
+            self._show_status(f"Held at the close ({when}) · {self.ticker} wasn't recorded before it")
+        else:
+            at = msg.get("at")
+            self._show_status(f"Held at the close ({when})" +
+                              (f" · last update {datetime.fromtimestamp(at / 1000):%H:%M:%S}" if at else ""))
+        self.live_quote.emit(self.ticker, q)
+        self.book_changed.emit(self.ticker, bids, asks)
+
+    def _show_status(self, text):
+        self.status_label.setText(f"Level II · {text}")
 
     def stop(self):
         if self.feed:
@@ -393,7 +498,9 @@ class Level2Panel(QWidget):
         self.set_status("Off · not connected to Schwab")
 
     def set_status(self, text):
-        self.status_label.setText(f"Level II · {text}")
+        self.live_status = f"Level II · {text}"
+        if not self.held:
+            self.status_label.setText(self.live_status)
 
     def on_login_needed(self, why):
         self.set_status(why)
@@ -455,6 +562,8 @@ class Level2Panel(QWidget):
         # Bid and ask price and size, each on its own: green when it went up at this update, red when
         # it went down, yellow when it stayed
         def tone(field):
+            if self.held:
+                return HELD
             now, before = q.get(field), self.prev_quote.get(field)
             if now is None or before is None or now == before:
                 return LAST
@@ -484,6 +593,9 @@ class Level2Panel(QWidget):
     def show_book(self, ticker, bids, asks):
         self.any_book.emit(ticker, bids, asks)
         if ticker != self.ticker:
+            return
+        self.live_book = (bids, asks)
+        if self.held:
             return
         self.shown_book = (bids, asks)
         self.refresh_mine()
@@ -518,7 +630,7 @@ class Level2Panel(QWidget):
         table.setRowCount(len(rows))
         for r, (mm, price, size, level, mine) in enumerate(rows):
             # Size colored by its last change, as in thinkorswim: green up, red down
-            if not mine:
+            if not mine and not self.held:
                 if mm in prev and size != prev[mm]:
                     trend[mm] = 1 if size > prev[mm] else -1
                 prev[mm] = size
@@ -538,9 +650,9 @@ class Level2Panel(QWidget):
                 first = 1
             for col, item in enumerate(cells):
                 item.setBackground(bg)
-                item.setForeground(QColor(GOLD))
+                item.setForeground(QColor(HELD if self.held and not mine else GOLD))
                 if col > first:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 table.setItem(r, col, item)
-            if not mine and trend.get(mm):
+            if not mine and not self.held and trend.get(mm):
                 cells[-1].setForeground(QColor(GREEN if trend[mm] > 0 else RED))

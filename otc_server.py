@@ -89,7 +89,7 @@ from datetime import datetime
 from pathlib import Path
 
 from otc_orders import account_numbers, read_orders, read_positions
-from otc_recorder import Recorder, subtract_ranges
+from otc_recorder import Recorder, at_close, last_close, subtract_ranges
 from otc_shared import SharedStore
 
 APP_DIR = Path(__file__).resolve().parent
@@ -201,6 +201,14 @@ def book_side(levels, side):
     return rows
 
 
+def merge_books(books):
+    """One book from the services' (bids, asks) [(market maker, price, size)]: best price first, then
+    the biggest size, then market makers A-Z, as in thinkorswim."""
+    bids = sorted((r for b, _ in books for r in b), key=lambda r: (-r[1], -r[2], r[0]))
+    asks = sorted((r for _, a in books for r in a), key=lambda r: (r[1], -r[2], r[0]))
+    return bids, asks
+
+
 def with_levels(rows):
     """Adds the price level number, 0 for the best price."""
     out, level, last = [], -1, None
@@ -292,6 +300,8 @@ class Server:
         self.counted = None                     # (streamed, wanted) as last sent to the apps
         self.sent_want = None                   # (client) the last want sent to the main server
         self.recorder = Recorder(market_log, log)
+        self.market_log = Path(market_log)
+        self.closes = {}            # (ticker, day) -> its market at that day's close (at_close), or None
         self.store = SharedStore(shared_path, log)
         # a client sends its apps the shared data only once it has the main server's (or had it before)
         self.store_ready = not self.cluster_secret or bool(self.store.items)
@@ -449,6 +459,8 @@ class Server:
                     self.on_change(conn, msg)
                 elif kind == "read":
                     self.on_read(msg)
+                elif kind == "at_close":
+                    asyncio.create_task(self.on_at_close(conn, str(msg.get("ticker") or "")))
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -1227,7 +1239,31 @@ class Server:
             conn.put({"type": "history_part", "day": day, "name": name, "data": data})
         conn.put({"type": "history_done", "day": day, "lines": sum(len(v) for v in parts.values())})
 
+    async def on_at_close(self, conn, ticker):
+        """(an app) The ticker's Level 1 and Level II at the last session's close, from this computer's
+        record (the app's "hold at the close", outside the market's hours): {"type": "at_close",
+        "ticker", "day", "close" (ms), "q", "bids", "asks", "at"} - no "q" when it wasn't recorded."""
+        day, close = last_close()
+        answer = {"type": "at_close", "ticker": ticker, "day": day.isoformat() if day else None, "close": close}
+        if day is not None and ticker:
+            key = (ticker, answer["day"])
+            if key not in self.closes:
+                try:
+                    await asyncio.to_thread(self.recorder.flush)
+                    self.closes[key] = await asyncio.to_thread(at_close, self.market_log, ticker, answer["day"], close)
+                except Exception as e:
+                    log(f"Can't read {ticker}'s close from the record: {type(e).__name__}: {e}")
+                    self.closes[key] = None
+                while len(self.closes) > 300:
+                    self.closes.pop(next(iter(self.closes)))
+            snap = self.closes[key]
+            if snap is not None:
+                bids, asks = merge_books(snap["books"].values())
+                answer.update(q=snap["q"], bids=with_levels(bids), asks=with_levels(asks), at=snap["at"])
+        conn.put(answer)
+
     async def take_history_part(self, m):
+        self.closes.clear()         # (a close read before may be missing these lines)
         raw = base64.b64decode(m["data"])
         self.hist_bytes += len(raw)
         lines = [line for line in gzip.decompress(raw).decode("utf-8").split("\n") if line]
@@ -1588,7 +1624,7 @@ class Server:
                 # After the first message only changed fields come
                 changed = {k: v for k, v in c.items() if k.isupper()}
                 self.l1[key].update(changed)
-                self.recorder.level1(key, changed, msg.get("timestamp"))
+                self.recorder.level1(key, changed, msg.get("timestamp"), full=self.l1[key])
                 self.broadcast({"type": "quote", "ticker": key, "q": dict(self.l1[key])},
                                [x for x in self.conns if x.sees(key)])
                 self.to_peers({"type": "l1", "c": c, "t": msg.get("timestamp")}, [p for p in self.peers if p.sees(key)])
@@ -1607,9 +1643,7 @@ class Server:
 
     def emit_book(self, key, to=None):
         books = self.books.get(key, {})
-        # Best price first, then the biggest size, then market makers A-Z, as in thinkorswim
-        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
-        asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
+        bids, asks = merge_books(books.values())
         to = [c for c in self.conns if c.sees(key)] if to is None else to
         self.broadcast({"type": "book", "ticker": key, "bids": with_levels(bids), "asks": with_levels(asks)}, to)
         if books:
