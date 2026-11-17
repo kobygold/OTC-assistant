@@ -412,12 +412,12 @@ def reset_icon(color="#c8c8c8"):
     return QIcon(pix)
 
 
-PIN_ON = "#1db31d"          # a pinned price's pin (the checks' green)
+PIN_ON = "#f0a020"          # a pinned price's pin: the typed-over text's color
 PIN_OFF = "#ffffff"         # not pinned: the automatic value
 
 
 def pin_icon(pinned):
-    """A push pin, drawn at 4x and anti-aliased: green and filled when pinned, a white outline
+    """A push pin, drawn at 4x and anti-aliased: yellow and filled when pinned (as the pinned text), a white outline
     leaning over when not."""
     scale, size = 4, 14
     pix = QPixmap(size * scale, size * scale)
@@ -2561,7 +2561,7 @@ class ChecklistPanel(QWidget):
         return box
 
     def make_pin(self, key, edit):
-        """The pin: green when the price is pinned (typed, stepped, or pinned as it was; saved), white
+        """The pin: yellow when the price is pinned (typed, stepped, or pinned as it was; saved), white
         when it's the automatic one. A click pins the price shown, or unpins it."""
         b = QToolButton()
         b.setObjectName("cl_pin")
