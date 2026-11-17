@@ -4,17 +4,42 @@ phones: Add phone (a code to send the bot, 10 minutes), Remove. The bot itself r
 server (otc_telegram.py); all of this is in the shared data, so every computer shows the same.
 """
 
+import json
 import secrets
+import threading
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import quote
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QGroupBox, QHBoxLayout, QHeaderView,
-                             QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTableWidget,
+                             QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
+import otc_telegram
 from otc_telegram import ACCOUNTS, CODES, STATE_KEY
+
+TEST_TEXT = "A test message from OTC Assistant."
+
+
+def send_message(token, chat_id, text, timeout=15):
+    """Sends a message with the bot (straight to Telegram, from this computer). None when sent, else why not."""
+    data = json.dumps({"chat_id": chat_id, "text": text, "disable_web_page_preview": True}).encode()
+    req = urllib.request.Request(f"{otc_telegram.API}/bot{token}/sendMessage", data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except ValueError:
+            return f"HTTP {e.code}"
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    return None if body.get("ok") else f"{body.get('error_code', '?')}: {body.get('description', 'not sent')}"
 
 CODE_S = 600        # an Add phone code works this long
 
@@ -26,8 +51,11 @@ def bot_links(bot, code):
 
 
 class TelegramPanel(QWidget):
+    test_done = pyqtSignal(str, object)       # the phone's name, None (sent) or why it wasn't (a thread's)
+
     def __init__(self, settings, save_settings, link, shared, parent=None):
         super().__init__(parent)
+        self.test_done.connect(self.on_test_done)
         self.settings, self.save_settings, self.link, self.shared = settings, save_settings, link, shared
         root = QVBoxLayout(self)
         title = QLabel("Telegram: the ATM trades' news on the phones")
@@ -118,6 +146,7 @@ class TelegramPanel(QWidget):
         if phones:
             table = QTableWidget(len(phones), 3)
             table.setHorizontalHeaderLabels(["Phone (Telegram)", "Linked", ""])
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
             table.verticalHeader().hide()
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -126,9 +155,19 @@ class TelegramPanel(QWidget):
             for r, p in enumerate(phones):
                 table.setItem(r, 0, QTableWidgetItem(p.get("name", str(p.get("chat_id")))))
                 table.setItem(r, 1, QTableWidgetItem(str(p.get("since", "")).replace("T", " ")))
+                cell = QWidget()
+                cl = QHBoxLayout(cell)
+                cl.setContentsMargins(2, 0, 2, 0)
+                cl.setSpacing(4)
+                test = QPushButton("Test")
+                test.setToolTip("Send this phone a message you type (a test)")
+                test.setEnabled(bool(self.settings.get("telegram_token")))
+                test.clicked.connect(lambda _c=False, c=p.get("chat_id"), n=p.get("name"): self.test(c, n))
                 rm = QPushButton("Remove")
                 rm.clicked.connect(lambda _c=False, t=tail, c=p.get("chat_id"), n=p.get("name"): self.remove(t, c, n))
-                table.setCellWidget(r, 2, rm)
+                cl.addWidget(test)
+                cl.addWidget(rm)
+                table.setCellWidget(r, 2, cell)
             table.setFixedHeight(28 + 30 * len(phones))
             lay.addWidget(table)
         else:
@@ -189,6 +228,26 @@ class TelegramPanel(QWidget):
         box.resize(560, box.sizeHint().height())
         self.dialog = box           # (tests)
         box.open()
+
+    def test(self, chat_id, name):
+        """Test: a message typed here, sent to the phone (straight from this computer, with the bot's token)."""
+        token = self.settings.get("telegram_token", "")
+        if not token:
+            return
+        text, ok = QInputDialog.getMultiLineText(self, "Test message", f"Send to {name}:", TEST_TEXT)
+        text = text.strip()
+        if not ok or not text:
+            return
+        self.status.setText(f"Sending the test message to {name}...")
+        threading.Thread(target=lambda: self.test_done.emit(name, send_message(token, chat_id, text)),
+                         daemon=True).start()
+
+    def on_test_done(self, name, error):
+        if error is None:
+            self.status.setText(f"Test message sent to {name}.")
+        else:
+            self.status.setText(f"The test message to {name} wasn't sent: {error}")
+            QMessageBox.warning(self, "Test message", f"The test message to {name} wasn't sent:\n{error}")
 
     def remove(self, tail, chat_id, name):
         if QMessageBox.question(self, "Remove phone", f"Stop sending the news of account ...{tail} to {name}?") \
