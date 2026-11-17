@@ -11,7 +11,8 @@ market maker, rows of the same price level sharing a color.
 Reloaders: a yellow market maker (MM_YELLOW) that kept its offer on the lowest Ask while it was bought
 from, in the last 5 market days' record (otc_recorder.find_reloads: trades at its price without its
 amount getting smaller, or the amount dropping and quickly coming back), is a diluter: its sign turns
-red (a red sign with a yellow ring, level 3) and the checklist counts it as one.
+red with a yellow ring (level 3, a black "!"; level 4, a white "!", when at least half of its amount
+was bought: a strong case) and the checklist counts it as one.
 
 Hold at the close (on by default): outside the regular session (9:30-16:00 US Eastern, 16:30-23:00 in
 Israel most of the year) the chart's ticker shows its Level 1 and Level II as they were at the last
@@ -52,7 +53,9 @@ TEXT = "#d8d8d8"
 # (retail: ETRF, CSTI, GTSM, NITE) get no sign.
 MM_RED = {"MAXM", "GLED", "CFGN", "PAUL", "JANE", "BBAR", "BLAS", "ALPS", "STXG", "AEXG"}   # bad players: diluters
 MM_YELLOW = {"OTCN", "OTCX", "CDEL", "INTL", "VIRT"}                                         # so-so
-MM_TIPS = {3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
+MM_TIPS = {4: "A dilutive market maker here: it refills its offer while it's bought from (at least half of its "
+              "amount at a time)! Don't buy this stock!",
+           3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
            2: "Dilutive Market Maker! Don't buy this stock!",
            1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks."}
 SIGN_W = 16             # the Ask table's sign column
@@ -69,7 +72,7 @@ def reload_text(events):
         how = ("its amount didn't get smaller" if e["kind"] == "kept" else
                f"its amount came back to {e['size']:,} within seconds")
         lines.append(f"{when}: {e['traded']:,} bought at {fmt_price(e['price'])} while it showed "
-                     f"{e['size']:,}; {how}")
+                     f"{e['size']:,}; {how}" + (" (strong)" if e.get("strong") else ""))
     more = f"\n(and {len(events) - 4} more)" if len(events) > 4 else ""
     return "\n".join(lines) + more
 
@@ -705,12 +708,14 @@ class Level2Panel(QWidget):
             if side == "ASK":
                 # The sign column: red for a diluter, yellow for a so-so market maker, red with a
                 # yellow ring for a yellow one caught refilling its offer (a diluter here)
-                risk = 2 if mm in MM_RED else (3 if mm in self.reloaders else 1) if mm in MM_YELLOW else 0
+                caught = self.reloaders.get(mm)
+                risk = 2 if mm in MM_RED else (
+                    (4 if any(e.get("strong") for e in caught) else 3) if caught else 1) if mm in MM_YELLOW else 0
                 sign = QTableWidgetItem()
                 if risk in self.mm_icons:
                     sign.setIcon(self.mm_icons[risk])
-                    sign.setToolTip(MM_TIPS[risk] if risk != 3 else
-                                    f"{MM_TIPS[3]}\n\n{reload_text(self.reloaders[mm])}")
+                    sign.setToolTip(MM_TIPS[risk] if risk < 3 else
+                                    f"{MM_TIPS[risk]}\n\n{reload_text(self.reloaders[mm])}")
                 cells.insert(0, sign)
                 first = 1
             for col, item in enumerate(cells):

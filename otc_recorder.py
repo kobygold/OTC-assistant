@@ -45,8 +45,9 @@ RELOAD_DAYS = 5         # market days looked at for reloads
 REFILL_S = 5            # an amount that dropped and came back to the same within this many seconds: refilled
 BOOK_LAG_MS = 1500      # the book "before" a trade: as it was this long before it (its book can come first)
 ROUND_SIZE = 10_000     # a reloader's amount: a round number of these (10k, 20k, 50k, 100k...)
-RELOAD_PART = 0.5       # it counts when what traded at its price (that the others there don't explain) is
-                        # at least this part of its amount shown (an odd lot proves nothing)
+RELOAD_WEAK = 0.2       # it counts when what traded at its price (that the others there don't explain) is
+                        # at least this part of its amount shown (an odd lot proves nothing)...
+RELOAD_STRONG = 0.5     # ...and is a strong case from this part (200k of 500k: weak; 300k: strong)
 FLUSH_S = 1.0           # lines reach the file at least this often
 COVERAGE = "_coverage.json"
 T_FIELD = re.compile(r'"t":\s*(\d+)')
@@ -455,9 +456,11 @@ def market_days_back(n=RELOAD_DAYS, millis=None):
 def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None):
     """The times, in the last `days` market days' record, one of the market makers `mms` kept its
     offer on the lowest Ask while it was bought from: [{"mm", "t" (ms), "price", "size" (shown),
-    "traded", "kind"}], oldest first. kind "kept": shares traded at its price (beyond what the others
-    there gave up: at least RELOAD_PART of its amount) and its amount didn't get smaller; "refilled": its amount dropped with the trade
-    and came back to the same within REFILL_S. Only in the regular session, only round amounts."""
+    "traded", "kind", "strong"}], oldest first. kind "kept": shares traded at its price (beyond what
+    the others there gave up: at least RELOAD_WEAK of its amount) and its amount didn't get smaller;
+    "refilled": its amount dropped with the trade and came back to the same within REFILL_S. strong:
+    what it sold was at least RELOAD_STRONG of its amount. Only in the regular session, only round
+    amounts."""
     out = []
     for day in reversed(market_days_back(days, millis)):
         out += _reloads_in(read_day(folder, day.isoformat(), ticker), set(mms), session(day))
@@ -522,7 +525,7 @@ def _reloads_in(lines, mms, times):
                     del watch[mm]
                 elif at(cur, w["p"]).get(mm, 0) >= w["size"] and w["traded"] > 0:
                     out.append({"mm": mm, "t": t, "price": w["p"], "size": w["size"], "traded": w["traded"],
-                                "kind": "refilled"})
+                                "kind": "refilled", "strong": w["traded"] >= RELOAD_STRONG * w["size"]})
                     del watch[mm]
             if pending is not None and t > pending["t"]:
                 p, before = pending["p"], pending["before"]
@@ -532,11 +535,11 @@ def _reloads_in(lines, mms, times):
                         continue
                     others = sum(max(0, s - after.get(m, 0)) for m, s in before.items() if m != mm)
                     mine = pending["vol"] - others          # what the others there don't explain
-                    if mine < RELOAD_PART * size:
+                    if mine < RELOAD_WEAK * size:
                         continue
                     if after.get(mm, 0) >= size:
                         out.append({"mm": mm, "t": pending["t"], "price": p, "size": size, "traded": pending["vol"],
-                                    "kind": "kept"})
+                                    "kind": "kept", "strong": mine >= RELOAD_STRONG * size})
                     else:
                         watch[mm] = {"p": p, "size": size, "t": t, "traded": mine}
                 pending = None

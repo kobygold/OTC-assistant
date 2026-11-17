@@ -62,7 +62,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.7"
+APP_VERSION = "2.3.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -151,7 +151,8 @@ TICKER_RISKS = {
     "F": ("Foreign", "$50 Schwab fee per trade (not Canada); low volume", 1),
 }
 RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff"),     # badge, mark
-               3: ("#d32f2f", "#ffffff")}   # a yellow market maker caught refilling: red, with a yellow ring
+               3: ("#d32f2f", "#000000"),   # a yellow market maker caught refilling: red, a yellow ring, a black "!"
+               4: ("#d32f2f", "#ffffff")}   # ...a strong case (at least half its amount): a white "!"
 ZONE_DEFAULTS = {
     "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3, "window": 6,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
@@ -405,7 +406,7 @@ def risk_icon(level: int) -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(badge))
     p.drawEllipse(1, 1, 30, 30)
-    if level == 3:      # red as a diluter, ringed in the yellow it was (a reloader: Level II)
+    if level in (3, 4):     # red as a diluter, ringed in the yellow it was (a reloader: Level II)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(QColor(RISK_COLORS[1][0]), 4))
         p.drawEllipse(3, 3, 26, 26)
