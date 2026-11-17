@@ -54,15 +54,15 @@ import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel, copy_value
 from otc_intraday import MinuteLoader
-from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
+from otc_level2 import MM_YELLOW, TOKEN_DAYS, Level2Panel, token_created
 from otc_probe import ProbeRunner, candle_part
-from otc_recorder import in_session
+from otc_recorder import RELOAD_DAYS, find_reloads, in_session
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.6"
+APP_VERSION = "2.3.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -150,7 +150,8 @@ TICKER_RISKS = {
     "R": ("Rights", "Short-lived; can expire worthless; easy to confuse", 2),
     "F": ("Foreign", "$50 Schwab fee per trade (not Canada); low volume", 1),
 }
-RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff")}     # badge, mark
+RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff"),     # badge, mark
+               3: ("#d32f2f", "#ffffff")}   # a yellow market maker caught refilling: red, with a yellow ring
 ZONE_DEFAULTS = {
     "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3, "window": 6,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,
@@ -404,6 +405,10 @@ def risk_icon(level: int) -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(badge))
     p.drawEllipse(1, 1, 30, 30)
+    if level == 3:      # red as a diluter, ringed in the yellow it was (a reloader: Level II)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(RISK_COLORS[1][0]), 4))
+        p.drawEllipse(3, 3, 26, 26)
     font = QFont()
     font.setPixelSize(24)
     font.setBold(True)
@@ -766,6 +771,10 @@ class MainWindow(QMainWindow):
         for n, i in enumerate(visible[:9], 1):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, lambda i=i: self.tabs.setCurrentIndex(i))
             self.tabs.setTabToolTip(i, f"Ctrl+{n}")
+        # Ctrl+F: the Chart tab's ticker box, its text selected to type over
+        QShortcut(QKeySequence("Ctrl+F"), self, self.focus_chart_ticker)
+        self.chart_ticker.setToolTip((self.chart_ticker.toolTip() + "\n" if self.chart_ticker.toolTip() else "")
+                                     + "Ctrl+F: here, from anywhere in the app")
         # On the Chart tab, Ctrl+Down / Ctrl+Up open the next / previous ticker of the last list visited.
         # On the Mac, Qt's "Ctrl" is the Cmd key, and Cmd+Up/Down is eaten by the focused table / text box
         # (jump to top / bottom), so there it is Cmd+Option+Up/Down.
@@ -1155,6 +1164,7 @@ class MainWindow(QMainWindow):
         self.level2.book_changed.connect(self.chart.set_book)      # its prices' tags on the chart
         # held at the close (outside the market's hours): gray, and the live values dropped first
         self.level2.held_changed.connect(self.chart.set_held)
+        self.level2.reloaders_changed.connect(self.checklist.set_reloaders)
         self.level2.market_reset.connect(self.on_market_reset)
         self.level2.check_hold()
         root.addWidget(self.checklist_split, 1)
@@ -1972,6 +1982,12 @@ class MainWindow(QMainWindow):
             bits.append(bounce_bit)
         self.zone_info.setText("   ·   ".join(bits))
         self.zone_info.show()
+
+    def focus_chart_ticker(self):
+        """Ctrl+F: to the Chart tab, the cursor in its ticker box with the text selected."""
+        self.tabs.setCurrentIndex(1)
+        self.chart_ticker.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.chart_ticker.selectAll()
 
     def chart_from_box(self, ticker: str):
         """A ticker typed or picked in the Chart tab's box: shown, and added to the history if it has data."""
@@ -3340,6 +3356,7 @@ class MainWindow(QMainWindow):
             usd = checklist.POSITION_USD
         prep = {}
         days = []
+        record = self.level2.market_log
 
         def fn(job):
             con = db()
@@ -3350,7 +3367,10 @@ class MainWindow(QMainWindow):
                 for t in tickers:
                     if job.stopping():
                         raise Stopped()
-                    prep[t] = candle_part(con, t, first_day, tol, gap)
+                    found = {}
+                    for ev in find_reloads(record, t, MM_YELLOW, RELOAD_DAYS):     # yellow ones refilling
+                        found.setdefault(ev["mm"], []).append(ev)
+                    prep[t] = (*candle_part(con, t, first_day, tol, gap), found)
             finally:
                 con.close()
             return ""
@@ -3375,7 +3395,7 @@ class MainWindow(QMainWindow):
         prep = (self.atm_check_prep or {}).get(ticker)
         if prep is None:
             return
-        rows, rng = prep
+        rows, rng, reloaders = prep
         days, period, usd = self.atm_check_info
         when = ""
         if r["source"] == "close" and r.get("at"):
@@ -3386,7 +3406,8 @@ class MainWindow(QMainWindow):
             c = {"passed": None, "tip": "N/A: " + ("wasn't recorded before the last close" if self.probe.held
                                                    else "no Level 1 or Level II came")}
         else:
-            res = checklist.scan_checks(rows, days, rng, period, r["q"], r["bids"], r["asks"], r["has_l2"], usd)
+            res = checklist.scan_checks(rows, days, rng, period, r["q"], r["bids"], r["asks"], r["has_l2"], usd,
+                                        reloaders)
             lines = []
             for key, label in checklist.SCAN_CHECKS:
                 state, tip = res[key]

@@ -25,6 +25,10 @@ TICKER.jsonl.gz, and read_day gives every line of a day in time order.
 Market hours (US Eastern, the app's "hold at the close"): session(day), in_session(millis),
 last_close(millis), and at_close(folder, ticker, day, close) - a ticker's Level 1 and Level II as
 they were at a session's close, from the record.
+
+Reloaders (find_reloads): a market maker on the lowest Ask that keeps its offer while it's bought
+from - trades at its price without its amount getting smaller, or the amount dropping and quickly
+coming back to the same - a diluter selling more than it shows. Its amount is round (10,000s).
 """
 
 import gzip
@@ -37,6 +41,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 KEEP_DAYS = 14
+RELOAD_DAYS = 5         # market days looked at for reloads
+REFILL_S = 5            # an amount that dropped and came back to the same within this many seconds: refilled
+BOOK_LAG_MS = 1500      # the book "before" a trade: as it was this long before it (its book can come first)
+ROUND_SIZE = 10_000     # a reloader's amount: a round number of these (10k, 20k, 50k, 100k...)
+RELOAD_PART = 0.5       # it counts when what traded at its price (that the others there don't explain) is
+                        # at least this part of its amount shown (an odd lot proves nothing)
 FLUSH_S = 1.0           # lines reach the file at least this often
 COVERAGE = "_coverage.json"
 T_FIELD = re.compile(r'"t":\s*(\d+)')
@@ -414,11 +424,120 @@ class Recorder:
 
 def read_day(folder: Path, day: str, ticker: str):
     """The lines of a ticker's day, oldest first (the .jsonl and the .jsonl.gz part: recorded here,
-    and fetched from another computer)."""
+    and fetched from another computer). A line being written (cut) is left out."""
     out = []
     base = Path(folder) / day / f"{ticker}.jsonl"
     for path, opener in ((base.with_suffix(".jsonl.gz"), gzip.open), (base, open)):
         if path.exists():
             with opener(path, "rt", encoding="utf-8") as f:
-                out.extend(json.loads(line) for line in f if line.strip())
+                for line in f:
+                    if line.strip():
+                        try:
+                            out.append(json.loads(line))
+                        except ValueError:
+                            pass
     return sorted(out, key=lambda line: line.get("t", 0))
+
+
+def market_days_back(n=RELOAD_DAYS, millis=None):
+    """The last n market days (with a session), today's first (if it is one)."""
+    day = market_date(millis if millis is not None else time.time() * 1000)
+    out = []
+    for _ in range(40):
+        if session(day) is not None:
+            out.append(day)
+            if len(out) >= n:
+                break
+        day -= timedelta(days=1)
+    return out
+
+
+def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None):
+    """The times, in the last `days` market days' record, one of the market makers `mms` kept its
+    offer on the lowest Ask while it was bought from: [{"mm", "t" (ms), "price", "size" (shown),
+    "traded", "kind"}], oldest first. kind "kept": shares traded at its price (beyond what the others
+    there gave up: at least RELOAD_PART of its amount) and its amount didn't get smaller; "refilled": its amount dropped with the trade
+    and came back to the same within REFILL_S. Only in the regular session, only round amounts."""
+    out = []
+    for day in reversed(market_days_back(days, millis)):
+        out += _reloads_in(read_day(folder, day.isoformat(), ticker), set(mms), session(day))
+    return out
+
+
+def _reloads_in(lines, mms, times):
+    books = {}          # service -> {mm: (price, size)} of the Ask (each one's best)
+    history = []        # (time, the merged Ask) of the books lately
+    last_vol = last_price = None
+    pending = None      # trades at the lowest Ask since the last book: {"p", "vol", "before", "t"}
+    watch = {}          # mm -> {"p", "size", "t", "traded"}: its amount dropped with a trade
+    out = []
+
+    def merged():
+        cur = {}
+        for asks in books.values():
+            for mm, (price, size) in asks.items():
+                if mm not in cur or price < cur[mm][0]:
+                    cur[mm] = (price, size)
+        return cur
+
+    def at(asks, price):
+        return {mm: size for mm, (pr, size) in asks.items() if abs(pr - price) < 1e-9}
+
+    def is_round(size):
+        return size >= ROUND_SIZE and size % ROUND_SIZE == 0
+
+    for line in lines:
+        t, kind, d = line.get("t", 0), line.get("k"), line.get("d") or {}
+        if kind in ("Q", "L1"):
+            if d.get("LAST_PRICE") is not None:
+                last_price = d["LAST_PRICE"]
+            vol = d.get("TOTAL_VOLUME")
+            if vol is None:
+                continue
+            if kind == "L1" and last_vol is not None and vol > last_vol and times and times[0] <= t < times[1]:
+                before = next((asks for when, asks in reversed(history) if when <= t - BOOK_LAG_MS), None)
+                if before and last_price is not None:
+                    best = min(price for price, _ in before.values())
+                    if abs(last_price - best) < 1e-9:      # bought at the lowest Ask
+                        traded = vol - last_vol
+                        if pending is not None and abs(pending["p"] - best) < 1e-9:
+                            pending["vol"] += traded
+                        else:
+                            pending = {"p": best, "vol": traded, "before": at(before, best), "t": t}
+                        for w in watch.values():
+                            if abs(w["p"] - best) < 1e-9:
+                                w["traded"] += traded
+            last_vol = vol      # (a "Q": Schwab's whole quote, the count from there)
+        elif kind == "L2":
+            books[d.get("s", "N")] = {}
+            for price, sizes in d.get("a") or []:
+                for mm, size in sizes:
+                    books[d.get("s", "N")].setdefault(mm, (price, size))
+            cur = merged()
+            history.append((t, cur))
+            while len(history) > 2 and history[1][0] < t - 60_000:
+                history.pop(0)
+            for mm, w in list(watch.items()):
+                if t - w["t"] > REFILL_S * 1000:
+                    del watch[mm]
+                elif at(cur, w["p"]).get(mm, 0) >= w["size"] and w["traded"] > 0:
+                    out.append({"mm": mm, "t": t, "price": w["p"], "size": w["size"], "traded": w["traded"],
+                                "kind": "refilled"})
+                    del watch[mm]
+            if pending is not None and t > pending["t"]:
+                p, before = pending["p"], pending["before"]
+                after = at(cur, p)
+                for mm, size in before.items():
+                    if mm not in mms or not is_round(size):
+                        continue
+                    others = sum(max(0, s - after.get(m, 0)) for m, s in before.items() if m != mm)
+                    mine = pending["vol"] - others          # what the others there don't explain
+                    if mine < RELOAD_PART * size:
+                        continue
+                    if after.get(mm, 0) >= size:
+                        out.append({"mm": mm, "t": pending["t"], "price": p, "size": size, "traded": pending["vol"],
+                                    "kind": "kept"})
+                    else:
+                        watch[mm] = {"p": p, "size": size, "t": t, "traded": mine}
+                pending = None
+    return out

@@ -56,6 +56,8 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - אין מדלל באסק בלבל 2
   auto(no_diluter): who is first on the Ask (every market maker at the best ask price):
         a red X when one of them is red (MAXM, GLED, CFGN, PAUL, JANE, BBAR, BLAS, ALPS, STXG, AEXG),
+        or a yellow one caught refilling its offer in the last 5 market days (bought from at the
+        lowest Ask without its round amount getting smaller, or dropping and quickly coming back),
         else a yellow ? when one is yellow (OTCN, OTCX, CDEL, INTL, VIRT): could be good or bad,
         else a green check
   note: "אם המדלל ממש בסוף הלבל 2 — זה לא בהכרח פוסל" - so only the ones first on the Ask count

@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBo
 
 from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
-from otc_level2 import MM_RED, MM_YELLOW
+from otc_level2 import MM_RED, MM_YELLOW, reload_text
 
 POSITION_USD = 150      # the position size, in $
 FEE_USD = 6.95          # the fee for each buy and each sell, in $, until Schwab's is read
@@ -240,17 +240,21 @@ def range_check(rows, rng):
             f"{fmt_price(rng.low)} - {fmt_price(rng.high)} since {rng.since} ({age} days, {rng.legs} legs)")
 
 
-def l2_checks(bids, asks, bid, ask, p):
-    """{no_diluter, buyers, cushion: (state, value, tip)} from a Level II book and the plan()."""
+def l2_checks(bids, asks, bid, ask, p, reloaders=None):
+    """{no_diluter, buyers, cushion: (state, value, tip)} from a Level II book and the plan().
+    reloaders: {yellow market maker: its reload events} (otc_recorder.find_reloads): diluters too."""
     r = {}
+    reloaders = reloaders or {}
     # Who is first on the Ask: the market makers at the best (lowest) ask price
     best = min((price for _, price, *_ in asks), default=None)
     first = sorted({mm for mm, price, *_ in asks if price == best})
-    red = [mm for mm in first if mm in MM_RED]
-    yellow = [mm for mm in first if mm in MM_YELLOW]
+    red = [mm for mm in first if mm in MM_RED or mm in reloaders]
+    yellow = [mm for mm in first if mm in MM_YELLOW and mm not in reloaders]
     at = f" first on the Ask ({fmt_price(best)})" if best is not None else ""
     if red:
-        r["no_diluter"] = (BAD, "", "A diluter" + at + ": " + ", ".join(red))
+        caught = [mm for mm in red if mm in reloaders]
+        r["no_diluter"] = (BAD, "", "A diluter" + at + ": " + ", ".join(red) + "".join(
+            f"\n{mm} refilled its offer while it was bought from:\n{reload_text(reloaders[mm])}" for mm in caught))
     elif yellow:
         r["no_diluter"] = (MAYBE, "", "A so-so market maker" + at + ": " + ", ".join(yellow)
                            + ". Could be good or bad")
@@ -307,7 +311,7 @@ SCAN_CHECKS = (("profit", "Potential profit"), ("ratio", "Profit-to-loss ratio")
                ("avg_volume", "Average volume"), ("steady", "Few dead days (no trades)"))
 
 
-def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD):
+def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD, reloaders=None):
     """The ATM scanner's checks of a ticker, with the automatic entry, exit and stop:
     {key: (state, tip)} for SCAN_CHECKS. q: its Level 1 (stream names), bids / asks: its Level II
     [(mm, price, size, level)], has_l2: a book came (else the Level II checks are unknown)."""
@@ -322,7 +326,7 @@ def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSIT
         out[key] = (state, f"{shown} ({need})")
     out["range"] = range_check(rows, rng)[::2]
     if has_l2:
-        out.update({k: v[::2] for k, v in l2_checks(bids, asks, bid, ask, p).items()})
+        out.update({k: v[::2] for k, v in l2_checks(bids, asks, bid, ask, p, reloaders).items()})
     else:
         for key in ("no_diluter", "buyers", "cushion"):
             out[key] = (UNKNOWN, "No Level II")
@@ -2433,6 +2437,7 @@ class ChecklistPanel(QWidget):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.ticker = ""
         self.rows, self.market_days, self.range, self.period = [], [], None, 50
+        self.reloaders, self.reloaders_of = {}, ""     # the Level II panel's reloaders, of that ticker
         self.bid = self.ask = None
         self.bid_size = self.ask_size = None
         self.bids, self.asks, self.l2_live = [], [], False
@@ -2991,6 +2996,12 @@ class ChecklistPanel(QWidget):
         self.read_fee()
         self.refresh()
 
+    def set_reloaders(self, ticker, found):
+        """{yellow market maker: its reload events} of the ticker (the Level II panel's): diluters."""
+        self.reloaders, self.reloaders_of = found, ticker
+        if ticker == self.ticker:
+            self.refresh()
+
     def set_quote(self, ticker, q):
         if ticker == self.ticker:
             self.bid = q.get("BID_PRICE") or self.bid
@@ -3087,7 +3098,8 @@ class ChecklistPanel(QWidget):
             r["l2_live"] = (BAD, "", "No Level II for this ticker yet")
         else:
             r["l2_live"] = (OK, "", "")
-            r.update(l2_checks(self.bids, self.asks, bid, ask, p))
+            r.update(l2_checks(self.bids, self.asks, bid, ask, p,
+                               self.reloaders if self.reloaders_of == self.ticker else None))
         r.update(volume_checks(self.rows, self.market_days, self.period, p["shares"]))
         spike_bad = r["no_spike"][0] == BAD
         red_bad = r["no_diluter"][0] == BAD

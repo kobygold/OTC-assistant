@@ -8,6 +8,11 @@ ServerFeed tells it the ticker followed (the chart's) and the extra ones, and ge
 Level2Panel shows it like thinkorswim's Level II: bids on the left, asks on the right, one row per
 market maker, rows of the same price level sharing a color.
 
+Reloaders: a yellow market maker (MM_YELLOW) that kept its offer on the lowest Ask while it was bought
+from, in the last 5 market days' record (otc_recorder.find_reloads: trades at its price without its
+amount getting smaller, or the amount dropping and quickly coming back), is a diluter: its sign turns
+red (a red sign with a yellow ring, level 3) and the checklist counts it as one.
+
 Hold at the close (on by default): outside the regular session (9:30-16:00 US Eastern, 16:30-23:00 in
 Israel most of the year) the chart's ticker shows its Level 1 and Level II as they were at the last
 close, from the record (the server's at_close), in gray: what streams after the close is ignored
@@ -20,6 +25,7 @@ schwab-py is imported only when needed, so the app runs without it.
 """
 
 import json
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS, fmt_price
-from otc_recorder import in_session, last_close
+from otc_recorder import RELOAD_DAYS, find_reloads, in_session, last_close
 
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this
 
@@ -46,10 +52,26 @@ TEXT = "#d8d8d8"
 # (retail: ETRF, CSTI, GTSM, NITE) get no sign.
 MM_RED = {"MAXM", "GLED", "CFGN", "PAUL", "JANE", "BBAR", "BLAS", "ALPS", "STXG", "AEXG"}   # bad players: diluters
 MM_YELLOW = {"OTCN", "OTCX", "CDEL", "INTL", "VIRT"}                                         # so-so
-MM_TIPS = {2: "Dilutive Market Maker! Don't buy this stock!",
+MM_TIPS = {3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
+           2: "Dilutive Market Maker! Don't buy this stock!",
            1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks."}
 SIGN_W = 16             # the Ask table's sign column
 HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
+RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at for reloaders, in the session
+MARKET_LOG = Path(__file__).resolve().parent / "market_log"     # the server's record (otc_recorder)
+
+
+def reload_text(events):
+    """A reloader's events, for its tooltip: the last ones, newest first."""
+    lines = []
+    for e in reversed(events[-4:]):
+        when = datetime.fromtimestamp(e["t"] / 1000).strftime("%a %b %d, %H:%M:%S")
+        how = ("its amount didn't get smaller" if e["kind"] == "kept" else
+               f"its amount came back to {e['size']:,} within seconds")
+        lines.append(f"{when}: {e['traded']:,} bought at {fmt_price(e['price'])} while it showed "
+                     f"{e['size']:,}; {how}")
+    more = f"\n(and {len(events) - 4} more)" if len(events) > 4 else ""
+    return "\n".join(lines) + more
 
 PANEL_STYLE = f"""
 #level2 {{ background: #000000; }}
@@ -210,6 +232,8 @@ class Level2Panel(QWidget):
     activity_live = pyqtSignal(bool)              # the account activity stream is on / off
     streamed = pyqtSignal(int, int, int)          # tickers streamed, wanted, Schwab's most
     held_changed = pyqtSignal(bool)               # showing the last close (True), or the live stream again
+    reloaders_changed = pyqtSignal(str, dict)     # ticker, {yellow market maker: its reload events}
+    _reloads_found = pyqtSignal(str, list)        # (from the reading thread)
     market_reset = pyqtSignal()                   # the shown ticker's quote and book start over (held / live)
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
@@ -238,6 +262,8 @@ class Level2Panel(QWidget):
         self.hold = bool(settings.get("hold_close", True))
         self.held = False                      # showing the close now
         self.close_info = None                 # the shown ticker's close (the server's answer), when held
+        self.reloaders = {}                    # yellow market maker -> its reload events (the shown ticker)
+        self.market_log = MARKET_LOG
         self.live_q = {}                       # the shown ticker's latest streamed quote and book
         self.live_book = ([], [])
         self.live_status = ""
@@ -300,6 +326,10 @@ class Level2Panel(QWidget):
         self.hold_timer = QTimer(self)
         self.hold_timer.timeout.connect(self.check_hold)
         self.hold_timer.start(HOLD_CHECK_MS)
+        self._reloads_found.connect(self._on_reloads)
+        self.reload_timer = QTimer(self)
+        self.reload_timer.timeout.connect(lambda: in_session() and self.check_reloads())
+        self.reload_timer.start(RELOAD_CHECK_MS)
 
     @staticmethod
     def _table(titles, sign_col=False):
@@ -344,6 +374,9 @@ class Level2Panel(QWidget):
             self.ticker, self.name = ticker, name
             self.shown_book = ([], [])
             self.live_q, self.live_book, self.close_info = {}, ([], []), None
+            self.reloaders = {}
+            self.reloaders_changed.emit(ticker, {})
+            self.check_reloads()
             self.refresh_mine()                # my orders show until the book comes
             self.show_quote({})
             if self.held:
@@ -391,6 +424,35 @@ class Level2Panel(QWidget):
             self.feed.closed.connect(self.on_close)
             self.feed.set_extra(self.extra)
             self.feed.set_track(self.tracked)
+
+    # ------------------------------------------------------------ reloaders ---
+    def check_reloads(self):
+        """Reads the shown ticker's last market days' record for reloaders, in a thread."""
+        ticker, folder = self.ticker, self.market_log
+        if not ticker:
+            return
+
+        def run():
+            try:
+                events = find_reloads(folder, ticker, MM_YELLOW, RELOAD_DAYS)
+            except Exception:
+                events = []
+            try:
+                self._reloads_found.emit(ticker, events)
+            except RuntimeError:        # (the panel is gone: the app closed)
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_reloads(self, ticker, events):
+        if ticker != self.ticker:
+            return
+        found = {}
+        for e in events:
+            found.setdefault(e["mm"], []).append(e)
+        if found != self.reloaders:
+            self.reloaders = found
+            self.refresh_mine()
+            self.reloaders_changed.emit(ticker, found)
 
     def on_quote(self, ticker, q):
         self.any_quote.emit(ticker, q)      # (the ATM trades: always the live market)
@@ -641,12 +703,14 @@ class Level2Panel(QWidget):
                 cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
             first = 0
             if side == "ASK":
-                # The sign column: red for a diluter, yellow for a so-so market maker
-                risk = 2 if mm in MM_RED else 1 if mm in MM_YELLOW else 0
+                # The sign column: red for a diluter, yellow for a so-so market maker, red with a
+                # yellow ring for a yellow one caught refilling its offer (a diluter here)
+                risk = 2 if mm in MM_RED else (3 if mm in self.reloaders else 1) if mm in MM_YELLOW else 0
                 sign = QTableWidgetItem()
                 if risk in self.mm_icons:
                     sign.setIcon(self.mm_icons[risk])
-                    sign.setToolTip(MM_TIPS[risk])
+                    sign.setToolTip(MM_TIPS[risk] if risk != 3 else
+                                    f"{MM_TIPS[3]}\n\n{reload_text(self.reloaders[mm])}")
                 cells.insert(0, sign)
                 first = 1
             for col, item in enumerate(cells):
