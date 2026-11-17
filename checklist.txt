@@ -53,8 +53,6 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 
 
 ## 2 ניתוח לבל 2
-- בדקתי את הלבל 2 הנוכחי של המנייה
-  auto(l2_live): Level II is live for this ticker
 - אין מדלל באסק בלבל 2
   auto(no_diluter): who is first on the Ask (every market maker at the best ask price):
         a red X when one of them is red (MAXM, GLED, CFGN, PAUL, JANE, BBAR, BLAS, ALPS, STXG, AEXG),
