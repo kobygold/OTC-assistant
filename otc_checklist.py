@@ -105,6 +105,9 @@ PANEL_STYLE = """
 #checklist QPushButton#cl_buy:hover { background: #00b300; }
 #checklist QPushButton#cl_sell { background: #cf0508; }
 #checklist QPushButton#cl_sell:hover { background: #e8262a; }
+#checklist QPushButton#cl_bid { background: #e3b23c; color: #111111; font-weight: bold; border-radius: 4px;
+                               padding: 3px 14px; border: 1px solid transparent; }
+#checklist QPushButton#cl_bid:hover { background: #f0c75a; }
 #checklist QPushButton#cl_cancel, #checklist QPushButton#cl_done {
     font-weight: bold; border-radius: 4px; padding: 3px 14px; border: 1px solid transparent; }
 #checklist QPushButton#cl_cancel { background: #e3b23c; color: #111111; }
@@ -445,6 +448,43 @@ def pin_icon(pinned):
     p.drawPolygon(QPolygonF([QPointF(-1.6, -4.4), QPointF(1.6, -4.4), QPointF(2.2, 0.2), QPointF(-2.2, 0.2)]))
     p.drawLine(QPointF(-3.8, 0.6), QPointF(3.8, 0.6))
     p.drawLine(QPointF(0, 0.8), QPointF(0, 6.4))
+    p.end()
+    return QIcon(pix)
+
+
+def price_text(text):
+    """A typed price as the app shows prices (0.05 -> 0.0500); anything else as it is."""
+    try:
+        v = float(str(text).replace(",", "").strip())
+    except ValueError:
+        return text
+    return fmt_price(v).replace(",", "") if v > 0 else text
+
+
+def bid_fill(bids, shares):
+    """Selling `shares` into the Level II bids, the best first: (the price that fills them all, or the
+    lowest bid when the bids add up to less, the stocks the bids down to it take)."""
+    total, price = 0, None
+    for _, p, size, *_ in sorted(bids, key=lambda r: -r[1]):
+        if price is not None and p < price and total >= shares:
+            break
+        price, total = p, total + size
+    return price, total
+
+
+def red_bang_icon(color="#d0101a"):
+    """A bold red "!" for the Sell on Bid button, drawn at 4x and anti-aliased."""
+    scale, size = 4, 12
+    pix = QPixmap(size * scale, size * scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(scale)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color), 2.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(6, 1.8), QPointF(6, 7.2))
+    p.drawPoint(QPointF(6, 10.2))
     p.end()
     return QIcon(pix)
 
@@ -1643,8 +1683,9 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.place(ticker, ticker, "BUY", snapshot["shares"], snapshot["entry"], snapshot["account"])
 
-    def ask_sell(self, parent, e, price, fee=None):
-        """Sells all the stocks owned at `price`, GTC, after the dialog is approved."""
+    def ask_sell(self, parent, e, price, fee=None, on_bid=None):
+        """Sells all the stocks owned at `price`, GTC, after the dialog is approved.
+        on_bid: (the price row's name, how it was found) for Sell on Bid."""
         if self.trader is None or e.get("state") != "bought" or self.busy(e):
             return
         if not price:
@@ -1654,8 +1695,9 @@ class AtmTrades(QObject):
         total = shares * price
         fee = e.get("fee") if fee is None else fee
         rows = [("Ticker", e["ticker"]), ("Order", "SELL · Limit · GTC (good till canceled)"),
-                ("Amount of stocks", f"{shares:,} (all)"), ("Limit price (exit)", fmt_price(price))
-                ] + fee_rows(fee, total, sell=True)
+                ("Amount of stocks", f"{shares:,} (all)"),
+                (on_bid[0] if on_bid else "Limit price (exit)", fmt_price(price))
+                ] + ([("On the Bid", on_bid[1])] if on_bid else []) + fee_rows(fee, total, sell=True)
         used = FEE_USD if fee is None else fee
         gain = (e.get("proceeds") or 0) + total - (e.get("filled") or 0) * e["entry"] - 2 * used
         rows.append(("Profit after both fees", usd_signed(gain)))
@@ -2469,7 +2511,14 @@ class ChecklistPanel(QWidget):
                                  "The trade stays on the Schwab tab until you clear it there.")
         self.done_btn.clicked.connect(self.reset_done)
         self.done_btn.hide()
-        for b in (self.buy_btn, self.sell_btn, self.done_btn):
+        self.bid_btn = QPushButton("Sell on Bid")      # beside Sell ATM while the stocks are owned
+        self.bid_btn.setObjectName("cl_bid")
+        self.bid_btn.setIcon(red_bang_icon())
+        self.bid_btn.setToolTip("Sell all the stocks now: at the best Bid price that the Level II bids, added up "
+                                "from the best down, fill all of them (after you approve it)")
+        self.bid_btn.clicked.connect(self.sell_on_bid)
+        self.bid_btn.hide()
+        for b in (self.buy_btn, self.sell_btn, self.bid_btn, self.done_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setLayoutDirection(Qt.LayoutDirection.LeftToRight)     # the X before the text
             trade.addWidget(b)
@@ -2819,6 +2868,8 @@ class ChecklistPanel(QWidget):
                 text = format(typed * PRICE_STEP, "f")
                 edit.setText(text)
                 self.typed(key, text)
+            if edit.text().strip() and edit.text() != price_text(edit.text()):
+                edit.setText(price_text(edit.text()))      # 0.05 -> 0.0500
         self.save_settings(self.settings)
         self.refresh()
 
@@ -2853,6 +2904,8 @@ class ChecklistPanel(QWidget):
             self.style_button(self.sell_btn, "cl_sell", "Sell ATM")
             self.sell_btn.setEnabled(can and state == "bought")
         self.done_btn.setVisible(state == "sold")
+        self.bid_btn.setVisible(state == "bought")
+        self.bid_btn.setEnabled(can)
         if self.trader is None:
             self.buy_btn.setToolTip("Needs the Schwab login")
             self.sell_btn.setToolTip("Needs the Schwab login")
@@ -2968,6 +3021,24 @@ class ChecklistPanel(QWidget):
         self.evaluate()
         p, _ = self.last_plan
         self.atm.ask_sell(self, e, p["exit"] or e.get("sell_at"), self.fees.get(self.ticker, (None, ""))[0])
+
+    def sell_on_bid(self):
+        """The Sell ATM dialog at the best price the bids fill all the stocks at."""
+        e = self.order()
+        if not e or e.get("state") != "bought":
+            return
+        shares = self.atm.remaining(e)
+        price, total = bid_fill(self.bids, shares)
+        if price is None:
+            QMessageBox.warning(self, "Sell on Bid", f"No Level II bids for {self.ticker} yet.")
+            return
+        if total >= shares:
+            how = f"The bids from the best down to {fmt_price(price)} take {total:,} ≥ {shares:,}"
+        else:
+            how = (f"All the bids add up to {total:,} only, less than {shares:,}: "
+                   f"at the lowest bid, the rest waits there")
+        self.atm.ask_sell(self, e, price, self.fees.get(self.ticker, (None, ""))[0],
+                          ("Limit price (on the Bid)", how))
 
     # ---- the fee from Schwab, once per ticker a session ----
     def read_fee(self, ticker=None):
@@ -3217,6 +3288,7 @@ class ChecklistPanel(QWidget):
                     tools[1].setEnabled(not locked)
                     self.show_pin(tools[1], bool(own))
                 value.setEnabled(bool(self.ticker) or item.key == "size")
+                own = own if item.key == "size" else price_text(own)
                 if not value.hasFocus() and value.text() != own:
                     value.setText(own)
                 continue
