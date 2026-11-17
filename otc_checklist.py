@@ -33,7 +33,8 @@ FEE_HIGH = 7.0          # a fee above this is shown in the section titles' yello
 COVER_X = 2             # the stop: bids for at least this many times our amount of stocks
 VOL_DAYS = 30           # market days in the volume checks
 SPIKE_X = 2.0           # a day with this many times the average volume is unusual
-MAX_DEAD = 5            # most days without trades in VOL_DAYS for a steady volume
+MAX_DEAD = 10           # most days without trades in VOL_DAYS for a steady volume
+DEAD_RUN = 4            # this many last market days all without trades: not steady
 VOL_PART = 2.0          # the median volume must be at least this many times our amount of stocks
 COPIED_MS = 1200        # how long the "Copied" popup stays, in ms
 RANGE_DAYS = 30         # calendar days the bounce range must have lasted
@@ -200,10 +201,10 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
 
 
 def volume_stats(rows, market_days, period):
-    """(median, [unusual days], days without trades) from the candles (date, open, high, low,
-    close, volume, ...). The median is the chart's MedianVolume: the last `period` days with
-    trades. Unusual days and days without trades are counted over the given market days.
-    None if there are no market days."""
+    """(median, [unusual days], days without trades, last days in a row without trades) from the
+    candles (date, open, high, low, close, volume, ...). The median is the chart's MedianVolume: the
+    last `period` days with trades. Unusual days and days without trades are counted over the given
+    market days. None if there are no market days."""
     if not market_days or not rows:
         return None
     med = median([r[5] or 0.0 for r in rows[-period:]])
@@ -211,7 +212,122 @@ def volume_stats(rows, market_days, period):
     vols = [by_day.get(d, 0.0) for d in market_days]
     spikes = [d for d, v in zip(market_days, vols) if med and v >= SPIKE_X * med]
     dead = sum(1 for v in vols if not v)
-    return med, spikes, dead
+    run = 0
+    for v in reversed(vols):
+        if v:
+            break
+        run += 1
+    return med, spikes, dead, run
+
+
+def target_state(key, number):
+    """(state, tip) of a number with a target (the potential profit %, the profit-to-loss ratio)."""
+    need = TARGETS[key]
+    state = UNKNOWN if number is None else OK if number >= need - 1e-9 else BAD
+    return state, (f"At least {need:g}%" if key == "profit" else f"At least 1:{need:g}")
+
+
+def range_check(rows, rng):
+    """(state, value, tip) of the bounce range: it must have lasted RANGE_DAYS calendar days."""
+    if not rows:
+        return UNKNOWN, "", "No candles"
+    if rng is None:
+        return BAD, "", "No bounce range now (ATM tab's Min gap and Touch within)"
+    age = (date.fromisoformat(rng.last_date) - date.fromisoformat(rng.since)).days
+    return (OK if age >= RANGE_DAYS else BAD, "",
+            f"{fmt_price(rng.low)} - {fmt_price(rng.high)} since {rng.since} ({age} days, {rng.legs} legs)")
+
+
+def l2_checks(bids, asks, bid, ask, p):
+    """{no_diluter, buyers, cushion: (state, value, tip)} from a Level II book and the plan()."""
+    r = {}
+    # Who is first on the Ask: the market makers at the best (lowest) ask price
+    best = min((price for _, price, *_ in asks), default=None)
+    first = sorted({mm for mm, price, *_ in asks if price == best})
+    red = [mm for mm in first if mm in MM_RED]
+    yellow = [mm for mm in first if mm in MM_YELLOW]
+    at = f" first on the Ask ({fmt_price(best)})" if best is not None else ""
+    if red:
+        r["no_diluter"] = (BAD, "", "A diluter" + at + ": " + ", ".join(red))
+    elif yellow:
+        r["no_diluter"] = (MAYBE, "", "A so-so market maker" + at + ": " + ", ".join(yellow)
+                           + ". Could be good or bad")
+    elif first:
+        r["no_diluter"] = (OK, "", "First on the Ask: " + ", ".join(first))
+    else:
+        r["no_diluter"] = (UNKNOWN, "", "Nobody on the Ask")
+    bid_total = sum(s for _, _, s, _ in bids)
+    ask_total = sum(s for _, _, s, _ in asks)
+    trips = is_trips(bid or ask or 1)
+    good = bid_total >= ask_total if trips else ask_total <= 2 * bid_total
+    r["buyers"] = (OK if good else BAD, "",
+                   f"Bids {bid_total:,} · Asks {ask_total:,}"
+                   + (" (Trips: Bids must be at least the Asks)" if trips else " (Asks up to 2x the Bids)"))
+    if not p["shares"]:
+        r["cushion"] = (UNKNOWN, "", "No entry price")
+    elif p["auto"]["stop"] is None:
+        r["cushion"] = (BAD, "", f"All the bids add up to {bid_total:,}, less than {COVER_X}x {p['shares']:,}")
+    else:
+        r["cushion"] = (OK, "", f"The bids reach {COVER_X}x at {fmt_price(p['auto']['stop'])}")
+    return r
+
+
+def volume_checks(rows, market_days, period, shares):
+    """{avg_volume, no_spike, steady: (state, value, tip)} from the candles."""
+    r = {}
+    stats = volume_stats(rows, market_days, period)
+    if stats is None:
+        for key in ("avg_volume", "no_spike", "steady"):
+            r[key] = (UNKNOWN, "", "No candles")
+        r["avg_volume"] = (UNKNOWN, NA, "No candles")
+        return r
+    med, spikes, dead, run = stats
+    about = f"MedianVolume ({period}), as on the chart (its Averaging days)"
+    if not shares:
+        r["avg_volume"] = (UNKNOWN, fmt_volume(med), about + ". No amount of stocks to compare it with yet")
+    else:
+        need = VOL_PART * shares
+        r["avg_volume"] = (OK if med >= need else BAD, fmt_volume(med),
+                           f"{about}: {med:,.0f}. It must be at least {VOL_PART:g} x our "
+                           f"{shares:,} stocks = {need:,.0f}")
+    r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the median volume or more on " + ", ".join(spikes)
+                      + ". Check it's not dilution.") if spikes else (OK, "", ""))
+    r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, "",
+                   f"{dead} of {len(market_days)} market days without trades (up to {MAX_DEAD} is fine)"
+                   + (f" · the last {run} market days without trades (bad from {DEAD_RUN})" if run else ""))
+    return r
+
+
+# The checks the ATM scanner counts (its Checks column), in the checklist's order
+SCAN_CHECKS = (("profit", "Potential profit"), ("ratio", "Profit-to-loss ratio"),
+               ("range", "A steady price range for a month"), ("no_diluter", "No diluter on the Ask"),
+               ("buyers", "More buyers than sellers"), ("cushion", "A safety net"),
+               ("avg_volume", "Average volume"), ("steady", "Steady volume, few dead days"))
+
+
+def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD):
+    """The ATM scanner's checks of a ticker, with the automatic entry, exit and stop:
+    {key: (state, tip)} for SCAN_CHECKS. q: its Level 1 (stream names), bids / asks: its Level II
+    [(mm, price, size, level)], has_l2: a book came (else the Level II checks are unknown)."""
+    bid = (q or {}).get("BID_PRICE") or (bids[0][1] if bids else None)
+    ask = (q or {}).get("ASK_PRICE") or (asks[0][1] if asks else None)
+    p = plan(bid, ask, bids, usd)
+    out = {}
+    for key in ("profit", "ratio"):
+        state, need = target_state(key, p[key])
+        number = p[key]
+        shown = NA if number is None else (f"{number:+.1f}%" if key == "profit" else f"1:{number:.2f}")
+        out[key] = (state, f"{shown} ({need})")
+    out["range"] = range_check(rows, rng)[::2]
+    if has_l2:
+        out.update({k: v[::2] for k, v in l2_checks(bids, asks, bid, ask, p).items()})
+    else:
+        for key in ("no_diluter", "buyers", "cushion"):
+            out[key] = (UNKNOWN, "No Level II")
+    vol = volume_checks(rows, market_days, period, p["shares"])
+    out["avg_volume"] = vol["avg_volume"][::2]
+    out["steady"] = vol["steady"][::2]
+    return out
 
 
 # ---------------------------------------------------------------- copying ---
@@ -2774,74 +2890,15 @@ class ChecklistPanel(QWidget):
             "ratio": (INFO, f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA, "1 : profit % / loss % (the fees are left out)"),
         }
 
-        # The bounce range
-        if not self.rows:
-            r["range"] = (UNKNOWN, "", "No candles")
-        elif self.range is None:
-            r["range"] = (BAD, "", "No bounce range now (ATM tab's Min gap and Touch within)")
-        else:
-            age = (date.fromisoformat(self.range.last_date) - date.fromisoformat(self.range.since)).days
-            r["range"] = (OK if age >= RANGE_DAYS else BAD, "",
-                          f"{fmt_price(self.range.low)} - {fmt_price(self.range.high)} since {self.range.since} "
-                          f"({age} days, {self.range.legs} legs)")
-
-        # Level II
+        r["range"] = range_check(self.rows, self.range)
         if not self.l2_live:
             for key in ("l2_live", "no_diluter", "buyers", "cushion"):
                 r[key] = (UNKNOWN, "", "No Level II for this ticker yet")
             r["l2_live"] = (BAD, "", "No Level II for this ticker yet")
         else:
             r["l2_live"] = (OK, "", "")
-            # Who is first on the Ask: the market makers at the best (lowest) ask price
-            best = min((price for _, price, *_ in self.asks), default=None)
-            first = sorted({mm for mm, price, *_ in self.asks if price == best})
-            red = [mm for mm in first if mm in MM_RED]
-            yellow = [mm for mm in first if mm in MM_YELLOW]
-            at = f" first on the Ask ({fmt_price(best)})" if best is not None else ""
-            if red:
-                r["no_diluter"] = (BAD, "", "A diluter" + at + ": " + ", ".join(red))
-            elif yellow:
-                r["no_diluter"] = (MAYBE, "", "A so-so market maker" + at + ": " + ", ".join(yellow)
-                                   + ". Could be good or bad")
-            elif first:
-                r["no_diluter"] = (OK, "", "First on the Ask: " + ", ".join(first))
-            else:
-                r["no_diluter"] = (UNKNOWN, "", "Nobody on the Ask")
-            bid_total = sum(s for _, _, s, _ in self.bids)
-            ask_total = sum(s for _, _, s, _ in self.asks)
-            trips = is_trips(bid or ask or 1)
-            good = bid_total >= ask_total if trips else ask_total <= 2 * bid_total
-            r["buyers"] = (OK if good else BAD, "",
-                           f"Bids {bid_total:,} · Asks {ask_total:,}"
-                           + (" (Trips: Bids must be at least the Asks)" if trips else " (Asks up to 2x the Bids)"))
-            if not p["shares"]:
-                r["cushion"] = (UNKNOWN, "", "No entry price")
-            elif auto["stop"] is None:
-                r["cushion"] = (BAD, "", f"All the bids add up to {bid_total:,}, "
-                                         f"less than {COVER_X}x {p['shares']:,}")
-            else:
-                r["cushion"] = (OK, "", f"The bids reach {COVER_X}x at {fmt_price(auto['stop'])}")
-
-        # Volume
-        stats = volume_stats(self.rows, self.market_days, self.period)
-        if stats is None:
-            for key in ("avg_volume", "no_spike", "steady"):
-                r[key] = (UNKNOWN, "", "No candles")
-            r["avg_volume"] = (UNKNOWN, NA, "No candles")
-        else:
-            med, spikes, dead = stats
-            about = f"MedianVolume ({self.period}), as on the chart (its Averaging days)"
-            if not p["shares"]:
-                r["avg_volume"] = (UNKNOWN, fmt_volume(med), about + ". No amount of stocks to compare it with yet")
-            else:
-                need = VOL_PART * p["shares"]
-                r["avg_volume"] = (OK if med >= need else BAD, fmt_volume(med),
-                                   f"{about}: {med:,.0f}. It must be at least {VOL_PART:g} x our "
-                                   f"{p['shares']:,} stocks = {need:,.0f}")
-            r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the median volume or more on " + ", ".join(spikes)
-                              + ". Check it's not dilution.") if spikes else (OK, "", ""))
-            r["steady"] = (OK if dead <= MAX_DEAD else BAD, "",
-                           f"{dead} of {len(self.market_days)} market days without trades (up to {MAX_DEAD} is fine)")
+            r.update(l2_checks(self.bids, self.asks, bid, ask, p))
+        r.update(volume_checks(self.rows, self.market_days, self.period, p["shares"]))
         spike_bad = r["no_spike"][0] == BAD
         red_bad = r["no_diluter"][0] == BAD
         if spike_bad or red_bad:
@@ -2964,11 +3021,8 @@ class ChecklistPanel(QWidget):
                 if item.key not in TARGETS:
                     continue
                 # ✔ once it reaches its target, else ✘ (? while unknown)
-                number = self.last_plan[0][item.key]
-                need = TARGETS[item.key]
-                state = UNKNOWN if number is None else OK if number >= need - 1e-9 else BAD
-                tip = (f"{tip} · " if tip else "") + (f"At least {need:g}%" if item.key == "profit" else
-                                                      f"At least 1:{need:g}")
+                state, need = target_state(item.key, self.last_plan[0][item.key])
+                tip = (f"{tip} · " if tip else "") + need
                 symbol, color = MARKS[state]
                 mark.setText(f"<b style='color:{color}'>{symbol}</b>")
                 for w in (mark, text):

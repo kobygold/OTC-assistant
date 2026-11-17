@@ -26,6 +26,7 @@ import json
 import math
 import sys
 import threading
+import html
 import time
 import traceback
 from datetime import date, datetime, timedelta, timezone
@@ -34,7 +35,7 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
+    QBrush, QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
     QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
@@ -54,12 +55,14 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel, copy_value
 from otc_intraday import MinuteLoader
 from otc_level2 import TOKEN_DAYS, Level2Panel, token_created
+from otc_probe import ProbeRunner, candle_part
+from otc_recorder import in_session
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.3.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -154,8 +157,9 @@ ZONE_DEFAULTS = {
 }
 ATM_DEFAULTS = {
     "lookback": 20, "gap": 25, "tol": 5.0, "legs": 4, "pmin": 0.0005, "pmax": 0.05, "dollar": 500, "days": 5,
-    "skip_types": True, "tiers": core.TIER_GROUPS,
+    "skip_types": True, "tiers": core.TIER_GROUPS, "checks": 0,
 }
+CHECK_CONFIRM = 300             # Check L1/L2 asks first for more tickers than this
 RANGES = [("1D", None), ("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
 TYPE_NAMES = {"CS": "Common stock", "ADRC": "ADR", "PFD": "Preferred", "WARRANT": "Warrant",
               "RIGHT": "Right", "UNIT": "Unit", "FUND": "Fund", "ETF": "ETF",
@@ -3030,11 +3034,32 @@ class MainWindow(QMainWindow):
         reset.setToolTip("Puts every filter on this tab back to its default value.")
         reset.clicked.connect(self.reset_atm_filters)
         brow.addWidget(reset)
+        brow.addSpacing(16)
+        self.atm_check_btn = QPushButton("Check L1/L2")
+        self.atm_check_btn.setToolTip(
+            "Reads the Level 1 and Level II of the tickers shown and counts how many of the checklist's "
+            f"{len(checklist.SCAN_CHECKS)} main checks each passes (the Checks column), with the automatic "
+            "entry, exit and safety net:\n" + "\n".join(f"  {label}" for _, label in checklist.SCAN_CHECKS)
+            + "\n\nIn the market's hours: streamed for a few seconds, in batches of up to 150, only in "
+            "Schwab's free room of 500 tickers. Outside them, with \"Hold last L1/L2 at end of day\" on: as "
+            "they were at the last close, from the record (N/A when a ticker wasn't recorded).\n"
+            "Click again to stop.")
+        self.atm_check_btn.clicked.connect(self.check_atm_market)
+        brow.addWidget(self.atm_check_btn)
+        brow.addWidget(QLabel("Min checks"))
+        self.af_checks = QSpinBox()
+        self.af_checks.setRange(0, len(checklist.SCAN_CHECKS))
+        self.af_checks.setValue(int(s.get("checks", 0)))
+        self.af_checks.setSpecialValueText("all")
+        self.af_checks.setToolTip("Shows only the tickers that passed at least this many checks (Check L1/L2 "
+                                  "first). \"all\": every ticker, checked or not.")
+        self.af_checks.valueChanged.connect(self.schedule_atm_filter)
+        brow.addWidget(self.af_checks)
         self.atm_status = QLabel("Scan the database first. Double-click a row, or press Enter, to check it on the chart.")
         brow.addWidget(self.atm_status, 1)
         root.addLayout(brow)
 
-        self.atm_columns = ["Risk", "Fav", "Ticker", "Name", "Legs", "Low", "High", "Gap %", "Low touches",
+        self.atm_columns = ["Risk", "Fav", "Ticker", "Name", "Checks", "Legs", "Low", "High", "Gap %", "Low touches",
                             "High touches", "Days in range", "Since", "Close", "To buy %", "Position", "$ Volume"]
         tbl = self.atm_table = QTableWidget(0, len(self.atm_columns))
         # The long titles over small numbers go on two lines, so their columns stay narrow
@@ -3044,6 +3069,8 @@ class MainWindow(QMainWindow):
         tips = {
             "Risk": "From the last letter of a 5-letter ticker. Hover over a sign for the details.",
             "Fav": "Favorites group, 1-6. Click a cell to add the ticker to a group, move it or remove it.",
+            "Checks": "How many of the checklist's main checks it passes (Check L1/L2). Hover over a "
+                      "number for each check. N/A: no Level 1 / Level II for it.",
             "Legs": "Trips from one level to the other since the range started. A day that touches both "
                     "levels counts as one.",
             "Low": "The low level: a buy order here.",
@@ -3074,6 +3101,15 @@ class MainWindow(QMainWindow):
         root.addWidget(tbl, 1)
 
         self.atm_loaded = None          # recent candles read from the database, reused by each search
+        self.atm_checks = {}            # ticker -> {"passed" (None: N/A), "tip"}: the Check L1/L2 results
+        self.atm_check_items = {}       # ticker -> its Checks cell in the table now
+        self.atm_check_prep = None      # the checking: ticker -> (candle rows, bounce range)
+        self.atm_check_info = None      # the checking: (market days, averaging days, position $)
+        self.atm_check_job = None
+        self.probe = ProbeRunner(self.server, self)
+        self.probe.result.connect(self.on_probe_result)
+        self.probe.progress.connect(lambda done, total, text: self.atm_status.setText(text))
+        self.probe.finished.connect(self.on_probe_finished)
         self.atm_results = []
         self.atm_summary = ""
         self.atm_job = None
@@ -3152,6 +3188,7 @@ class MainWindow(QMainWindow):
             "dollar": self.af_dollar.value(), "days": self.af_days.value(),
             "skip_types": self.af_skip.isChecked(),
             "tiers": [g for g, cb in self.af_tiers.items() if cb.isChecked()],
+            "checks": self.af_checks.value(),
         }
         save_settings(self.settings)
 
@@ -3172,6 +3209,7 @@ class MainWindow(QMainWindow):
         self.af_dollar.setValue(d["dollar"])
         self.af_days.setValue(d["days"])
         self.af_skip.setChecked(d["skip_types"])
+        self.af_checks.setValue(d["checks"])
         for group, cb in self.af_tiers.items():
             cb.setChecked(group in d["tiers"])
         self.atm_filter_timer.stop()
@@ -3193,6 +3231,9 @@ class MainWindow(QMainWindow):
         rows = [(t, name, r) for t, name, typ, group, tier, r in self.atm_results
                 if typ not in skip and group in tiers and r.legs >= min_legs and r.days >= min_days
                 and r.dollar_volume >= min_dollar and r.last_close >= pmin and (pmax <= 0 or r.last_close <= pmax)]
+        min_checks = self.af_checks.value()
+        if min_checks:
+            rows = [x for x in rows if (self.atm_checks.get(x[0], {}).get("passed") or 0) >= min_checks]
         rows.sort(key=lambda x: (x[2].legs, x[2].days, x[2].gap), reverse=True)
         matched = len(rows)
         rows = rows[:MAX_ZONE_ROWS]
@@ -3202,6 +3243,7 @@ class MainWindow(QMainWindow):
         # As on the Zones tab, columns are sized once after filling: auto-sizing per cell is very slow
         tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         tbl.setRowCount(len(rows))
+        self.atm_check_items = {}
         for row, (ticker, name, r) in enumerate(rows):
             risk = ticker_risk(ticker)
             risk_item = NumItem("", risk[0] if risk else 0)
@@ -3213,6 +3255,7 @@ class MainWindow(QMainWindow):
                 self.fav_item(ticker),
                 QTableWidgetItem(ticker),
                 QTableWidgetItem(name),
+                self.atm_check_item(ticker),
                 NumItem(str(r.legs), r.legs),
                 NumItem(fmt_price(r.low), r.low),
                 NumItem(fmt_price(r.high), r.high),
@@ -3241,8 +3284,136 @@ class MainWindow(QMainWindow):
         tbl.setSortingEnabled(True)
         shown = f"{matched:,} stocks match" if matched <= MAX_ZONE_ROWS else \
             f"Showing the best {MAX_ZONE_ROWS:,} of {matched:,} matching stocks"
+        if min_checks:
+            shown += f" with {min_checks}+ checks"
         self.atm_status.setText(f"{shown}.   {self.atm_summary}   Double-click a row, or press Enter, "
                                 f"to check it on the chart.")
+
+    # ---- Check L1/L2: the checklist's main checks of the tickers shown ----
+    def atm_check_item(self, ticker):
+        item = NumItem("", -2)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.atm_check_items[ticker] = item
+        self.fill_check_item(item, self.atm_checks.get(ticker))
+        return item
+
+    @staticmethod
+    def fill_check_item(item, c):
+        if c is None:
+            item.setText("")
+            item.value = -2
+            item.setToolTip("Not checked: Check L1/L2")
+            item.setForeground(QBrush())
+            return
+        total = len(checklist.SCAN_CHECKS)
+        passed = c["passed"]
+        item.setText("N/A" if passed is None else f"{passed}/{total}")
+        item.value = -1 if passed is None else passed
+        item.setToolTip(c["tip"])
+        item.setForeground(QBrush(QColor(checklist.MARKS[checklist.OK][1])) if passed == total else QBrush())
+
+    def check_atm_market(self):
+        """Check L1/L2 (again: stop)."""
+        if self.probe.running or self.atm_check_job is not None:
+            self.atm_check_prep = None
+            self.probe.stop()
+            self.atm_check_btn.setText("Check L1/L2")
+            return
+        tbl = self.atm_table
+        tickers = [tbl.item(r, ATM_TICKER_COL).text() for r in range(tbl.rowCount()) if tbl.item(r, ATM_TICKER_COL)]
+        if not tickers:
+            QMessageBox.information(self, "Nothing to check", "Scan the database first.")
+            return
+        held = self.hold_close.isChecked() and not in_session()
+        if len(tickers) > CHECK_CONFIRM and QMessageBox.question(
+                self, "Check L1/L2",
+                f"Check all {len(tickers):,} tickers shown?" +
+                ("" if held else f" They are streamed in batches of up to 150, about 10 seconds each "
+                                 f"(about {-(-len(tickers) // 150) * 10} seconds in all).")) != \
+                QMessageBox.StandardButton.Yes:
+            return
+        tol, gap = self.af_tol.value() / 100, self.af_gap.value() / 100
+        period = self.avg_period.value()
+        try:
+            usd = float(self.settings.get("checklist_size") or 0) or checklist.POSITION_USD
+        except (TypeError, ValueError):
+            usd = checklist.POSITION_USD
+        prep = {}
+        days = []
+
+        def fn(job):
+            con = db()
+            try:
+                days.extend(r[0] for r in con.execute("SELECT DISTINCT date FROM candles ORDER BY date DESC LIMIT ?",
+                                                      (checklist.VOL_DAYS,)).fetchall()[::-1])
+                first_day = atm.first_market_day(con, atm.MAX_LOOKBACK)
+                for t in tickers:
+                    if job.stopping():
+                        raise Stopped()
+                    prep[t] = candle_part(con, t, first_day, tol, gap)
+            finally:
+                con.close()
+            return ""
+
+        def finished(message, ok):
+            self.atm_check_job = None
+            if not ok:
+                self.atm_check_btn.setText("Check L1/L2")
+                self.atm_status.setText(message or "Stopped.")
+                return
+            self.atm_check_prep = prep
+            self.atm_check_info = (days, period, usd)
+            self.probe.start(tickers, held)
+
+        self.atm_check_job = Job(fn)
+        self.atm_check_job.signals.finished.connect(finished)
+        self.atm_check_btn.setText("Stop checking")
+        self.atm_status.setText(f"Checking L1/L2: reading the candles of {len(tickers):,} tickers...")
+        self.atm_check_job.start()
+
+    def on_probe_result(self, ticker, r):
+        prep = (self.atm_check_prep or {}).get(ticker)
+        if prep is None:
+            return
+        rows, rng = prep
+        days, period, usd = self.atm_check_info
+        when = ""
+        if r["source"] == "close" and r.get("at"):
+            when = f"At the close ({datetime.fromtimestamp(r['at'] / 1000):%a %b %d, %H:%M})"
+        elif r["source"] == "live":
+            when = f"Live, {datetime.now():%H:%M:%S}"
+        if r["source"] == "none":
+            c = {"passed": None, "tip": "N/A: " + ("wasn't recorded before the last close" if self.probe.held
+                                                   else "no Level 1 or Level II came")}
+        else:
+            res = checklist.scan_checks(rows, days, rng, period, r["q"], r["bids"], r["asks"], r["has_l2"], usd)
+            lines = []
+            for key, label in checklist.SCAN_CHECKS:
+                state, tip = res[key]
+                symbol, color = checklist.MARKS[state]
+                lines.append(f"<b style='color:{color}'>{symbol}</b> {html.escape(label)}"
+                             + (f" <span style='color:#a8a8a8'>· {html.escape(tip)}</span>" if tip else ""))
+            passed = sum(res[k][0] == checklist.OK for k, _ in checklist.SCAN_CHECKS)
+            c = {"passed": passed, "tip": f"<b>{ticker}</b> · {passed}/{len(lines)} · {when}<br>" + "<br>".join(lines)}
+        self.atm_checks[ticker] = c
+        item = self.atm_check_items.get(ticker)
+        if item is not None:
+            try:
+                self.fill_check_item(item, c)
+                if item.tableWidget() is not None:
+                    item.setData(Qt.ItemDataRole.UserRole, item.value)     # (the table re-sorts by it)
+            except RuntimeError:        # (the table was filled again meanwhile)
+                pass
+
+    def on_probe_finished(self, text):
+        self.atm_check_btn.setText("Check L1/L2")
+        self.atm_check_prep = None
+        checked = [c for t, c in self.atm_checks.items() if t in self.atm_check_items]
+        good = sum(1 for c in checked if c["passed"] == len(checklist.SCAN_CHECKS))
+        if self.af_checks.value():
+            self.apply_atm_filters()
+        self.atm_status.setText(f"{text}   {good:,} pass all {len(checklist.SCAN_CHECKS)} checks. "
+                                f"Hover over a Checks cell for the details.")
 
     def export_atm(self):
         if self.atm_table.rowCount() == 0:

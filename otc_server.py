@@ -36,10 +36,12 @@ What it does:
 What is streamed: the apps' chart tickers, their extra tickers (sent to them: the open ATM trades,
 orders, stocks owned) and their tracked tickers (recorded only: the favorites...), of every
 computer, in that order of priority, up to MAX_TICKERS (Schwab's limit); the count goes to all.
+Then their probe tickers (the ATM scanner's Checks: their Level 1 and II once), streamed only for a
+few seconds, even when the app's Level II is off.
 
 Messages (JSON, one per WebSocket message), app -> server:
   hello {secret}             first; a wrong secret closes the connection
-  want {symbol, extra, track, on}   the chart's ticker, more tickers to stream (and send to it),
+  want {symbol, extra, track, on, probe}   the chart's ticker, more tickers to stream (and send to it),
                              more to stream for the record only; on False = no stream at all
   token_request {old}        "this access token was refused": renewed (if it is still the current
                              one) and sent back
@@ -59,7 +61,7 @@ server -> app:
   event {time, text}                a connection event, for the app's connection log
   orders / positions {account, data, error}   an account's orders / positions as read (otc_orders.py)
 Between servers (client -> main): hello {role "peer", secret: cluster_secret, name, address, proto,
-version}, want {symbols, extra, track, on}, token_request, login, change; main -> client: welcome
+version}, want {symbols, extra, track, on, probe}, token_request, login, change; main -> client: welcome
 {leader, token (whole), store, activity}, l1 {c, t}, l2 {s, c, t}, q {ticker, q} (as Schwab sent
 them), order_event, activity, token (whole), changed, refused, streamed, cluster, login_needed.
 History: client -> main history_index; main -> client history_index {days: {day: coverage}}; client
@@ -122,6 +124,7 @@ EVENTS_KEPT = 200               # connection events kept for the apps' log
 COMPUTERS_KEY = "cluster/computers"
 
 # Level 1 of Schwab's quote (REST) under the stream's names: the first quote of a new ticker
+QUOTES_CHUNK = 200              # tickers per REST quotes call (the new tickers' first quote)
 REST_L1 = (("lastPrice", "LAST_PRICE"), ("bidPrice", "BID_PRICE"), ("askPrice", "ASK_PRICE"),
            ("bidSize", "BID_SIZE"), ("askSize", "ASK_SIZE"), ("closePrice", "CLOSE_PRICE"),
            ("netChange", "NET_CHANGE"), ("netPercentChange", "NET_CHANGE_PERCENT"),
@@ -230,7 +233,8 @@ class Conn:
         self.symbols = []           # a peer's: its apps' chart tickers
         self.extra = []             # more tickers it wants streamed and sent to it
         self.track = []             # more tickers it wants streamed for the record only
-        self.on = False             # False: it wants no stream at all
+        self.probe = []             # tickers wanted for a moment (their market once), last in priority
+        self.on = False             # False: it wants no stream at all (but its probe tickers)
         self.bye = False
         self.since = time.time()
         self.queue = asyncio.Queue()
@@ -240,6 +244,8 @@ class Conn:
 
     def sees(self, ticker):
         """The ticker's quotes and books go to it (a peer records the tracked ones too)."""
+        if ticker in self.probe:
+            return True
         if not self.on:
             return False
         if self.peer:
@@ -570,10 +576,19 @@ class Server:
 
     def on_want(self, conn, msg):
         old = conn.symbol if conn.on else None
+        old_probe = set(conn.probe)
         conn.symbol = msg.get("symbol") or None
         conn.extra = [t for t in msg.get("extra") or [] if t]
         conn.track = [t for t in msg.get("track") or [] if t]
+        conn.probe = [t for t in msg.get("probe") or [] if t]
         conn.on = bool(msg.get("on", True))
+        # probe tickers streamed already (another's, a client's received ones too): what came so far, now
+        for t in conn.probe:
+            if t not in old_probe and t in self.symbols and t != conn.symbol:
+                if self.l1.get(t):
+                    conn.put({"type": "quote", "ticker": t, "q": dict(self.l1[t])})
+                if self.books.get(t):
+                    self.emit_book(t, [conn])
         if conn.on and conn.symbol and conn.symbol != old:
             if conn.symbol in self.symbols and self.streaming:
                 # streamed already (another app's or an ATM trade's ticker): what came so far, right away
@@ -593,6 +608,7 @@ class Server:
         conn.symbols = [t for t in msg.get("symbols") or [] if t]
         conn.extra = [t for t in msg.get("extra") or [] if t]
         conn.track = [t for t in msg.get("track") or [] if t]
+        conn.probe = [t for t in msg.get("probe") or [] if t]
         conn.on = bool(msg.get("on", True))
         if self.streaming:
             for t in sorted(t for t in self.symbols if conn.sees(t) and t not in before):
@@ -608,7 +624,8 @@ class Server:
 
     def wanted(self):
         """The tickers to stream: the chart tickers first, then the extra ones, then the tracked
-        ones (of every computer), up to MAX_TICKERS. The count goes to all when it changes."""
+        ones (of every computer), then the probe ones, up to MAX_TICKERS. The count goes to all when
+        it changes."""
         order = []
         on = [c for c in self.everyone() if c.on]
         for c in on:
@@ -617,6 +634,8 @@ class Server:
             order += c.extra
         for c in on:
             order += c.track
+        for c in self.everyone():
+            order += c.probe
         order = list(dict.fromkeys(order))
         streamed = order[:MAX_TICKERS]
         counted = (len(streamed), len(order))
@@ -631,7 +650,7 @@ class Server:
         return set(streamed)
 
     def stream_wanted(self):
-        return any(c.on and (c.charts() or c.extra or c.track) for c in self.everyone())
+        return any((c.on and (c.charts() or c.extra or c.track)) or c.probe for c in self.everyone())
 
     def set_status(self, text, to=None):
         if to is None:
@@ -1027,9 +1046,10 @@ class Server:
         on = [c for c in self.conns if c.on]
         want = {"type": "want", "symbols": list(dict.fromkeys(t for c in on for t in c.charts())),
                 "extra": list(dict.fromkeys(t for c in on for t in c.extra)),
-                "track": list(dict.fromkeys(t for c in on for t in c.track)), "on": bool(on)}
+                "track": list(dict.fromkeys(t for c in on for t in c.track)), "on": bool(on),
+                "probe": list(dict.fromkeys(t for c in self.conns for t in c.probe))}
         # the tickers received from now: their quotes and books are kept and recorded here
-        wanted = set(want["symbols"]) | set(want["extra"]) | set(want["track"])
+        wanted = set(want["symbols"]) | set(want["extra"]) | set(want["track"]) | set(want["probe"])
         for t in self.symbols - wanted:
             self.books.pop(t, None)
             self.raw_books.pop(t, None)
@@ -1554,10 +1574,19 @@ class Server:
             self.broadcast({"type": "activity", "on": on})
             self.to_peers({"type": "activity", "on": on})
 
-    def _quote(self, client, ticker):
-        with self.client_lock:
-            r = client.get_quote(ticker)
-        return r.json().get(ticker, {}).get("quote", {}) if r.status_code == 200 else {}
+    def _quotes(self, client, tickers):
+        """{ticker: REST quote} in calls of QUOTES_CHUNK tickers (a probe can add hundreds at once)."""
+        out = {}
+        for i in range(0, len(tickers), QUOTES_CHUNK):
+            part = tickers[i:i + QUOTES_CHUNK]
+            try:
+                with self.client_lock:
+                    r = client.get_quotes(part)
+                if r.status_code == 200:
+                    out.update({t: v.get("quote", {}) for t, v in r.json().items() if isinstance(v, dict)})
+            except Exception:
+                pass
+        return out
 
     async def sync(self, client, stream):
         """Subscribes to the tickers wanted now, and leaves the others."""
@@ -1572,13 +1601,14 @@ class Server:
                 self.raw_books.pop(s, None)
                 self.l1.pop(s, None)
         kept = self.symbols - set(gone)
+        # A quote right away, so the header has prices even when nothing is streaming
+        try:
+            quotes = await asyncio.to_thread(self._quotes, client, new) if new else {}
+        except Exception:
+            quotes = {}
         for s in new:
             self.books[s], self.l1[s] = {}, {}
-            # A quote right away, so the header has prices even when nothing is streaming
-            try:
-                q = await asyncio.to_thread(self._quote, client, s)
-            except Exception:
-                q = {}
+            q = quotes.get(s) or {}
             for rest, name in REST_L1:
                 if q.get(rest) is not None:
                     self.l1[s][name] = q[rest]
@@ -1645,7 +1675,9 @@ class Server:
         books = self.books.get(key, {})
         bids, asks = merge_books(books.values())
         to = [c for c in self.conns if c.sees(key)] if to is None else to
-        self.broadcast({"type": "book", "ticker": key, "bids": with_levels(bids), "asks": with_levels(asks)}, to)
+        # got: a book came from Schwab (an empty one too), not only the placeholder of a new ticker
+        self.broadcast({"type": "book", "ticker": key, "bids": with_levels(bids), "asks": with_levels(asks),
+                        "got": bool(books)}, to)
         if books:
             self.set_status(f"Live · {time.strftime('%H:%M:%S')}" if bids or asks else
                             f"Live · no quotes for {key} now (OTC quotes run 6:00-17:00 ET)",

@@ -173,8 +173,16 @@ class ServerLink(QObject):
     def want(self, symbol, extra, track=(), on=True):
         """What to stream: the chart's ticker, more tickers (sent here too), more for the record
         only (in order of priority); on=False: no stream at all."""
+        probe = (self._want or {}).get("probe") or []
         self._want = {"type": "want", "symbol": symbol or None, "extra": [t for t in extra if t],
-                      "track": [t for t in track if t], "on": bool(on)}
+                      "track": [t for t in track if t], "on": bool(on), "probe": probe}
+        self.send(self._want)
+
+    def probe(self, tickers):
+        """Tickers to stream for a moment, last in priority, sent here too (the ATM scanner's
+        Checks), even when no stream is wanted otherwise; [] ends it."""
+        base = self._want or {"type": "want", "symbol": None, "extra": [], "track": [], "on": False}
+        self._want = {**base, "probe": [t for t in tickers if t]}
         self.send(self._want)
 
     def login(self, wrapped) -> bool:
