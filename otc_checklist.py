@@ -572,7 +572,8 @@ class CopyBox(QWidget):
 
 class CopyLineEdit(QLineEdit):
     """A typed-over value. Double-click, Ctrl+C with nothing selected, or "Copy value" in the
-    right-click menu copy the value shown: the one typed, or else the automatic one."""
+    right-click menu copy the value shown: the one typed, or else the automatic one.
+    Getting the focus selects it all, so typing replaces it; Enter applies it and leaves the box."""
     def shown(self):
         return self.text() or self.placeholderText()
 
@@ -580,9 +581,17 @@ class CopyLineEdit(QLineEdit):
         copy_value(self.shown(), self)
         super().mouseDoubleClickEvent(e)
 
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        if e.reason() != Qt.FocusReason.PopupFocusReason:
+            QTimer.singleShot(0, self.selectAll)        # after the click has placed the cursor
+
     def keyPressEvent(self, e):
         if e.matches(QKeySequence.StandardKey.Copy) and not self.hasSelectedText():
             copy_value(self.shown(), self)
+            return
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clearFocus()       # out of the box: that applies it (editingFinished), shown as it's kept
             return
         super().keyPressEvent(e)
 
@@ -2652,9 +2661,9 @@ class ChecklistPanel(QWidget):
                             self.price_tools[item.key] = (stepper, pin)
                             glay.addWidget(stepper)
                             glay.addWidget(pin)
-                        if item.key in ORDER_EDITS:     # an open buy's new values: +/- (the amounts) and reset
+                        if item.key in ORDER_EDITS:     # an open buy's new values: +/- (the amounts) and a pin
                             tools = ([] if item.key == "entry" else [self.make_draft_stepper(item.key, value)]) \
-                                + [self.make_draft_reset(item.key, value)]
+                                + [self.make_draft_pin(item.key, value)]
                             for w in tools:
                                 w.hide()
                                 glay.addWidget(w)
@@ -2842,14 +2851,16 @@ class ChecklistPanel(QWidget):
             lay.addWidget(b)
         return box
 
-    def make_draft_reset(self, key, edit):
+    def make_draft_pin(self, key, edit):
+        """The pin of an open buy's new value: yellow when one is typed (kept), white when it follows the
+        order (or the other new values). A click pins the value shown, or unpins it."""
         b = QToolButton()
-        b.setObjectName("cl_reset")
-        b.setIcon(reset_icon())
+        b.setObjectName("cl_pin")
         b.setFixedSize(18, 25)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        b.clicked.connect(lambda: self.draft_reset(key, edit))
+        b.clicked.connect(lambda: self.draft_pin(key, edit))
+        self.show_pin(b, False)
         return b
 
     def draft_step(self, key, edit, direction):
@@ -2868,22 +2879,24 @@ class ChecklistPanel(QWidget):
             edit.setText(f"{int(new):,}")
         self.draft_typed(key, text)
 
-    def draft_reset(self, key, edit):
-        """A new value's box back to the order's (the left one's)."""
+    def draft_pin(self, key, edit):
+        """Pinned: unpin (back to the order's value, or what follows from the other new values). Not
+        pinned: the value shown now kept as a typed one."""
         e = self.drafting()
         if e is None:
             return
-        if key == "entry":
+        if self.draft_of(e).get(key):
             text = ""
-        elif key == "size":
-            text = format(Decimal(str(round(self.order_size(e), 2))).normalize(), "f")
         else:
-            text = str(e["shares"])
+            text = edit.shown().replace(",", "").replace("$", "").strip()
+            if self.draft_number(text, price=key == "entry") is None:
+                return
+            if key == "size":
+                text = format(Decimal(text).normalize(), "f")      # $180.00 -> 180
         self.draft_typed(key, text)
-        if not self.draft_values(e)[3]:         # nothing left to change: the boxes empty again
-            self.draft = {"id": e["id"]}
         shown = self.draft.get(key, "")
-        edit.setText(f"${shown}" if key == "size" and shown else f"{int(shown):,}" if key == "shares" and shown else shown)
+        edit.setText(f"${shown}" if key == "size" and shown else f"{int(shown):,}" if key == "shares" and shown
+                     else price_text(shown) if shown else "")
         self.refresh()
 
     def update_buy(self):
@@ -3458,9 +3471,16 @@ class ChecklistPanel(QWidget):
             for w in tools:
                 w.setVisible(changeable)
             if changeable and tools:
+                pin = tools[-1]
+                self.show_pin(pin, bool(self.draft.get(key)))
                 original = {"size": f"${self.order_size(order):,.2f}", "entry": fmt_price(order["entry"]),
                             "shares": f"{order['shares']:,}"}[key]
-                tools[-1].setToolTip(f"Back to the order's {original}")
+                follows = {"entry": f"the order's {original}",
+                           "size": f"the order's {original}, or the new amount of stocks x the price",
+                           "shares": "the new position $ / the price"}[key]
+                pin.setToolTip(f"Pinned: this new value is kept.\nClick to unpin: back to {follows}."
+                               if pin.property("pinned") else
+                               f"Not pinned: {follows}.\nClick to pin it as it is now (typing or + / - pins it too).")
         ticks = self.ticked()
         manual, solvers = {}, {}      # the manual items' marks and texts, by their keys
         for item, *_ in self.widgets:

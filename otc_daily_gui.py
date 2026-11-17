@@ -62,7 +62,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.17"
+APP_VERSION = "2.3.19"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -765,6 +765,10 @@ class MainWindow(QMainWindow):
                                    "files (git pull) and restarts it.")
         self.update_btn.clicked.connect(self.check_update)
         right_row.addWidget(self.update_btn)
+        self.restart_btn = QPushButton("Restart")
+        self.restart_btn.setToolTip("Closes the app and starts it again (its server too)")
+        self.restart_btn.clicked.connect(self.restart_app)
+        right_row.addWidget(self.restart_btn)
         self.tabs.setCornerWidget(right, Qt.Corner.TopRightCorner)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
@@ -772,6 +776,9 @@ class MainWindow(QMainWindow):
         for n, i in enumerate(visible[:9], 1):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, lambda i=i: self.tabs.setCurrentIndex(i))
             self.tabs.setTabToolTip(i, f"Ctrl+{n}")
+        # Ctrl+Tab: back to the tab shown before (again: back here), as Alt+Tab does between windows
+        self.tab_now, self.tab_before = self.tabs.currentIndex(), None
+        self.tab_back = QShortcut(QKeySequence("Ctrl+Tab"), self, self.previous_tab)
         # Ctrl+F: the Chart tab's ticker box, its text selected to type over
         QShortcut(QKeySequence("Ctrl+F"), self, self.focus_chart_ticker)
         self.chart_ticker.setToolTip((self.chart_ticker.toolTip() + "\n" if self.chart_ticker.toolTip() else "")
@@ -1740,7 +1747,13 @@ class MainWindow(QMainWindow):
                                 f"Imported tiers for {n:,} tickers.\n\n{summary.replace(', ', chr(10))}")
 
     # ================================================== chart ===
+    def previous_tab(self):
+        if self.tab_before is not None and self.tabs.isTabVisible(self.tab_before):
+            self.tabs.setCurrentIndex(self.tab_before)
+
     def on_tab_changed(self, index):
+        if index != getattr(self, "tab_now", index):
+            self.tab_before, self.tab_now = self.tab_now, index
         if index in (self.zone_tab_index, self.atm_tab_index, self.fav_tab_index):
             self.nav_tab = index
         for sc in self.nav_shortcuts:
@@ -2757,6 +2770,14 @@ class MainWindow(QMainWindow):
                 self.restart_after_close = False
                 QMessageBox.information(self, "Check for update",
                                         "The app was updated: restart it to use the new version.")
+
+    def restart_app(self):
+        """Restart: the app closes as usual (saving its settings) and starts again."""
+        self.notify("Restarting...", 5000)
+        self.restart_after_close = True
+        self.close()
+        if self.isVisible():                # the close was cancelled (a download running)
+            self.restart_after_close = False
 
     def show_banner(self, text):
         self.banner.setText(text)
