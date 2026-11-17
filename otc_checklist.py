@@ -2581,6 +2581,7 @@ class ChecklistPanel(QWidget):
         self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
         self.changing_order = False     # the change-order dialog is open
         self.draft = {}         # new values typed for the open buy: {"id", "entry", "size", "shares", "last"}
+        self.draft_tools = {}   # key -> the +/- and reset buttons of its new value's box (an open buy)
         self.boxes = {}         # key -> its live value's box
         for name, items in sections:
             head = QLabel(name)
@@ -2651,6 +2652,13 @@ class ChecklistPanel(QWidget):
                             self.price_tools[item.key] = (stepper, pin)
                             glay.addWidget(stepper)
                             glay.addWidget(pin)
+                        if item.key in ORDER_EDITS:     # an open buy's new values: +/- (the amounts) and reset
+                            tools = ([] if item.key == "entry" else [self.make_draft_stepper(item.key, value)]) \
+                                + [self.make_draft_reset(item.key, value)]
+                            for w in tools:
+                                w.hide()
+                                glay.addWidget(w)
+                            self.draft_tools[item.key] = tools
                         if item.key not in LOCKED:
                             glay.addStretch()
                         box = group
@@ -2813,6 +2821,70 @@ class ChecklistPanel(QWidget):
             text = text.lstrip("$").strip()
         if self.drafting() is not None:
             self.draft_typed(key, text)
+
+    def make_draft_stepper(self, key, edit):
+        """+ above - beside the new $ ($10) or amount (1,000 under $1, else 10) of an open buy."""
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(1)
+        what = "$10" if key == "size" else "1,000 stocks (10 at $1 and up)"
+        for sign, direction in (("+", 1), ("−", -1)):
+            b = QToolButton()
+            b.setObjectName("cl_step")
+            b.setText(sign)
+            b.setFixedSize(18, 12)
+            b.setToolTip(f"{'Up' if direction > 0 else 'Down'} {what}")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setAutoRepeat(True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(lambda _c=False, d=direction: self.draft_step(key, edit, d))
+            lay.addWidget(b)
+        return box
+
+    def make_draft_reset(self, key, edit):
+        b = QToolButton()
+        b.setObjectName("cl_reset")
+        b.setIcon(reset_icon())
+        b.setFixedSize(18, 25)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        b.clicked.connect(lambda: self.draft_reset(key, edit))
+        return b
+
+    def draft_step(self, key, edit, direction):
+        e = self.drafting()
+        if e is None:
+            return
+        price, shares, size, _ = self.draft_values(e)
+        if key == "size":
+            new = max((size // 10 + 1) * 10 if direction > 0 else (-(-size // 10) - 1) * 10, 10)  # to the next $10
+            text = format(Decimal(str(new)).normalize(), "f")
+            edit.setText(f"${text}")
+        else:
+            step = 1000 if price < 1 else 10
+            new = max((shares // step + 1) * step if direction > 0 else (shares - 1) // step * step, step)
+            text = str(int(new))
+            edit.setText(f"{int(new):,}")
+        self.draft_typed(key, text)
+
+    def draft_reset(self, key, edit):
+        """A new value's box back to the order's (the left one's)."""
+        e = self.drafting()
+        if e is None:
+            return
+        if key == "entry":
+            text = ""
+        elif key == "size":
+            text = format(Decimal(str(round(self.order_size(e), 2))).normalize(), "f")
+        else:
+            text = str(e["shares"])
+        self.draft_typed(key, text)
+        if not self.draft_values(e)[3]:         # nothing left to change: the boxes empty again
+            self.draft = {"id": e["id"]}
+        shown = self.draft.get(key, "")
+        edit.setText(f"${shown}" if key == "size" and shown else f"{int(shown):,}" if key == "shares" and shown else shown)
+        self.refresh()
 
     def update_buy(self):
         """Update Buy: the open buy changed to the new values, after the usual dialog."""
@@ -3382,6 +3454,13 @@ class ChecklistPanel(QWidget):
         draft = self.draft_values(order) if changeable else None
         if draft is None:
             self.draft = {}
+        for key, tools in self.draft_tools.items():
+            for w in tools:
+                w.setVisible(changeable)
+            if changeable and tools:
+                original = {"size": f"${self.order_size(order):,.2f}", "entry": fmt_price(order["entry"]),
+                            "shares": f"{order['shares']:,}"}[key]
+                tools[-1].setToolTip(f"Back to the order's {original}")
         ticks = self.ticked()
         manual, solvers = {}, {}      # the manual items' marks and texts, by their keys
         for item, *_ in self.widgets:
@@ -3403,6 +3482,8 @@ class ChecklistPanel(QWidget):
                 typed_text = self.draft.get(item.key, "")
                 if item.key == "size" and typed_text:
                     typed_text = f"${typed_text}"
+                elif item.key == "shares" and typed_text.replace(",", "").isdigit():
+                    typed_text = f"{int(typed_text.replace(',', '')):,}"
                 value.setReadOnly(False)
                 value.setEnabled(True)
                 value.setStyleSheet("")
