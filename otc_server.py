@@ -92,6 +92,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -712,7 +713,7 @@ class Server:
         item = self.store.items.get(key) or {"v": 0, "data": None}
         if item["data"] == data:
             return
-        answer, _ = self.store.apply({"id": f"{self.name}-{key}-{time.time()}", "key": key,
+        answer, _ = self.store.apply({"id": f"{self.name}-{key}-{uuid.uuid4().hex}", "key": key,
                                       "base": item["v"], "data": data, "by": self.name})
         if answer["type"] == "changed":
             self.broadcast(answer)
@@ -763,7 +764,7 @@ class Server:
             if same.get("name") != name:
                 log(f"{same.get('name')} is now called {name}")
             same.update(name=name, address=address or same.get("address", ""))
-        answer, _ = self.store.apply({"id": f"{self.name}-computers-{time.time()}", "key": COMPUTERS_KEY,
+        answer, _ = self.store.apply({"id": f"{self.name}-computers-{uuid.uuid4().hex}", "key": COMPUTERS_KEY,
                                       "base": item["v"], "data": computers, "by": self.name})
         if answer["type"] == "changed":
             self.broadcast(answer)
