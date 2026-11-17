@@ -955,17 +955,16 @@ def usd_signed(v) -> str:
 
 
 def fee_rows(fee, total, sell=False):
-    """The fee rows for an order dialog: Schwab's fee, if read, and the total with it (a buy pays
-    it on top, a sell gets the total less it)."""
-    if fee is None:
-        return [("Fee", f"{NA} (not read from Schwab yet)")]
-    if fee > FEE_HIGH:      # in the section titles' yellow, as on the panel
-        shown = (f"${fee:.2f} (more than ${FEE_HIGH:.2f}!)", "#e3b23c")
-    else:
-        shown = f"${fee:.2f}"
-    if sell:
-        return [("Commission fee (from Schwab)", shown), ("You get, less the fee", f"{'-' if total < fee else ''}${abs(total - fee):,.2f}")]
-    return [("Commission fee (from Schwab)", shown), ("Total with the fee", f"${total + fee:,.2f}")]
+    """The total row of an order dialog, as the chart's BUY / SELL dialogs show it, in yellow:
+    "$150.00 + $6.95 = $156.95" (a buy pays the commission on top), "$212.50 - $6.95 = $205.55" (a
+    sell gets the total less it). fee None: not read from Schwab, the usual one is used (and said)."""
+    usual = fee is None
+    fee = FEE_USD if usual else fee
+    net = total - fee if sell else total + fee
+    text = (f"${total:,.2f} {'-' if sell else '+'} ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
+            + (f" (the commission is more than ${FEE_HIGH:.2f}!)" if fee > FEE_HIGH else ""))
+    label = ("$ less the commission" if sell else "$ with the commission") + (" (usual)" if usual else "")
+    return [(label, (text, "#e3b23c"))]
 
 
 PRICE_ROW = object()    # in confirm_price_order's rows: the row of the editable price
@@ -1651,8 +1650,8 @@ class AtmTrades(QObject):
         total = shares * price
         fee = e.get("fee") if fee is None else fee
         rows = [("Ticker", e["ticker"]), ("Order", "SELL · Limit · GTC (good till canceled)"),
-                ("Amount of stocks", f"{shares:,} (all)"), ("Limit price (exit)", fmt_price(price)),
-                ("Total", f"${total:,.2f}")] + fee_rows(fee, total, sell=True)
+                ("Amount of stocks", f"{shares:,} (all)"), ("Limit price (exit)", fmt_price(price))
+                ] + fee_rows(fee, total, sell=True)
         used = FEE_USD if fee is None else fee
         gain = (e.get("proceeds") or 0) + total - (e.get("filled") or 0) * e["entry"] - 2 * used
         rows.append(("Profit after both fees", usd_signed(gain)))
@@ -1966,10 +1965,8 @@ class AtmTrades(QObject):
             """The dialog's title and rows for the new price p (editable in it)."""
             total = shares * p
             rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
-                    ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW),
-                    ("Total", f"${total:,.2f}")] + fee_rows(fee, total, sell=side == "SELL")
-            if estimated:       # not read from Schwab: say so
-                rows[-2] = ("Commission fee (usual, not read)", f"${fee:.2f}")
+                    ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW)
+                    ] + fee_rows(None if estimated else fee, total, sell=side == "SELL")
             return f"Change the {side.lower()} of {shares:,} {ticker} from {fmt_price(old)} to {fmt_price(p)}?", rows
         if self.fee_reader:
             self.fee_reader.load_accounts()
@@ -2011,10 +2008,8 @@ class AtmTrades(QObject):
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC · an ATM trade"),
                 row("Position", f"${old_size:,.2f}", f"${size:,.2f}"),
                 row("Amount of stocks", f"{old_shares:,}", f"{shares:,}"),
-                row("Limit price (entry)", fmt_price(old_price), fmt_price(price)),
-                ("Total", f"${total:,.2f}")] + fee_rows(fee, total)
-        if estimated:
-            rows[-2] = ("Commission fee (usual, not read)", f"${fee:.2f}")
+                row("Limit price (entry)", fmt_price(old_price), fmt_price(price))
+                ] + fee_rows(None if estimated else fee, total)
         title = (f"Change the buy of {ticker} from {old_shares:,} @ {fmt_price(old_price)} "
                  f"to {shares:,} @ {fmt_price(price)}?")
         if self.fee_reader:
@@ -2933,8 +2928,8 @@ class ChecklistPanel(QWidget):
         total = p["shares"] * p["entry"]
         fee = self.fees.get(ticker, (None, ""))[0]
         rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC (good till canceled)"),
-                ("Amount of stocks", f"{p['shares']:,}"), ("Limit price (entry)", fmt_price(p["entry"])),
-                ("Total", f"${total:,.2f}")] + fee_rows(fee, total)
+                ("Amount of stocks", f"{p['shares']:,}"), ("Limit price (entry)", fmt_price(p["entry"]))
+                ] + fee_rows(fee, total)
         self.fee_reader.load_accounts()
         account = self.fee_reader.order_tail()
         if not account:
