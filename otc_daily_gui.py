@@ -40,7 +40,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
-    QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
@@ -62,7 +62,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.19"
+APP_VERSION = "2.3.20"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -735,6 +735,7 @@ class MainWindow(QMainWindow):
             self.checklist.trader.use_server(self.server)
             self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
+        self.settings_tab_index = self.tabs.addTab(self._build_settings_tab(), "Settings")
         # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
         self.updater.done.connect(self.on_update)
@@ -3397,7 +3398,7 @@ class MainWindow(QMainWindow):
         tol, gap = self.af_tol.value() / 100, self.af_gap.value() / 100
         period = self.avg_period.value()
         try:
-            usd = float(self.settings.get("checklist_size") or 0) or checklist.POSITION_USD
+            usd = float(self.settings.get("checklist_size") or 0) or checklist.default_position(self.settings)
         except (TypeError, ValueError):
             usd = checklist.POSITION_USD
         prep = {}
@@ -3499,6 +3500,38 @@ class MainWindow(QMainWindow):
             return
         self.tabs.setCurrentIndex(1)
         self.show_chart(item.text())
+
+    # ================================================== Settings ===
+    def _build_settings_tab(self):
+        """Settings kept on this computer (settings.json): the default position $ for now."""
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.position_default = QSpinBox()
+        self.position_default.setRange(1, 1_000_000)
+        self.position_default.setSingleStep(10)
+        self.position_default.setPrefix("$")
+        self.position_default.setGroupSeparatorShown(True)
+        self.position_default.setFixedWidth(130)
+        self.position_default.setValue(int(round(checklist.default_position(self.settings))))
+        self.position_default.setToolTip(
+            "The checklist's position $ when it isn't pinned: the amount of stocks of a new ATM trade is this "
+            "$ / the entry. A $ pinned on the checklist is kept instead (unpin it to come back to this one). "
+            "The ATM Scanner's Check L1/L2 counts with it too.")
+        self.position_default.valueChanged.connect(self.set_position_default)
+        form.addRow("Default position $:", self.position_default)
+        root.addLayout(form)
+        note = QLabel("Raise it as your portfolio grows. Saved on this computer.")
+        note.setStyleSheet("color: #8a8a8a;")
+        root.addWidget(note)
+        root.addStretch()
+        return tab
+
+    def set_position_default(self, value):
+        self.settings["position_default"] = int(value)
+        save_settings(self.settings)
+        self.checklist.refresh()
 
     # ================================================== Favorites ===
     def _build_favorites_tab(self):

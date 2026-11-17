@@ -27,7 +27,21 @@ from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 
-POSITION_USD = 150      # the position size, in $
+POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it)
+
+
+def default_position(settings):
+    """The default position $ (the Settings tab's), else POSITION_USD."""
+    try:
+        v = float(settings.get("position_default") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else POSITION_USD
+
+
+def usd_plain(v):
+    """$150 / $152.50: whole dollars without cents."""
+    return f"${v:,.0f}" if abs(v - round(v)) < 1e-9 else f"${v:,.2f}"
 FEE_USD = 6.95          # the fee for each buy and each sell, in $, until Schwab's is read
 FEE_HIGH = 7.0          # a fee above this is shown in the section titles' yellow
 COVER_X = 2             # the stop: bids for at least this many times our amount of stocks
@@ -208,9 +222,9 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
     if out["entry"] and out["stop"] is not None:
         out["loss"] = (out["entry"] - out["stop"]) / out["entry"] * 100
     fees = 2 * fee          # one buy and one sell
-    if out["shares"] and out["exit"]:
+    if out["shares"] and out["entry"] and out["exit"]:
         out["profit_usd"] = out["shares"] * (out["exit"] - out["entry"]) - fees
-    if out["shares"] and out["stop"] is not None:
+    if out["shares"] and out["entry"] and out["stop"] is not None:
         out["loss_usd"] = -out["shares"] * (out["entry"] - out["stop"]) - fees
     if out["profit"] is not None and out["loss"]:
         out["ratio"] = out["profit"] / out["loss"]
@@ -2708,30 +2722,20 @@ class ChecklistPanel(QWidget):
         return edit
 
     def shares_done(self, edit):
-        """An amount of stocks typed: the position $ = it x the entry (the amount then works out to it)."""
+        """An amount of stocks typed: pinned for this ticker (the position $ follows it: amount x entry)."""
         if self.drafting() is not None:         # a new amount for the open buy
             self.draft_done("shares", edit)
             return
         if edit.isReadOnly():
             return
         text = edit.text().replace(",", "").strip()
-        edit.clear()
-        plan_now = getattr(self, "last_plan", None)
-        entry = plan_now[0].get("entry") if plan_now else None
         try:
             shares = int(text)
         except ValueError:
             shares = 0
-        if shares <= 0 or not entry:
-            self.refresh()
-            return
-        usd = Decimal(shares) * Decimal(str(entry))
-        size = format(usd.normalize(), "f")
-        self.typed("size", size)
-        size_edit = next((v for it, _, _, v in self.widgets if it.key == "size"), None)
-        if isinstance(size_edit, QLineEdit) and not size_edit.hasFocus():
-            size_edit.setText(f"${size}")
-        self.save_settings(self.settings)
+        if shares > 0 and self.ticker:
+            self.typed("shares", str(shares))       # pinned for this ticker: the $ follows it
+            self.save_settings(self.settings)
         self.refresh()
 
     def make_order_edit(self, key):
@@ -2863,9 +2867,62 @@ class ChecklistPanel(QWidget):
         self.show_pin(b, False)
         return b
 
+    def plan_pinned(self, key):
+        """Before a trade: the $ pinned (for all tickers, unless this ticker's amount is), or the amount
+        pinned (for this ticker)."""
+        amount = self.override_text("shares")
+        return bool(amount) if key == "shares" else bool(self.override_text("size")) and not amount
+
+    def plan_step(self, key, edit, direction):
+        """+/- before a trade: the $ to the next $10 (pinned for all tickers), the amount to the next
+        1,000 (10 at $1 and up; pinned for this ticker)."""
+        if not getattr(self, "last_plan", None) or not self.ticker and key == "shares":
+            return
+        p, usd = self.last_plan
+        if key == "size":
+            new = max((usd // 10 + 1) * 10 if direction > 0 else (-(-usd // 10) - 1) * 10, 10)
+            text = format(Decimal(str(new)).normalize(), "f")
+            edit.setText(f"${text}")
+        else:
+            shares, price = p.get("shares") or 0, p.get("entry") or 0
+            if not price:
+                return
+            step = 1000 if price < 1 else 10
+            new = max((shares // step + 1) * step if direction > 0 else (shares - 1) // step * step, step)
+            text = str(int(new))
+        self.typed(key, text)
+        self.save_settings(self.settings)
+
+    def plan_pin(self, key, edit):
+        """The pin before a trade: pinned, unpin (the $: the default again; the amount: it follows the $);
+        else the value shown kept."""
+        if self.plan_pinned(key):
+            text = ""
+        else:
+            text = edit.shown().replace(",", "").replace("$", "").strip()
+            try:
+                if float(text) <= 0:
+                    return
+            except ValueError:
+                return
+            if key == "size":
+                text = format(Decimal(text).normalize(), "f")
+            elif not self.ticker:
+                return
+        if key == "shares" or text:
+            self.typed(key, text)
+        else:
+            self.typed("size", "")
+        if not text:
+            edit.clear()
+        self.save_settings(self.settings)
+        self.refresh()
+
     def draft_step(self, key, edit, direction):
         e = self.drafting()
         if e is None:
+            if self.order() is None:
+                self.plan_step(key, edit, direction)
             return
         price, shares, size, _ = self.draft_values(e)
         if key == "size":
@@ -2884,6 +2941,8 @@ class ChecklistPanel(QWidget):
         pinned: the value shown now kept as a typed one."""
         e = self.drafting()
         if e is None:
+            if self.order() is None:
+                self.plan_pin(key, edit)
             return
         if self.draft_of(e).get(key):
             text = ""
@@ -3030,6 +3089,9 @@ class ChecklistPanel(QWidget):
         if key == "size":
             if valid:
                 self.settings["checklist_size"] = text
+                mine = self.settings.get("checklist_prices", {}).get(self.ticker)
+                if mine and mine.pop("shares", None) is not None and not mine:
+                    self.settings["checklist_prices"].pop(self.ticker, None)
             else:
                 self.settings.pop("checklist_size", None)
         elif self.ticker:
@@ -3328,7 +3390,8 @@ class ChecklistPanel(QWidget):
         bid = self.bid or (self.bids[0][1] if self.bids else None)
         ask = self.ask or (self.asks[0][1] if self.asks else None)
         own = self.overrides()
-        usd = own.get("size", POSITION_USD)
+        default = default_position(self.settings)
+        usd = own.get("size", default)
         fee, fee_details = self.fees.get(self.ticker, (None, "No ticker"))
         fee_used = FEE_USD if fee is None else fee
         order = self.order()
@@ -3341,7 +3404,12 @@ class ChecklistPanel(QWidget):
             price, n, _, changed = self.draft_values(new)
             if changed:                     # the new values typed beside the buy's: what they would give
                 own["entry"], shares = price, n
+        pinned_shares = int(own["shares"]) if not order and own.get("shares") else None
+        if pinned_shares:               # the amount pinned for this ticker: the $ follows it
+            shares = pinned_shares
         p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used, shares)
+        if pinned_shares and p["entry"]:
+            usd = round(pinned_shares * p["entry"], 6)
         self.last_plan = (p, usd)       # for the trade plan the ticker copies
         auto = p["auto"]
         pct = lambda v: NA if v is None else f"{v:+.1f}%"
@@ -3352,7 +3420,9 @@ class ChecklistPanel(QWidget):
         r = {
             "ticker": (INFO, self.ticker or NA, ""),
             "entry": (INFO, price(auto["entry"]), "Trips: the Bid. Dubs and up: the Bid + 0.0001. " + typed),
-            "size": (INFO, f"${POSITION_USD:,}", f"Default ${POSITION_USD:,}, kept for all tickers. " + typed),
+            "size": (INFO, usd_plain(usd) if pinned_shares else usd_plain(default),
+                     f"The amount pinned x the entry (unpin the amount, or pin this, to go by the $)" if pinned_shares
+                     else f"The default {usd_plain(default)} (the Settings tab), or pin your own for all tickers"),
             "shares": (INFO, f"{p['shares']:,}" if p["shares"] else NA,
                        "From the ATM trade (Schwab tab)" if order else f"round({usd:g} / entry)"),
             "exit": (INFO, price(auto["exit"]), "Trips: the Ask. Dubs and up: the Ask - 0.0001. " + typed),
@@ -3468,8 +3538,20 @@ class ChecklistPanel(QWidget):
         if draft is None:
             self.draft = {}
         for key, tools in self.draft_tools.items():
+            before = not order and key != "entry"       # the $ and the amount before a trade, too
             for w in tools:
-                w.setVisible(changeable)
+                w.setVisible(changeable or before)
+            if before and tools:
+                pin = tools[-1]
+                self.show_pin(pin, self.plan_pinned(key))
+                default = usd_plain(default_position(self.settings))
+                follows = {"size": f"the default {default} (the Settings tab)",
+                           "shares": "the position $ / the entry"}[key]
+                kept = {"size": "this $ is kept, for all tickers",
+                        "shares": "this amount is kept for this ticker (the $ follows it)"}[key]
+                pin.setToolTip(f"Pinned: {kept}.\nClick to unpin: back to {follows}."
+                               if pin.property("pinned") else
+                               f"Not pinned: {follows}.\nClick to pin it as it is now (typing or + / - pins it too).")
             if changeable and tools:
                 pin = tools[-1]
                 self.show_pin(pin, bool(self.draft.get(key)))
@@ -3526,9 +3608,10 @@ class ChecklistPanel(QWidget):
                 if order:
                     value.setText(val)
                 elif not value.hasFocus():
-                    value.clear()
-                value.setToolTip(tip if order else f"{tip}. Type an amount and press Enter: the position $ "
-                                                   f"becomes it x the entry (for all tickers, as the position $ is).")
+                    amount = self.override_text("shares")
+                    value.setText(f"{int(float(amount)):,}" if amount else "")
+                value.setToolTip(tip if order else f"{tip}. Type an amount (or + / -) to pin it for this ticker: "
+                                                   f"the position $ then follows it.")
                 continue
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
@@ -3549,7 +3632,7 @@ class ChecklistPanel(QWidget):
                     self.show_pin(tools[1], bool(own))
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 if item.key == "size":
-                    own = f"${own}" if own else ""      # the typed position $, with its sign
+                    own = f"${own}" if own and not self.override_text("shares") else ""   # with its sign
                 else:
                     own = price_text(own)
                 if not value.hasFocus() and value.text() != own:
