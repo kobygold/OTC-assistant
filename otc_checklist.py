@@ -2600,6 +2600,8 @@ class ChecklistPanel(QWidget):
                     mark.setFixedWidth(4)
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
+                elif item.kind == "info" and item.key == "shares":
+                    value = self.make_shares_edit()
                 elif item.kind != "manual":
                     value = QLabel()
                     value.setObjectName("cl_value")
@@ -2659,7 +2661,7 @@ class ChecklistPanel(QWidget):
         edit.setFixedWidth(84)
         edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(
-            r"\d{0,7}" if key == "size" else r"\d{0,6}(\.\d{0,6})?"), edit))
+            r"\d{0,7}(\.\d{0,6})?" if key == "size" else r"\d{0,6}(\.\d{0,6})?"), edit))
         pal = edit.palette()
         pal.setColor(QPalette.ColorRole.Text, QColor("#f0a020"))              # a typed-over value
         pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))    # the automatic value
@@ -2667,6 +2669,44 @@ class ChecklistPanel(QWidget):
         edit.textEdited.connect(lambda text, k=key: self.typed(k, text))
         edit.editingFinished.connect(lambda k=key, e=edit: self.edit_done(k, e))
         return edit
+
+    def make_shares_edit(self):
+        """The amount of stocks: the automatic one (position $ / entry) shown, or type one: Enter sets the
+        position $ to it x the entry, so the amount follows from it as usual."""
+        edit = CopyLineEdit()
+        edit.setFixedWidth(84)
+        edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"[\d,]{0,12}"), edit))
+        pal = edit.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f0a020"))              # being typed
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))    # the amount now
+        edit.setPalette(pal)
+        edit.editingFinished.connect(lambda e=edit: self.shares_done(e))
+        return edit
+
+    def shares_done(self, edit):
+        """An amount of stocks typed: the position $ = it x the entry (the amount then works out to it)."""
+        if edit.isReadOnly():
+            return
+        text = edit.text().replace(",", "").strip()
+        edit.clear()
+        plan_now = getattr(self, "last_plan", None)
+        entry = plan_now[0].get("entry") if plan_now else None
+        try:
+            shares = int(text)
+        except ValueError:
+            shares = 0
+        if shares <= 0 or not entry:
+            self.refresh()
+            return
+        usd = Decimal(shares) * Decimal(str(entry))
+        size = format(usd.normalize(), "f")
+        self.typed("size", size)
+        size_edit = next((v for it, _, _, v in self.widgets if it.key == "size"), None)
+        if isinstance(size_edit, QLineEdit) and not size_edit.hasFocus():
+            size_edit.setText(size)
+        self.save_settings(self.settings)
+        self.refresh()
 
     def make_order_edit(self, key):
         """A box of the open buy order (the position $, the entry or the amount of stocks), in the
@@ -3282,6 +3322,19 @@ class ChecklistPanel(QWidget):
                 if state == BAD and item.solved_by and manual.get(item.solved_by) == OK:
                     state = SOLVED
                     tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
+            if isinstance(value, QLineEdit) and item.key == "shares":
+                # the trade's amount once sent (fixed, in the order colour), else the plan's: type to change
+                value.setReadOnly(bool(order))
+                value.setEnabled(bool(self.ticker))
+                value.setPlaceholderText(val)
+                value.setStyleSheet(f"color: {ORDER_COLOR};" if order else "")
+                if order:
+                    value.setText(val)
+                elif not value.hasFocus():
+                    value.clear()
+                value.setToolTip(tip if order else f"{tip}. Type an amount and press Enter: the position $ "
+                                                   f"becomes it x the entry (for all tickers, as the position $ is).")
+                continue
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
                 state = order.get("state") if order else None
