@@ -89,9 +89,9 @@ PANEL_STYLE = """
                                   padding: 0px; font-size: 11px; font-weight: bold; }
 #checklist QToolButton#cl_step:hover { background: #2c3136; }
 #checklist QToolButton#cl_step:pressed { background: #3a4046; }
-#checklist QToolButton#cl_reset { border-radius: 3px; padding: 0px; font-size: 15px; }
-#checklist QToolButton#cl_reset:hover { background: #2c3136; }
-#checklist QToolButton#cl_reset:pressed { background: #3a4046; }
+#checklist QToolButton#cl_reset, #checklist QToolButton#cl_pin { border-radius: 3px; padding: 0px; font-size: 15px; }
+#checklist QToolButton#cl_reset:hover, #checklist QToolButton#cl_pin:hover { background: #2c3136; }
+#checklist QToolButton#cl_reset:pressed, #checklist QToolButton#cl_pin:pressed { background: #3a4046; }
 #checklist QLineEdit { background: #1b1e21; border: 1px solid #2c3136; border-radius: 3px;
                        padding: 1px 4px; font-weight: bold; }
 #checklist QLineEdit:focus { border-color: #5a6670; }
@@ -408,6 +408,37 @@ def reset_icon(color="#c8c8c8"):
     head = 4.2
     base = tip - d * head * 0.5
     p.drawPolygon(QPolygonF([tip + d * head * 0.6, base + n * head * 0.6, base - n * head * 0.6]))
+    p.end()
+    return QIcon(pix)
+
+
+PIN_ON = "#1db31d"          # a pinned price's pin (the checks' green)
+PIN_OFF = "#ffffff"         # not pinned: the automatic value
+
+
+def pin_icon(pinned):
+    """A push pin, drawn at 4x and anti-aliased: green and filled when pinned, a white outline
+    leaning over when not."""
+    scale, size = 4, 14
+    pix = QPixmap(size * scale, size * scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(scale)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    color = QColor(PIN_ON if pinned else PIN_OFF)
+    p.translate(7, 7)
+    if not pinned:
+        p.rotate(35)
+    pen = QPen(color, 1.2)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(color if pinned else Qt.BrushStyle.NoBrush)
+    # the head, the body narrowing down, the wide collar, then the needle
+    p.drawRoundedRect(QRectF(-2.6, -6.2, 5.2, 1.8), 0.6, 0.6)
+    p.drawPolygon(QPolygonF([QPointF(-1.6, -4.4), QPointF(1.6, -4.4), QPointF(2.2, 0.2), QPointF(-2.2, 0.2)]))
+    p.drawLine(QPointF(-3.8, 0.6), QPointF(3.8, 0.6))
+    p.drawLine(QPointF(0, 0.8), QPointF(0, 6.4))
     p.end()
     return QIcon(pix)
 
@@ -2467,7 +2498,7 @@ class ChecklistPanel(QWidget):
                         box = CopyBox(value, shown)
                     self.boxes[item.key] = box
                     if item.key in LOCKED:
-                        # the fixed cell, the box, +/- and reset close together, left to right
+                        # the fixed cell, the box, +/- and the pin close together, left to right
                         group = QWidget()
                         group.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
                         glay = QHBoxLayout(group)
@@ -2484,10 +2515,10 @@ class ChecklistPanel(QWidget):
                         glay.addWidget(lock, 0, Qt.AlignmentFlag.AlignVCenter)
                         glay.addWidget(box)
                         if item.key in EDITABLE and item.key != "size":
-                            stepper, reset = self.make_stepper(item.key, value), self.make_reset(item.key, value)
-                            self.price_tools[item.key] = (stepper, reset)
+                            stepper, pin = self.make_stepper(item.key, value), self.make_pin(item.key, value)
+                            self.price_tools[item.key] = (stepper, pin)
                             glay.addWidget(stepper)
-                            glay.addWidget(reset)
+                            glay.addWidget(pin)
                         box = group
                     row.addWidget(box)
                 lay.addLayout(row)
@@ -2529,23 +2560,44 @@ class ChecklistPanel(QWidget):
             lay.addWidget(b)
         return box
 
-    def make_reset(self, key, edit):
-        """A round arrow that drops the typed price, back to the automatic one."""
+    def make_pin(self, key, edit):
+        """The pin: green when the price is pinned (typed, stepped, or pinned as it was; saved), white
+        when it's the automatic one. A click pins the price shown, or unpins it."""
         b = QToolButton()
-        b.setObjectName("cl_reset")
-        b.setIcon(reset_icon())
+        b.setObjectName("cl_pin")
         b.setFixedSize(18, 25)
-        b.setToolTip("Reset to the automatic value")
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        b.clicked.connect(lambda: self.reset_value(key, edit))
+        b.clicked.connect(lambda: self.toggle_pin(key, edit))
+        self.show_pin(b, False)
         return b
 
-    def reset_value(self, key, edit):
-        if not edit.isEnabled():
+    @staticmethod
+    def show_pin(button, pinned):
+        if button.property("pinned") == pinned:
             return
-        edit.clear()
-        self.typed(key, "")
+        button.setProperty("pinned", pinned)
+        button.setIcon(pin_icon(pinned))
+        button.setToolTip("Pinned: this price is kept (saved) and the automatic one isn't used.\n"
+                          "Click to unpin: back to the automatic value." if pinned else
+                          "Not pinned: the automatic value.\nClick to pin it as it is now (typing a price "
+                          "or + / - pins it too).")
+
+    def toggle_pin(self, key, edit):
+        if not edit.isEnabled() or edit.isReadOnly():
+            return
+        if self.override_text(key):         # pinned: unpin, the automatic value again
+            edit.clear()
+            self.typed(key, "")
+        else:                               # the value shown now, kept
+            text = edit.shown().replace(",", "").replace("$", "").strip()
+            try:
+                if float(text) <= 0:
+                    return
+            except ValueError:
+                return
+            edit.setText(text)
+            self.typed(key, text)
         self.save_settings(self.settings)
 
     def step(self, key, edit, direction):
@@ -3002,11 +3054,12 @@ class ChecklistPanel(QWidget):
                 value.setToolTip(tip)
                 value.setReadOnly(locked)
                 tools = self.price_tools.get(item.key)
+                own = self.override_text(item.key)
                 if tools:
                     tools[0].setEnabled(not locked)
                     tools[1].setEnabled(not locked)
+                    self.show_pin(tools[1], bool(own))
                 value.setEnabled(bool(self.ticker) or item.key == "size")
-                own = self.override_text(item.key)
                 if not value.hasFocus() and value.text() != own:
                     value.setText(own)
                 continue
