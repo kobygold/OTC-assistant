@@ -302,7 +302,7 @@ def volume_checks(rows, market_days, period, shares):
 SCAN_CHECKS = (("profit", "Potential profit"), ("ratio", "Profit-to-loss ratio"),
                ("range", "A steady price range for a month"), ("no_diluter", "No diluter on the Ask"),
                ("buyers", "More buyers than sellers"), ("cushion", "A safety net"),
-               ("avg_volume", "Average volume"), ("steady", "Steady volume, few dead days"))
+               ("avg_volume", "Average volume"), ("steady", "Few dead days (no trades)"))
 
 
 def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD):

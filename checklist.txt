@@ -75,8 +75,8 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
         (warning: check for dilution). When there was one but the next item is checked, the X turns green
 - אם היה חריג — בדקתי חדשות/עדכון חברה / שזו קנייה מהאסק (לא דילול)
   manual(news_checked)
-- יש ווליום יומי קבוע ולא יותר מדי ימים מתים
-  auto(steady): 5 or fewer days without trades in the last 30 trading days
+- אין יותר מדי ימים מתים (ימים בלי מסחר)
+  auto(steady): 10 or fewer days without trades in the last 30 trading days, and not the last 4 in a row
 
 
 ## $ פקודת קנייה
