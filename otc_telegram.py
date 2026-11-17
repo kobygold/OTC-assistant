@@ -115,6 +115,7 @@ class TelegramBot:
         self.tasks = []
         self.username = ""
         self.tries = {}             # chat id -> [times of wrong codes]
+        self.chat_locks = {}        # chat id -> a lock: its messages go one at a time, in order
         self.conflict_told = False
 
     # ---- running ----
@@ -223,8 +224,10 @@ class TelegramBot:
 
     # ---- sending ----
     async def send(self, chat_id, text):
+        lock = self.chat_locks.setdefault(chat_id, asyncio.Lock())
         try:
-            await self.call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True)
+            async with lock:        # (fair: the messages of a chat arrive in the order they were made)
+                await self.call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True)
             return True
         except asyncio.CancelledError:
             raise
