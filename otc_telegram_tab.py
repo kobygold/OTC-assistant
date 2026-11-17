@@ -14,9 +14,9 @@ from urllib.parse import quote
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QGroupBox, QHBoxLayout, QHeaderView,
-                             QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QGroupBox,
+                             QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+                             QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import otc_telegram
 from otc_telegram import ACCOUNTS, CODES, STATE_KEY
@@ -88,7 +88,7 @@ class TelegramPanel(QWidget):
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         root.addWidget(self.area, 1)
-        self.shared.changed.connect(lambda key: (not key or key.startswith("telegram/")) and self.refresh())
+        self.shared.changed.connect(lambda key: (not key or key.startswith((ACCOUNTS, STATE_KEY))) and self.refresh())
         self.refresh()
 
     # ---- the token ----
@@ -142,11 +142,13 @@ class TelegramPanel(QWidget):
     def account_box(self, tail, kind):
         box = QGroupBox(f"Account ...{tail}" + (f" ({kind})" if kind else ""))
         lay = QVBoxLayout(box)
-        phones = (self.shared.get(ACCOUNTS).get(tail) or {}).get("phones") or []
+        acct = self.account(tail)
+        phones = acct.get("phones") or []
         if phones:
-            table = QTableWidget(len(phones), 3)
-            table.setHorizontalHeaderLabels(["Phone (Telegram)", "Linked", ""])
+            table = QTableWidget(len(phones), 4)
+            table.setHorizontalHeaderLabels(["Phone (Telegram)", "Linked", "Gets", ""])
             table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
             table.verticalHeader().hide()
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -155,6 +157,17 @@ class TelegramPanel(QWidget):
             for r, p in enumerate(phones):
                 table.setItem(r, 0, QTableWidgetItem(p.get("name", str(p.get("chat_id")))))
                 table.setItem(r, 1, QTableWidgetItem(str(p.get("since", "")).replace("T", " ")))
+                mode = QComboBox()
+                mode.addItem("The news", "notify")
+                mode.addItem("The news + sell buttons", "trade")
+                mode.setCurrentIndex(1 if p.get("mode") == "trade" else 0)
+                mode.setEnabled(bool(acct.get("selling")))
+                mode.setToolTip("The sell buttons come on the \"buy filled\" message, once the account allows "
+                                "selling from Telegram (below)" if acct.get("selling") else
+                                "Allow selling from Telegram (below) first")
+                mode.currentIndexChanged.connect(lambda _i, t=tail, c=p.get("chat_id"), w=mode:
+                                                 self.set_mode(t, c, w.currentData()))
+                table.setCellWidget(r, 2, mode)
                 cell = QWidget()
                 cl = QHBoxLayout(cell)
                 cl.setContentsMargins(2, 0, 2, 0)
@@ -167,7 +180,7 @@ class TelegramPanel(QWidget):
                 rm.clicked.connect(lambda _c=False, t=tail, c=p.get("chat_id"), n=p.get("name"): self.remove(t, c, n))
                 cl.addWidget(test)
                 cl.addWidget(rm)
-                table.setCellWidget(r, 2, cell)
+                table.setCellWidget(r, 3, cell)
             table.setFixedHeight(28 + 30 * len(phones))
             lay.addWidget(table)
         else:
@@ -179,6 +192,14 @@ class TelegramPanel(QWidget):
         add.setEnabled(bool(self.settings.get("telegram_token")))
         add.clicked.connect(lambda _c=False, t=tail: self.add_phone(t))
         row.addWidget(add)
+        row.addSpacing(16)
+        selling = QCheckBox("Allow selling from Telegram")
+        selling.setChecked(bool(acct.get("selling")))
+        selling.setToolTip("The phones set to \"The news + sell buttons\" get Sell as planned / on Ask / on Bid "
+                           "buttons on the \"buy filled\" message (10 minutes; every sell needs a Yes, and is "
+                           "never sent below the price approved). The main server sends the order.")
+        selling.toggled.connect(lambda on, t=tail, w=selling: self.set_selling(t, on, w))
+        row.addWidget(selling)
         row.addStretch()
         lay.addLayout(row)
         return box
@@ -253,7 +274,31 @@ class TelegramPanel(QWidget):
         if QMessageBox.question(self, "Remove phone", f"Stop sending the news of account ...{tail} to {name}?") \
                 != QMessageBox.StandardButton.Yes:
             return
-        phones = [p for p in (self.shared.get(ACCOUNTS).get(tail) or {}).get("phones") or []
-                  if p.get("chat_id") != chat_id]
-        self.shared.put(ACCOUNTS + tail, {"phones": phones})
+        phones = [p for p in self.account(tail).get("phones") or [] if p.get("chat_id") != chat_id]
+        self.shared.put(ACCOUNTS + tail, dict(self.account(tail), phones=phones))
         self.refresh()
+
+    def account(self, tail):
+        return dict(self.shared.get(ACCOUNTS).get(tail) or {})
+
+    def set_selling(self, tail, on, box):
+        if on and not self.account(tail).get("selling"):
+            if QMessageBox.question(
+                    self, "Selling from Telegram",
+                    f"Allow selling the ATM trades of account ...{tail} from Telegram?\n\nOnly its phones set to "
+                    f"\"The news + sell buttons\" get the buttons. Every sell asks for a Yes first, and is never "
+                    f"sent below the price you approved.") != QMessageBox.StandardButton.Yes:
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+                return
+        acct = self.account(tail)
+        acct["selling"] = bool(on)
+        acct.setdefault("phones", [])
+        self.shared.put(ACCOUNTS + tail, acct)
+        self.refresh()
+
+    def set_mode(self, tail, chat_id, mode):
+        acct = self.account(tail)
+        acct["phones"] = [dict(p, mode=mode) if p.get("chat_id") == chat_id else p for p in acct.get("phones") or []]
+        self.shared.put(ACCOUNTS + tail, acct)

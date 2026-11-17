@@ -96,7 +96,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from otc_orders import account_numbers, read_orders, read_positions
+from otc_orders import account_numbers, place_limit, read_orders, read_positions
 from otc_recorder import Recorder, at_close, last_close, subtract_ranges
 from otc_shared import SharedStore
 from otc_telegram import TelegramBot
@@ -122,6 +122,9 @@ TAKEBACK_AFTER_S = float(os.environ.get("OTC_TAKEBACK_S", 10))   # a higher-prio
                                 # takes over after running this long
 FAKE_STREAM = os.environ.get("OTC_FAKE_STREAM") == "1"      # tests: no Schwab connection at all
 FAKE_ACCOUNTS = os.environ.get("OTC_FAKE_ACCOUNTS")         # tests: the accounts' orders from this file
+# tests: orders "sent" are written to this file (a line each), never to Schwab; with "<file>.refuse"
+# there (its text: the reason), they are refused; with "<file>.slow" there, sending takes that many seconds
+FAKE_ORDERS = os.environ.get("OTC_FAKE_ORDERS")
 MIN_GAP_MS = 2000               # a missed period shorter than this isn't fetched
 READ_BATCH_S = 0.5              # an app's ask to read waits this long: asks from all the computers together
 EVENT_READ_S = 0.7              # an order event's read waits this long: the events come a few together
@@ -1341,6 +1344,69 @@ class Server:
             if client is None:
                 raise RuntimeError("no Schwab login")
             return (read_orders if what == "orders" else read_positions)(client, account_hash)
+
+    # ---- orders sent by the main server (a sell from Telegram) ----
+    async def place_sell(self, tail, ticker, shares, price):
+        """A GTC limit sell of `shares` at `price` in the account (its last 3 digits), with this
+        computer's Schwab login: (order id or None, "" or why it wasn't sent)."""
+        try:
+            return await asyncio.to_thread(self._place_sell, tail, ticker, shares, price)
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}"
+
+    def _place_sell(self, tail, ticker, shares, price):
+        if FAKE_ORDERS:
+            refuse, slow = Path(FAKE_ORDERS + ".refuse"), Path(FAKE_ORDERS + ".slow")
+            if slow.exists():
+                time.sleep(float(slow.read_text() or 1))
+            if refuse.exists():
+                return None, refuse.read_text(encoding="utf-8") or "refused"
+            order_id = f"F{int(time.time() * 1000) % 10 ** 9}"
+            with open(FAKE_ORDERS, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"by": self.name, "id": order_id, "account": tail, "ticker": ticker,
+                                    "side": "SELL", "shares": shares, "price": price}) + chr(10))
+            return order_id, ""
+        account_hash = dict(self._accounts([tail])).get(tail)
+        if not account_hash:
+            return None, f"Account ...{tail} isn't one of this login's"
+        with self.client_lock:
+            client = self.ensure_client()
+            if client is None:
+                return None, "no Schwab login on the main server"
+            return place_limit(client, account_hash, ticker, "SELL", shares, price)
+
+    async def account_orders(self, tail):
+        """The account's orders (order_info), read now: None when they can't be read."""
+        try:
+            if FAKE_ORDERS:
+                sent = [json.loads(line) for line in Path(FAKE_ORDERS).read_text(encoding="utf-8").splitlines()
+                        if line.strip()] if Path(FAKE_ORDERS).exists() else []
+                return [{"id": o["id"], "ticker": o["ticker"], "side": o["side"], "quantity": o["shares"],
+                         "shares": o["shares"], "filled": 0, "price": o["price"], "status": "WORKING", "open": True}
+                        for o in sent if o["account"] == tail]
+            account_hash = dict(await asyncio.to_thread(self._accounts, [tail])).get(tail)
+            if not account_hash:
+                return None
+            return await asyncio.to_thread(self._read, "orders", account_hash)
+        except Exception as e:
+            log(f"Reading the orders of ...{tail} failed: {type(e).__name__}: {e}")
+            return None
+
+    def change_shared(self, key, update, tries=5):
+        """(main server) A read-modify-write of a shared item, compare-and-set: update(data) gives the new
+        data (None: leave it). The new data, or None when it wasn't changed."""
+        for _ in range(tries):
+            item = self.store.items.get(key) or {"v": 0, "data": None}
+            new = update(item["data"])
+            if new is None:
+                return None
+            answer, _ = self.store.apply({"id": f"{self.name}-{key}-{uuid.uuid4().hex}", "key": key,
+                                          "base": item["v"], "data": new, "by": self.name})
+            if answer["type"] == "changed":
+                self.broadcast(answer)
+                self.to_peers(answer)
+                return new
+        return None
 
     # ------------------------------------------------------------ the periods missed (history) ---
     async def serve_history(self, conn, day, ranges):

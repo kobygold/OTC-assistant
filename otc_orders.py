@@ -3,6 +3,8 @@ otc_orders.py - Schwab's orders and positions, short (no Qt: the app and the ser
 
 order_info / position_info make Schwab's long JSON into the few fields the app uses; read_orders /
 read_positions / account_numbers read them with a schwab-py client (blocking: call them in a thread).
+limit_order / place_limit send a limit order (the app's trader, and the main server for a sell from
+Telegram).
 """
 
 from datetime import datetime, timedelta
@@ -54,6 +56,40 @@ def order_info(o):
                 "session": o.get("session"), "type": o.get("orderType")}
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+def limit_text(price) -> str:
+    """A limit price as Schwab takes it: 0.0395, 1.25."""
+    return f"{price:.6f}".rstrip("0").rstrip(".") if price < 1 else f"{price:.2f}"
+
+
+def limit_order(ticker, side, shares, price, duration=None, session=None):
+    """A limit order (schwab-py's JSON): GTC and the normal session unless given."""
+    from schwab.orders.common import Duration, Session
+    from schwab.orders.equities import equity_buy_limit, equity_sell_limit
+    make = equity_buy_limit if side == "BUY" else equity_sell_limit
+    try:
+        duration = Duration(duration) if duration else Duration.GOOD_TILL_CANCEL
+    except ValueError:
+        duration = Duration.GOOD_TILL_CANCEL
+    try:
+        session = Session(session) if session else Session.NORMAL
+    except ValueError:
+        session = Session.NORMAL
+    return make(ticker, int(shares), limit_text(price)).set_duration(duration).set_session(session).build()
+
+
+def place_limit(client, account_hash, ticker, side, shares, price):
+    """Sends a GTC limit order: (order id or None, "" or why it wasn't sent). An order Schwab took
+    without giving its id comes back as (None, "Schwab took the order...")."""
+    from schwab.utils import Utils
+    r = client.place_order(account_hash, limit_order(ticker, side, shares, price))
+    if r.status_code not in (200, 201):
+        return None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}"
+    try:
+        return str(Utils(client, account_hash).extract_order_id(r)), ""
+    except ValueError:
+        return None, "Schwab took the order but didn't give its number"
 
 
 def account_numbers(client):

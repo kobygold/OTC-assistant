@@ -7,8 +7,12 @@ The bot's token: settings.json "telegram_token", typed in the app, passed by the
 others (as the Schwab app's keys), so any of them can take over.
 
 In the shared data (otc_shared.py; on every computer, so it moves over with everything else):
-  telegram/accounts/<last 3 digits>   {"phones": [{"chat_id", "name", "mode", "since"}]}
-                                      mode "notify" (the news only; "trade" comes with the sell buttons)
+  telegram/accounts/<last 3 digits>   {"phones": [{"chat_id", "name", "mode", "since"}], "selling": bool}
+                                      mode "notify" (the news only) or "trade" (the news and the sell
+                                      buttons, when the account allows selling from Telegram)
+  telegram/actions/<id>               a message's buttons: {"kind": "offer" (Sell as planned / on Ask /
+                                      on Bid / Ignore) or "confirm" (Yes / No), "key" (the trade's), "chat",
+                                      "message_id", "until", "shares", ...}: a tap is done once
   telegram/codes/<code>               {"account", "until"}: an Add phone code (the app's), 10 minutes
   telegram/sent/<account>/<trade id>  {"events": [...]}: the news sent about a trade (never twice,
                                       also when another computer takes over)
@@ -20,11 +24,20 @@ Messages (to the phone): the ATM buy filled (with the Bid / Ask now), partly fil
 sell order ended without selling everything; sold (the profit); the Schwab login runs out soon / is
 needed; the main server moved. From the phone: /start, /link <code> (or the code alone, or the
 start link the app shows), /stop (no more news), /status.
+
+Selling from the phone (step 2): the "buy filled" message of a phone in trade mode has buttons, for
+10 minutes. A tap works the price out again now and asks to confirm (60 seconds); Yes works it out once
+more: the same or higher, the sell goes out as a GTC limit at the price approved; lower, not sent, a new
+confirm instead. Before sending, the trade is locked ("sending" in it: the apps' Sell buttons wait); then
+it becomes sell_open with the order's number, as the app's Sell ATM makes it. A main server that takes
+over finds a lock left: the order at Schwab is taken as the trade's, or the lock is cleared and the phone
+asked to tap again.
 """
 
 import asyncio
 import os
 import re
+import secrets
 import time
 from datetime import datetime
 
@@ -41,11 +54,23 @@ LOGIN_WARN_DAYS = 6         # the login (7 days) has less than a day left: told 
 CODE_TRIES = 5              # wrong codes a chat may send in CODE_TRIES_S
 CODE_TRIES_S = 600
 TOKEN_DAYS = 7
+OFFER_S = 600               # the sell buttons of a "buy filled" message work this long
+CONFIRM_S = 60              # ...and a confirm (Yes / No)
+ACTION_KEEP_S = 3600        # an action is deleted this long after it ran out
+RECOVER_TRIES = 3           # reading the orders to settle a lock left by a main server that went off
+RECOVER_WAIT_S = 10
+CHOICES = {"p": ("Sell as planned", "the planned exit"), "a": ("Sell on Ask", "the Ask now"),
+           "b": ("Sell on Bid", "the Bid now: it takes them all")}
 
 STATE_KEY = "telegram/state"
 ACCOUNTS = "telegram/accounts/"
 CODES = "telegram/codes/"
 SENT = "telegram/sent/"
+ACTIONS = "telegram/actions/"
+
+
+def keyboard(buttons):
+    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in buttons]}
 
 
 class TelegramError(Exception):
@@ -214,6 +239,16 @@ class TelegramBot:
     def phones(self, tail):
         return list((self.item(ACCOUNTS + str(tail)) or {}).get("phones") or [])
 
+    def account(self, tail):
+        return dict(self.item(ACCOUNTS + str(tail)) or {})
+
+    def trade_chats(self, tail):
+        """The chats that get the sell buttons: in trade mode, of an account that allows selling."""
+        acct = self.account(tail)
+        if not acct.get("selling"):
+            return []
+        return [p["chat_id"] for p in acct.get("phones") or [] if p.get("mode") == "trade"]
+
     def all_chats(self):
         chats = {}
         for key, it in self.server.store.items.items():
@@ -223,16 +258,40 @@ class TelegramBot:
         return list(chats)
 
     # ---- sending ----
-    async def send(self, chat_id, text):
+    async def send(self, chat_id, text, buttons=None):
+        """The message sent (Telegram's, with its message_id), or None. buttons: rows of (text, data)."""
         lock = self.chat_locks.setdefault(chat_id, asyncio.Lock())
+        params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        if buttons:
+            params["reply_markup"] = keyboard(buttons)
         try:
             async with lock:        # (fair: the messages of a chat arrive in the order they were made)
-                await self.call("sendMessage", chat_id=chat_id, text=text, disable_web_page_preview=True)
-            return True
+                return await self.call("sendMessage", **params) or {"message_id": None}
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self.server.log(f"Telegram: couldn't send to {chat_id} ({type(e).__name__}: {e})")
+            return None
+
+    async def edit(self, chat_id, message_id, text, buttons=None):
+        """A message's text changed (without buttons: they go)."""
+        if not message_id:
+            return await self.send(chat_id, text, buttons)
+        params = {"chat_id": chat_id, "message_id": message_id, "text": text, "disable_web_page_preview": True}
+        if buttons:
+            params["reply_markup"] = keyboard(buttons)
+        try:
+            async with self.chat_locks.setdefault(chat_id, asyncio.Lock()):
+                await self.call("editMessageText", **params)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except TelegramError as e:
+            if "not modified" not in str(e):
+                self.server.log(f"Telegram: couldn't change a message in {chat_id} ({e})")
+            return False
+        except Exception as e:
+            self.server.log(f"Telegram: couldn't change a message in {chat_id} ({type(e).__name__}: {e})")
             return False
 
     def send_to(self, chats, text):
@@ -256,22 +315,38 @@ class TelegramBot:
             return
         self.server.put_shared(mark, {"events": done + [ev for ev, _ in new]})
         chats = [p["chat_id"] for p in self.phones(tail)]
+        sellers = set(self.trade_chats(tail))
         now = time.time()
         for ev, t in new:
             if t is not None and now - t > LATE_MAX_S:
                 continue            # too old: only marked
             text = self.trade_text(ev, e, tail)
             if text and chats:
-                if t is not None and now - t > LATE_AFTER_S:
+                late = t is not None and now - t > LATE_AFTER_S
+                if late:
                     text += f"\n(late: {ago(now - t)})"
-                self.send_to(chats, text)
+                if ev == "bought" and not late and e.get("state") == "bought" and sellers:
+                    self.send_to([c for c in chats if c not in sellers], text)
+                    for c in chats:
+                        if c in sellers:
+                            asyncio.create_task(self.offer(c, "atm/" + rest, e, text))
+                else:
+                    self.send_to(chats, text)
 
     async def catch_up(self):
-        """Taking over (or starting): the news of the trades that may not have been sent."""
+        """Taking over (or starting): the news of the trades that may not have been sent, and the
+        sells from Telegram a main server that went off left half done."""
         for key, it in list(self.server.store.items.items()):
             e = it.get("data")
             if key.startswith("atm/") and isinstance(e, dict):
                 self.tell(key[len("atm/"):], e, state_events(e))
+                if e.get("sending") and e.get("state") == "bought":
+                    asyncio.create_task(self.recover(key, e["sending"]))
+        now = time.time()
+        for key, it in list(self.server.store.items.items()):       # old buttons out
+            a = it.get("data")
+            if key.startswith(ACTIONS) and a is not None and (a.get("until") or 0) + ACTION_KEEP_S < now:
+                self.server.put_shared(key, None)
         # marks of trades that are gone
         for key, it in list(self.server.store.items.items()):
             if key.startswith(SENT) and it.get("data") is not None:
@@ -363,6 +438,9 @@ class TelegramBot:
 
     # ---- from the phones ----
     async def on_update(self, u):
+        if u.get("callback_query"):
+            await self.on_tap(u["callback_query"])
+            return
         msg = u.get("message")
         if not msg or "text" not in msg:
             return
@@ -410,7 +488,7 @@ class TelegramBot:
         phones = [p for p in self.phones(tail) if p.get("chat_id") != chat]
         phones.append({"chat_id": chat, "name": name, "mode": "notify",
                        "since": datetime.now().isoformat(timespec="seconds")})
-        self.server.put_shared(ACCOUNTS + tail, {"phones": phones})
+        self.server.put_shared(ACCOUNTS + tail, dict(self.account(tail), phones=phones))
         self.server.put_shared(CODES + code, None)
         self.server.event(f"Telegram: {name} linked to {account_text(tail)}")
         await self.send(chat, f"Linked to {account_text(tail)} as {name}. You'll get its ATM trades' news here.\n"
@@ -419,8 +497,242 @@ class TelegramBot:
     async def unlink(self, chat):
         tails = self.accounts_of(chat)
         for tail in tails:
-            self.server.put_shared(ACCOUNTS + tail, {"phones": [p for p in self.phones(tail)
-                                                                if p.get("chat_id") != chat]})
+            self.server.put_shared(ACCOUNTS + tail, dict(self.account(tail), phones=[
+                p for p in self.phones(tail) if p.get("chat_id") != chat]))
         if tails:
             self.server.event(f"Telegram: chat {chat} stopped ({', '.join(account_text(t) for t in tails)})")
         await self.send(chat, "Done: no more news here." if tails else "This phone isn't linked to any account.")
+
+    # ---- selling from the phone ----
+    def price_now(self, e, choice):
+        """The price to sell all the stocks at, now: the planned exit, the Ask, or the Bid that takes
+        them all (None when there's none)."""
+        if choice == "p":
+            return e.get("exit-live") or e.get("exit") or None
+        ticker = e.get("ticker")
+        if choice == "a":
+            return (self.server.l1.get(ticker) or {}).get("ASK_PRICE") or None
+        books = self.server.books.get(ticker) or {}
+        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: -r[1])
+        shares = remaining(e)
+        if not bids or not shares:
+            return None
+        price, total = bid_fill(bids, shares)
+        return price if total >= shares else None
+
+    def offer_buttons(self, aid, prices):
+        rows = []
+        if prices.get("p"):
+            rows.append([(f"Sell as planned @ {fmt_price(prices['p'])}", f"{aid}:p")])
+        side = [(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}") for c in ("a", "b") if prices.get(c)]
+        if side:
+            rows.append(side)
+        rows.append([("Ignore", f"{aid}:x")])
+        return rows
+
+    async def offer(self, chat, key, e, text):
+        """The "buy filled" message with the sell buttons (to a phone that may sell)."""
+        prices = {c: self.price_now(e, c) for c in ("p", "a", "b")}
+        if not any(prices.values()):
+            await self.send(chat, text)
+            return
+        aid = secrets.token_hex(4)
+        action = {"kind": "offer", "key": key, "chat": chat, "until": time.time() + OFFER_S,
+                  "shares": remaining(e), "text": text, "prices": prices}
+        self.server.put_shared(ACTIONS + aid, action)
+        msg = await self.send(chat, text, self.offer_buttons(aid, prices))
+        if msg and msg.get("message_id"):
+            self.server.change_shared(ACTIONS + aid, lambda a: dict(a, message_id=msg["message_id"]) if a else None)
+
+    def why_not(self, action, chat):
+        """Why a tap can't be done now (None: it can), and the trade."""
+        key = action.get("key", "")
+        tail = key[len("atm/"):].split("/")[0]
+        e = self.item(key)
+        if chat not in self.trade_chats(tail):
+            return "This phone may not sell from Telegram (the Telegram tab in OTC Assistant).", e
+        if time.time() > (action.get("until") or 0):
+            return ("These buttons ran out (10 minutes)." if action.get("kind") == "offer" else
+                    "The confirm ran out (60 seconds)."), e
+        if not isinstance(e, dict):
+            return "The trade isn't there any more.", e
+        if e.get("sending"):
+            return "A sell of these stocks is being sent already.", e
+        if e.get("state") != "bought":
+            return {"sell_open": "A sell order is open already.", "sold": "Sold already."}.get(
+                e.get("state"), "The trade changed."), e
+        if remaining(e) != action.get("shares"):
+            return f"The trade changed: you own {remaining(e):,} now.", e
+        return None, e
+
+    async def on_tap(self, cq):
+        try:
+            await self.call("answerCallbackQuery", callback_query_id=cq.get("id"))      # (the spinner stops)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
+        mid = (cq.get("message") or {}).get("message_id")
+        aid, _, choice = str(cq.get("data") or "").partition(":")
+        action = self.item(ACTIONS + aid) if re.fullmatch(r"[0-9a-f]{8}", aid) else None
+        if not isinstance(action, dict) or action.get("chat") != chat:
+            await self.edit(chat, mid, ((cq.get("message") or {}).get("text") or "") + "\n\nThese buttons don't work any more.")
+            return
+        if action.get("done"):
+            return                  # (a tap done already: sent again)
+        who = cq.get("from") or {}
+        name = " ".join(x for x in (who.get("first_name"), who.get("last_name")) if x) or str(chat)
+        self.server.put_shared(ACTIONS + aid, dict(action, done=True))         # once only
+        text = action.get("text", "")
+        if action.get("kind") == "offer":
+            if choice == "x":
+                await self.edit(chat, mid, text + "\n\nIgnored.")
+                return
+            if choice not in CHOICES:
+                return
+            why, e = self.why_not(action, chat)
+            if why:
+                await self.edit(chat, mid, text + "\n\n" + why)
+                return
+            await self.ask_confirm(chat, mid, aid, action, e, choice, self.price_now(e, choice))
+            return
+        offer_id = action.get("offer", "")
+        offer = self.item(ACTIONS + offer_id) or {}
+        if choice == "n":
+            await self.back_to_offer(chat, mid, offer_id, offer, text + "\n\nNot sold.")
+            return
+        if choice != "y":
+            return
+        why, e = self.why_not(action, chat)
+        if why:
+            await self.edit(chat, mid, text + "\n\n" + why)
+            return
+        approved, c = action["price"], action["choice"]
+        now_price = self.price_now(e, c)
+        if now_price is None or now_price < approved - 1e-9:        # never lower than approved
+            await self.ask_confirm(chat, mid, offer_id, offer, e, c, now_price, approved)
+            return
+        await self.sell(chat, mid, action, e, approved, name)
+
+    async def ask_confirm(self, chat, mid, offer_id, offer, e, choice, price, approved=None):
+        """The confirm of a sell at `price` (Yes / No, 60 seconds). approved: the price approved before
+        (the price went down since)."""
+        text = offer.get("text", "")
+        what = CHOICES[choice][1]
+        if price is None:
+            missing = {"p": "There's no exit price", "a": "There's no Ask now", "b": "The bids don't take them all now"}
+            await self.back_to_offer(chat, mid, offer_id, offer, text + f"\n\n{missing[choice]}: not sent.")
+            return
+        shown = (offer.get("prices") or {}).get(choice)
+        before = approved if approved is not None else shown
+        lines = [f"Sell {offer.get('shares', remaining(e)):,} {e.get('ticker')} @ {fmt_price(price)} ({what})?"]
+        if before and price < before - 1e-9:
+            name = {"p": "The exit", "a": "The Ask", "b": "The Bid"}[choice]
+            lines.append(f"⚠️ {name} went down from {fmt_price(before)} to {fmt_price(price)}"
+                         + (" (you approved " + fmt_price(approved) + ")." if approved is not None else "."))
+        cid = secrets.token_hex(4)
+        self.server.put_shared(ACTIONS + cid, {"kind": "confirm", "offer": offer_id, "key": offer.get("key"),
+                                               "chat": chat, "message_id": mid, "until": time.time() + CONFIRM_S,
+                                               "shares": offer.get("shares"), "choice": choice, "price": price,
+                                               "text": text})
+        await self.edit(chat, mid, text + "\n\n" + "\n".join(lines),
+                        [[("Yes, send", f"{cid}:y"), ("No", f"{cid}:n")]])
+
+    async def back_to_offer(self, chat, mid, offer_id, offer, text):
+        """The offer's buttons again (as long as they work), under `text`."""
+        why, e = self.why_not(offer, chat) if offer else ("", None)
+        if why is None:
+            aid = secrets.token_hex(4)          # (a new id: the old one was used)
+            prices = {c: self.price_now(e, c) for c in ("p", "a", "b")}
+            self.server.put_shared(ACTIONS + aid, dict(offer, prices=prices, message_id=mid, done=False))
+            await self.edit(chat, mid, text, self.offer_buttons(aid, prices))
+        else:
+            await self.edit(chat, mid, text)
+
+    async def sell(self, chat, mid, action, e, price, name):
+        """Yes: the trade locked, the sell sent (all the stocks, GTC limit at the price approved), the
+        trade made sell_open (or the lock cleared), and the message says how it went."""
+        key, shares = action["key"], action["shares"]
+        tail = key[len("atm/"):].split("/")[0]
+        ticker, text = e.get("ticker"), action.get("text", "")
+        lock = {"by": self.server.name, "chat": chat, "message_id": mid, "price": price, "shares": shares,
+                "who": name, "at": datetime.now().isoformat(timespec="seconds")}
+        if self.server.change_shared(key, lambda d: dict(d, sending=lock) if isinstance(d, dict) and
+                                     d.get("state") == "bought" and not d.get("sending") and
+                                     remaining(d) == shares else None) is None:
+            await self.edit(chat, mid, text + "\n\nNot sent: the trade changed meanwhile.")
+            return
+        await self.edit(chat, mid, text + f"\n\n⏳ Sending: sell {shares:,} {ticker} @ {fmt_price(price)}...")
+        self.server.event(f"Telegram: {name} sells {shares:,} {ticker} @ {fmt_price(price)} ({account_text(tail)})")
+        order_id, error = await self.server.place_sell(tail, ticker, shares, price)
+        if order_id:
+            self.sell_open(key, order_id, price, f"Sent from Telegram by {name}.")
+            await self.edit(chat, mid, text + f"\n\n✅ Sell order open: {shares:,} {ticker} @ {fmt_price(price)} (GTC).")
+            self.server.event(f"Telegram: sell order {order_id} open: {shares:,} {ticker} @ {fmt_price(price)}")
+        else:
+            self.server.change_shared(key, lambda d: {k: v for k, v in d.items() if k != "sending"}
+                                      if isinstance(d, dict) and d.get("sending") else None)
+            await self.back_to_offer(chat, mid, action.get("offer", ""), self.item(ACTIONS + action.get("offer", "")) or {},
+                                     text + f"\n\n❌ Not sent: {error}")
+            self.server.event(f"Telegram: the sell of {ticker} wasn't sent: {error}")
+
+    def sell_open(self, key, order_id, price, note):
+        """The trade as the app's Sell ATM makes it: sell_open, with the order's number (the main
+        server's app follows the order from here)."""
+        now = datetime.now().isoformat(timespec="seconds")
+
+        def update(d):
+            if not isinstance(d, dict):
+                return None
+            d = {k: v for k, v in d.items() if k not in ("sending", "status")}
+            d.update(state="sell_open", sell_price=price, sell_id=str(order_id), sell_time=now, sell_filled=0,
+                     note=note)
+            return d
+        return self.server.change_shared(key, update)
+
+    async def recover(self, key, lock):
+        """Taking over: a sell from Telegram the old main server may have sent (the trade still locked).
+        Its order at Schwab is taken as the trade's; not there, the lock is cleared and the phone asked
+        to tap again. Never sent again from here."""
+        tail = key[len("atm/"):].split("/")[0]
+        e = self.item(key) or {}
+        chat, mid = lock.get("chat"), lock.get("message_id")
+        orders = None
+        for i in range(RECOVER_TRIES):
+            orders = await self.server.account_orders(tail)
+            if orders is not None:
+                break
+            await asyncio.sleep(RECOVER_WAIT_S)
+        if (self.item(key) or {}).get("sending") != lock:
+            return                  # settled meanwhile
+        if orders is None:
+            self.server.change_shared(key, lambda d: {k: v for k, v in d.items() if k != "sending"}
+                                      if isinstance(d, dict) and d.get("sending") == lock else None)
+            if chat:
+                await self.send(chat, f"⚠️ {e.get('ticker')}: the main server moved while sending your sell, and "
+                                      f"Schwab's orders can't be read now. Check thinkorswim before selling again.")
+            return
+        used = {str(d.get(k)) for k2, it in self.server.store.items.items() if k2.startswith("atm/")
+                for d in [it.get("data") or {}] for k in ("order_id", "sell_id") if d.get(k)}
+        found = next((o for o in orders if o.get("side") == "SELL" and o.get("ticker") == e.get("ticker")
+                      and o.get("open") and str(o.get("id")) not in used        # (not another trade's order)
+                      and int(o.get("quantity") or 0) == lock.get("shares")
+                      and abs(float(o.get("price") or 0) - lock.get("price", 0)) < 1e-9), None)
+        if found:
+            self.sell_open(key, found["id"], lock["price"], f"Sent from Telegram by {lock.get('who')}.")
+            self.server.event(f"Telegram: the sell sent before the main server moved is open ({e.get('ticker')})")
+            if chat:
+                await self.edit(chat, mid, f"✅ {e.get('ticker')}: sell order open: {lock['shares']:,} @ "
+                                           f"{fmt_price(lock['price'])} (sent before the main server moved).")
+            return
+        self.server.change_shared(key, lambda d: {k: v for k, v in d.items() if k != "sending"}
+                                  if isinstance(d, dict) and d.get("sending") == lock else None)
+        self.server.event(f"Telegram: a sell of {e.get('ticker')} wasn't sent (the main server moved): lock cleared")
+        e = self.item(key) or {}
+        if chat:
+            text = (f"❌ {e.get('ticker')}: your sell wasn't sent (the main server moved meanwhile). Tap again:")
+            if e.get("state") == "bought":
+                await self.offer(chat, key, e, text)
+            else:
+                await self.send(chat, text.replace(" Tap again:", ""))

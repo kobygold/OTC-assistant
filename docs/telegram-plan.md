@@ -4,12 +4,18 @@ The ATM trades' news goes to the phones of each account by a Telegram bot, and t
 sell the stocks just bought, as planned, on the Ask or on the Bid, after a confirm. Run by the main
 server, so it moves to another computer with everything else when the main one goes off.
 
-Status: **step 1 built** (v2.4.0: otc_telegram.py, run by otc_server.py; the Telegram tab,
-otc_telegram_tab.py). Steps 2 and 3: planned. Decisions made are marked **(decided)**.
+Status: **step 1 live** (v2.4.0: otc_telegram.py, run by otc_server.py; the Telegram tab,
+otc_telegram_tab.py). **Step 2 built** (v2.5.0, branch telegram-step2): the sell buttons, the confirm,
+never below the price approved, the lock, the order sent by the main server, taking over with a lock
+left. Step 3: planned. Decisions made are marked **(decided)**.
 
 Built a little differently from the plan: the news comes from the ATM trades' changes in the shared
 data (the main server's app writes them from the orders), not from reading the orders again; the
 phones are added on their own **Telegram** tab (not under Settings).
+Step 2: "Allow selling from Telegram" is per account on the Telegram tab (off by default), and each
+phone's "Gets" is the news, or the news + sell buttons. The Bid offered is the one that takes all the
+stocks (bid_fill), so Sell on Bid shows only when the bids can take them all. No (on a confirm) brings
+the offer's buttons back while they still work.
 
 ## 1. Where it runs
 

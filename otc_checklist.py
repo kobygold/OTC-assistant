@@ -23,7 +23,7 @@ from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalett
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
-from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, order_info, position_info
+from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 from otc_trade import FEE_USD, bid_fill
@@ -903,18 +903,7 @@ class SchwabTrader(QObject):
 
     @staticmethod
     def _limit_order(ticker, side, shares, price, duration=None, session=None):
-        from schwab.orders.common import Duration, Session
-        from schwab.orders.equities import equity_buy_limit, equity_sell_limit
-        make = equity_buy_limit if side == "BUY" else equity_sell_limit
-        try:
-            duration = Duration(duration) if duration else Duration.GOOD_TILL_CANCEL
-        except ValueError:
-            duration = Duration.GOOD_TILL_CANCEL
-        try:
-            session = Session(session) if session else Session.NORMAL
-        except ValueError:
-            session = Session.NORMAL
-        return make(ticker, int(shares), limit_text(price)).set_duration(duration).set_session(session).build()
+        return limit_order(ticker, side, shares, price, duration, session)       # (otc_orders: the server's too)
 
     def _place(self, key, ticker, side, shares, price, account_tail):
         try:
@@ -1011,11 +1000,6 @@ OPEN_GONE = {"CANCELED", "REPLACED"}     # an open order that may have been chan
 def tint(value) -> str:
     """The style attribute for a dialog value given as (text, colour); nothing for plain text."""
     return f" style='color:{value[1]}'" if isinstance(value, tuple) else ""
-
-
-def limit_text(price) -> str:
-    """A limit price as Schwab takes it: 0.0395, 1.25."""
-    return f"{price:.6f}".rstrip("0").rstrip(".") if price < 1 else f"{price:.2f}"
 
 
 def usd_signed(v) -> str:
@@ -1677,9 +1661,10 @@ class AtmTrades(QObject):
         return max(0, (e.get("filled") or 0) - (e.get("sold") or 0))
 
     def busy(self, e=None, ticker=None):
-        """An order on its way to Schwab, or being canceled."""
+        """An order on its way to Schwab (from here, or a sell from Telegram: the main server's), or
+        being canceled."""
         return (ticker in self.sending if ticker else False) or (
-            e is not None and (e["id"] in self.sending or e["id"] in self.canceling))
+            e is not None and (e["id"] in self.sending or e["id"] in self.canceling or bool(e.get("sending"))))
 
     def account_name(self, tail):
         return self.fee_reader.kind(tail) if self.fee_reader else f"...{tail}"
@@ -3173,7 +3158,11 @@ class ChecklistPanel(QWidget):
                 "Sell all the stocks at the exit price, GTC, after you approve it" if state == "bought" else
                 "Once the stocks are bought")
         text = ""
-        if self.ticker in self.atm.sending or (e and e["id"] in self.atm.sending):
+        if e and e.get("sending"):
+            lock = e["sending"]
+            text = (f"Selling from Telegram ({lock.get('who', 'a phone')}): {lock.get('shares', 0):,} @ "
+                    f"{fmt_price(lock.get('price'))}...")
+        elif self.ticker in self.atm.sending or (e and e["id"] in self.atm.sending):
             text = "Sending the order to Schwab..."
         elif e and e["id"] in self.atm.canceling:
             text = "Canceling the order..."
