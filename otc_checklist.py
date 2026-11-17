@@ -2661,7 +2661,7 @@ class ChecklistPanel(QWidget):
         edit.setFixedWidth(84)
         edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(
-            r"\d{0,7}(\.\d{0,6})?" if key == "size" else r"\d{0,6}(\.\d{0,6})?"), edit))
+            r"\$?\d{0,7}(\.\d{0,6})?" if key == "size" else r"\d{0,6}(\.\d{0,6})?"), edit))
         pal = edit.palette()
         pal.setColor(QPalette.ColorRole.Text, QColor("#f0a020"))              # a typed-over value
         pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))    # the automatic value
@@ -2704,7 +2704,7 @@ class ChecklistPanel(QWidget):
         self.typed("size", size)
         size_edit = next((v for it, _, _, v in self.widgets if it.key == "size"), None)
         if isinstance(size_edit, QLineEdit) and not size_edit.hasFocus():
-            size_edit.setText(size)
+            size_edit.setText(f"${size}")
         self.save_settings(self.settings)
         self.refresh()
 
@@ -2883,6 +2883,8 @@ class ChecklistPanel(QWidget):
 
     def typed(self, key, text):
         text = text.strip()
+        if key == "size":
+            text = text.lstrip("$").strip()      # (shown as $150)
         try:
             valid = float(text) > 0
         except ValueError:
@@ -3353,7 +3355,10 @@ class ChecklistPanel(QWidget):
                     tools[1].setEnabled(not locked)
                     self.show_pin(tools[1], bool(own))
                 value.setEnabled(bool(self.ticker) or item.key == "size")
-                own = own if item.key == "size" else price_text(own)
+                if item.key == "size":
+                    own = f"${own}" if own else ""      # the typed position $, with its sign
+                else:
+                    own = price_text(own)
                 if not value.hasFocus() and value.text() != own:
                     value.setText(own)
                 continue
