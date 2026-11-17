@@ -111,10 +111,10 @@ PANEL_STYLE = """
 #checklist QLineEdit:focus { border-color: #5a6670; }
 #checklist QLineEdit:disabled { background: #101214; border-color: #1b1e21; }
 #checklist QLineEdit[readOnly="true"] { background: #101214; }
-#checklist QPushButton#cl_buy, #checklist QPushButton#cl_sell {
+#checklist QPushButton#cl_buy, #checklist QPushButton#cl_sell, #checklist QPushButton#cl_update {
     color: #ffffff; font-weight: bold; border-radius: 4px; padding: 3px 14px; border: 1px solid transparent; }
-#checklist QPushButton#cl_buy { background: #009300; }
-#checklist QPushButton#cl_buy:hover { background: #00b300; }
+#checklist QPushButton#cl_buy, #checklist QPushButton#cl_update { background: #009300; }
+#checklist QPushButton#cl_buy:hover, #checklist QPushButton#cl_update:hover { background: #00b300; }
 #checklist QPushButton#cl_sell { background: #cf0508; }
 #checklist QPushButton#cl_sell:hover { background: #e8262a; }
 #checklist QPushButton#cl_bid { background: #e3b23c; color: #111111; font-weight: bold; border-radius: 4px;
@@ -127,7 +127,7 @@ PANEL_STYLE = """
 #checklist QPushButton#cl_done { background: #6a4fb0; color: #ffffff; padding: 2px 10px; }
 #checklist QPushButton#cl_done:hover { background: #7f62c8; }
 #checklist QPushButton#cl_buy:disabled, #checklist QPushButton#cl_sell:disabled,
-#checklist QPushButton#cl_cancel:disabled {
+#checklist QPushButton#cl_cancel:disabled, #checklist QPushButton#cl_update:disabled {
     background: #1d2125; color: #5c6268; border-color: #2c3136; }
 #checklist QLabel#cl_order { color: #4fc3f7; }
 #checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: transparent;
@@ -2530,7 +2530,11 @@ class ChecklistPanel(QWidget):
                                 "from the best down, fill all of them (after you approve it)")
         self.bid_btn.clicked.connect(self.sell_on_bid)
         self.bid_btn.hide()
-        for b in (self.buy_btn, self.sell_btn, self.bid_btn, self.done_btn):
+        self.update_btn = QPushButton("Update Buy")    # beside Cancel Buy once new values are typed
+        self.update_btn.setObjectName("cl_update")
+        self.update_btn.clicked.connect(self.update_buy)
+        self.update_btn.hide()
+        for b in (self.buy_btn, self.update_btn, self.sell_btn, self.bid_btn, self.done_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setLayoutDirection(Qt.LayoutDirection.LeftToRight)     # the X before the text
             trade.addWidget(b)
@@ -2576,6 +2580,7 @@ class ChecklistPanel(QWidget):
         self.locked = {}        # key -> its fixed cell (the plan sent with Buy ATM), shown once sent
         self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
         self.changing_order = False     # the change-order dialog is open
+        self.draft = {}         # new values typed for the open buy: {"id", "entry", "size", "shares", "last"}
         self.boxes = {}         # key -> its live value's box
         for name, items in sections:
             head = QLabel(name)
@@ -2681,11 +2686,15 @@ class ChecklistPanel(QWidget):
         pal.setColor(QPalette.ColorRole.Text, QColor("#f0a020"))              # being typed
         pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#ffffff"))    # the amount now
         edit.setPalette(pal)
+        edit.textEdited.connect(lambda text: self.drafting() is not None and self.draft_typed("shares", text))
         edit.editingFinished.connect(lambda e=edit: self.shares_done(e))
         return edit
 
     def shares_done(self, edit):
         """An amount of stocks typed: the position $ = it x the entry (the amount then works out to it)."""
+        if self.drafting() is not None:         # a new amount for the open buy
+            self.draft_done("shares", edit)
+            return
         if edit.isReadOnly():
             return
         text = edit.text().replace(",", "").strip()
@@ -2718,16 +2727,11 @@ class ChecklistPanel(QWidget):
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(
             {"size": r"\$?[\d,]{0,9}(\.\d{0,2})?", "shares": r"[\d,]{0,12}"}.get(key, r"\d{0,6}(\.\d{0,6})?")), edit))
         edit.setStyleSheet(f"color: {ORDER_COLOR};")
-        edit.setToolTip({"size": "The buy order's position in $. Change it and press Enter: the amount of "
-                                 "stocks follows (at the same price), and the order is changed at Schwab after "
-                                 "you approve it.",
-                         "entry": "The buy order's limit price. Change it and press Enter: the amount of stocks "
-                                  "follows (for the same position $), and the order is changed at Schwab after "
-                                  "you approve it. 12 = 0.0012.",
-                         "shares": "The buy order's amount of stocks. Change it and press Enter: the order is "
-                                   "changed at Schwab after you approve it (the position $ follows)."}[key])
+        edit.setReadOnly(True)
+        edit.setToolTip({"size": "The buy order's position in $ now.", "entry": "The buy order's limit price now.",
+                         "shares": "The buy order's amount of stocks now."}[key]
+                        + " To change the order: type the new values beside it, then Update Buy at the top.")
         edit.hide()
-        edit.editingFinished.connect(lambda k=key, w=edit: self.order_edit_done(k, w))
         return edit
 
     def can_change_order(self, e):
@@ -2745,45 +2749,91 @@ class ChecklistPanel(QWidget):
             return fmt_price(e["entry"])
         return f"{e['shares']:,}"
 
-    def order_edit_done(self, key, edit):
-        """A box of the open buy changed: the new order (the others follow), asked, then sent."""
-        if self.changing_order:
-            return
+    # ---- new values for the open buy (the right column), sent with Update Buy ----
+    def drafting(self):
+        """The open buy whose values can be changed now (new values go beside its own), or None."""
         e = self.order()
-        if not self.can_change_order(e) or edit.text() == self.order_edit_text(key, e):
-            return
+        return e if self.can_change_order(e) else None
+
+    def draft_of(self, e):
+        if self.draft.get("id") != e["id"]:
+            self.draft = {"id": e["id"]}
+        return self.draft
+
+    @staticmethod
+    def draft_number(text, price=False):
+        """A typed value as a number (a price typed as 1 or more: 0.0001 steps), or None."""
         try:
-            v = Decimal(edit.text().replace(",", "").replace("$", "").strip())
+            v = Decimal((text or "").replace(",", "").replace("$", "").strip())
         except InvalidOperation:
-            v = None
-        price, shares, size = e["entry"], e["shares"], self.order_size(e)
-        if v is not None and v > 0:
-            if key == "entry":
-                price = float(v * PRICE_STEP if v >= 1 else v)      # 12 -> 0.0012, as in the price boxes
-                shares = round(size / price)
-            elif key == "size":
-                size = float(v)
-                shares = round(size / price)
-            else:
-                shares = int(v)
-                size = round(shares * price, 2)
-        if v is None or v <= 0 or shares < 1:
-            edit.setText(self.order_edit_text(key, e))
+            return None
+        if v <= 0:
+            return None
+        return float(v * PRICE_STEP if price and v >= 1 else v)
+
+    def draft_values(self, e):
+        """(price, shares, size, changed): the buy with the new values typed (a new price keeps the
+        position $; the amount or the $ typed last sets the other)."""
+        d = self.draft_of(e)
+        price = self.draft_number(d.get("entry"), price=True) or e["entry"]
+        typed_shares, typed_size = self.draft_number(d.get("shares")), self.draft_number(d.get("size"))
+        source = d.get("last")
+        if source == "shares" and not typed_shares or source == "size" and not typed_size:
+            source = None
+        source = source or ("shares" if typed_shares else "size" if typed_size else None)
+        if source == "shares":
+            shares = int(typed_shares)
+            size = shares * price
+        else:
+            size = typed_size or self.order_size(e)
+            shares = round(size / price) if source or abs(price - e["entry"]) > 1e-9 else e["shares"]
+        changed = shares >= 1 and (shares != e["shares"] or abs(price - e["entry"]) > 1e-9)
+        return price, shares, size, changed
+
+    def draft_typed(self, key, text):
+        e = self.drafting()
+        if e is None:
             return
-        if shares == e["shares"] and abs(price - e["entry"]) < 1e-9:
-            if abs(size - self.order_size(e)) > 0.005:      # the same order: only the position $ kept
-                e["size"] = round(size, 2)
-                self.atm.save()
-            self.refresh()
+        d = self.draft_of(e)
+        d[key] = text.strip()
+        if key in ("size", "shares"):
+            other = "shares" if key == "size" else "size"
+            if d[key]:
+                d[other] = ""       # one of the two is typed, the other follows it (shown in white)
+            d["last"] = key if d[key] else None
+        self.refresh()
+
+    def draft_done(self, key, edit):
+        """Enter or leaving a new value's box: shown as the others are (12 -> 0.0012, $150)."""
+        text = edit.text().strip()
+        if text and key == "entry":
+            v = self.draft_number(text, price=True)
+            text = price_text(format(Decimal(str(v)), "f")) if v else ""
+        elif text and key == "size":
+            text = text.lstrip("$").strip()
+        if self.drafting() is not None:
+            self.draft_typed(key, text)
+
+    def update_buy(self):
+        """Update Buy: the open buy changed to the new values, after the usual dialog."""
+        e = self.drafting()
+        if e is None or self.changing_order:
+            return
+        price, shares, size, changed = self.draft_values(e)
+        if not changed:
             return
         self.changing_order = True
         try:
-            self.atm.ask_change_buy(self, e, shares, price, size)
+            sent = self.atm.ask_change_buy(self, e, shares, price, size)
         finally:
             self.changing_order = False
-            for k, w in self.order_edits.items():       # the order's values again (not changed, or until done)
-                w.setText(self.order_edit_text(k, e))
-            self.refresh()
+        if sent:
+            self.draft = {}
+            for key in ("size", "entry", "shares"):
+                box = next((v for it, _, _, v in self.widgets if it.key == key), None)
+                if isinstance(box, QLineEdit):
+                    box.clear()
+        self.refresh()
 
     def make_stepper(self, key, edit):
         """+ above - beside a price box: one 0.0001 step up or down (held: repeats)."""
@@ -2882,6 +2932,9 @@ class ChecklistPanel(QWidget):
         return self.settings.get("checklist_prices", {}).get(self.ticker, {}).get(key, "")
 
     def typed(self, key, text):
+        if key in ("size", "entry") and self.drafting() is not None:
+            self.draft_typed(key, text)         # a new value for the open buy, not the plan's
+            return
         text = text.strip()
         if key == "size":
             text = text.lstrip("$").strip()      # (shown as $150)
@@ -2913,6 +2966,9 @@ class ChecklistPanel(QWidget):
     def edit_done(self, key=None, edit=None):
         """Enter or leaving the box. A price typed as 1 or more is a count of 0.0001 steps:
         12 -> 0.0012, 1 -> 0.0001 (these stocks trade under $1)."""
+        if key in ("size", "entry") and edit is not None and self.drafting() is not None:
+            self.draft_done(key, edit)
+            return
         if edit is not None and key != "size":
             try:
                 typed = Decimal(edit.text().strip())
@@ -2959,6 +3015,14 @@ class ChecklistPanel(QWidget):
             self.sell_btn.setEnabled(can and state == "bought")
         self.done_btn.setVisible(state == "sold")
         self.bid_btn.setVisible(state == "bought")
+        new = self.drafting()
+        draft = self.draft_values(new) if new is not None else None
+        self.update_btn.setVisible(bool(draft and draft[3]))
+        self.update_btn.setEnabled(can)
+        if draft and draft[3]:
+            price, n, size = draft[:3]
+            self.update_btn.setToolTip(f"Change the buy order to {n:,} @ {fmt_price(price)} (${size:,.2f}), "
+                                       "after you approve it")
         self.bid_btn.setEnabled(can)
         if self.trader is None:
             self.buy_btn.setToolTip("Needs the Schwab login")
@@ -2984,6 +3048,8 @@ class ChecklistPanel(QWidget):
             if state == "buy_open":
                 text = (f"Buy order open{status}: {e['shares']:,} @ {fmt_price(e['entry'])} GTC"
                         + (f" · {e['filled']:,} bought so far" if e.get("filled") else ""))
+                if draft and draft[3]:
+                    text += f"\nNew: {draft[1]:,} @ {fmt_price(draft[0])} (${draft[2]:,.2f}): Update Buy sends it"
             elif state == "bought":
                 text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
             elif state == "sell_open":
@@ -3185,6 +3251,11 @@ class ChecklistPanel(QWidget):
                   or order.get("filled") or order.get("shares")) if order else None
         if order:
             own["entry"] = order["entry"]       # the buy's price: exit and stop are worked out from it
+        new = self.drafting()
+        if new is not None:
+            price, n, _, changed = self.draft_values(new)
+            if changed:                     # the new values typed beside the buy's: what they would give
+                own["entry"], shares = price, n
         p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used, shares)
         self.last_plan = (p, usd)       # for the trade plan the ticker copies
         auto = p["auto"]
@@ -3287,8 +3358,6 @@ class ChecklistPanel(QWidget):
             oe.setVisible(changeable)
             if changeable and not oe.hasFocus() and not self.changing_order:
                 oe.setText(self.order_edit_text(key, order))
-        if "shares" in self.boxes:
-            self.boxes["shares"].setVisible(not changeable)
         for key, lock in self.locked.items():
             lock.setVisible(bool(order) and not (changeable and key in self.order_edits))
             if order:
@@ -3304,11 +3373,15 @@ class ChecklistPanel(QWidget):
                 value.setIndent(LOCKED_INDENT if order else -1)
             elif item.key in LOCKED and isinstance(value, QLabel) and not isinstance(value, QLineEdit):
                 value.setIndent(LIVE_INDENT if order else -1)     # in line with the live price boxes
-        for key in ("entry", "size"):       # only the fixed cell once sent
+        for key in ("entry", "size"):       # only the fixed cell once sent (an open buy: new values beside it)
             if key in self.boxes:
-                self.boxes[key].setVisible(not order)
-            for w in self.price_tools.get(key, ()):
-                w.setVisible(not order)
+                self.boxes[key].setVisible(not order or changeable)
+            tools = self.price_tools.get(key, ())
+            for i, w in enumerate(tools):
+                w.setVisible(not order or (changeable and i == 0))     # the pin: only before Buy ATM
+        draft = self.draft_values(order) if changeable else None
+        if draft is None:
+            self.draft = {}
         ticks = self.ticked()
         manual, solvers = {}, {}      # the manual items' marks and texts, by their keys
         for item, *_ in self.widgets:
@@ -3324,6 +3397,25 @@ class ChecklistPanel(QWidget):
                 if state == BAD and item.solved_by and manual.get(item.solved_by) == OK:
                     state = SOLVED
                     tip = (tip + " · " if tip else "") + f"Solved: \"{solvers.get(item.solved_by, item.solved_by)}\" is checked"
+            if isinstance(value, QLineEdit) and draft is not None and item.key in ("size", "entry", "shares"):
+                # the open buy's new values: typed (orange), or what follows from them (white)
+                price, n, size, changed = draft
+                typed_text = self.draft.get(item.key, "")
+                if item.key == "size" and typed_text:
+                    typed_text = f"${typed_text}"
+                value.setReadOnly(False)
+                value.setEnabled(True)
+                value.setStyleSheet("")
+                value.setPlaceholderText({"size": f"${size:,.2f}", "entry": fmt_price(price), "shares": f"{n:,}"}[item.key])
+                if not value.hasFocus() and value.text() != typed_text:
+                    value.setText(typed_text)
+                value.setToolTip({"size": "New position $ for the buy order: the amount of stocks follows",
+                                  "entry": "New limit price for the buy order: the amount of stocks follows (for "
+                                           "the same position $). 12 = 0.0012",
+                                  "shares": "New amount of stocks for the buy order: the position $ follows"}[item.key]
+                                 + ". Then Update Buy at the top changes the order (after you approve it). "
+                                   "Clear the boxes to keep the order as it is.")
+                continue
             if isinstance(value, QLineEdit) and item.key == "shares":
                 # the trade's amount once sent (fixed, in the order colour), else the plan's: type to change
                 value.setReadOnly(bool(order))
