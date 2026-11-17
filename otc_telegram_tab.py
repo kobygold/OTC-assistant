@@ -6,15 +6,23 @@ server (otc_telegram.py); all of this is in the shared data, so every computer s
 
 import secrets
 import time
+from urllib.parse import quote
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QAbstractItemView, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                             QMessageBox, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QGroupBox, QHBoxLayout, QHeaderView,
+                             QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTableWidget,
+                             QTableWidgetItem, QVBoxLayout, QWidget)
 
 from otc_telegram import ACCOUNTS, CODES, STATE_KEY
 
 CODE_S = 600        # an Add phone code works this long
+
+
+def bot_links(bot, code):
+    """(Telegram Web, t.me) links that open the bot's chat with the code (its Start button sends it)."""
+    tg = f"tg://resolve?domain={bot}&start={code}"
+    return f"https://web.telegram.org/a/#?tgaddr={quote(tg, safe='')}", f"https://t.me/{bot}?start={code}"
 
 
 class TelegramPanel(QWidget):
@@ -147,12 +155,38 @@ class TelegramPanel(QWidget):
             code = f"{secrets.randbelow(10 ** 6):06d}"
         self.shared.put(CODES + code, {"account": tail, "until": now + CODE_S})
         bot = self.bot_name()
-        link = f"\n\nOr open on the phone: https://t.me/{bot}?start={code}" if bot else ""
-        box = QMessageBox(QMessageBox.Icon.Information, "Add phone",
-                          f"On the phone, in Telegram, open the bot{' @' + bot if bot else ''} and send:\n\n"
-                          f"/link {code}{link}\n\nThe code works for 10 minutes, once. The phone shows here "
-                          f"when it's linked.", QMessageBox.StandardButton.Ok, self)
-        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        box = QDialog(self)
+        box.setWindowTitle(f"Add phone: account ...{tail}")
+        lay = QVBoxLayout(box)
+        text = QLabel(f"In Telegram, open the bot{' @' + bot if bot else ''} and send:<br><br>"
+                      f"<b style='font-size:14pt'>/link {code}</b><br><br>"
+                      + ("Or open its chat with the code ready (a button below), then press <b>Start</b>.<br>"
+                         "Telegram Web or the desktop app link your Telegram account: the news then comes to "
+                         "the phone's Telegram too.<br><br>" if bot else "")
+                      + "The code works for 10 minutes, once. The phone shows here when it's linked.")
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text.setWordWrap(True)
+        lay.addWidget(text)
+        buttons = QHBoxLayout()
+        if bot:
+            web, tme = bot_links(bot, code)
+            for title, url, tip in (("Open in Telegram Web", web, "Opens web.telegram.org in your browser, in the "
+                                     "bot's chat: press Start there"),
+                                    ("Open t.me link", tme, "Telegram's page for the bot: it opens the desktop "
+                                     "app (or the phone's, from there)")):
+                b = QPushButton(title)
+                b.setToolTip(f"{tip}\n{url}")
+                b.clicked.connect(lambda _c=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+                buttons.addWidget(b)
+        copy = QPushButton("Copy /link code")
+        copy.clicked.connect(lambda: (QApplication.clipboard().setText(f"/link {code}"), copy.setText("Copied")))
+        buttons.addWidget(copy)
+        buttons.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(box.accept)
+        buttons.addWidget(close)
+        lay.addLayout(buttons)
+        box.resize(560, box.sizeHint().height())
         self.dialog = box           # (tests)
         box.open()
 
