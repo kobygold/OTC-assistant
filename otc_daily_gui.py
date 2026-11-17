@@ -57,12 +57,13 @@ from otc_intraday import MinuteLoader
 from otc_level2 import MM_YELLOW, TOKEN_DAYS, Level2Panel, token_created
 from otc_probe import ProbeRunner, candle_part
 from otc_recorder import RELOAD_DAYS, find_reloads, in_session
+from otc_telegram_tab import TelegramPanel
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.20"
+APP_VERSION = "2.4.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -735,6 +736,9 @@ class MainWindow(QMainWindow):
             self.checklist.trader.use_server(self.server)
             self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
+        # the phones: the main server's Telegram bot sends them the ATM trades' news
+        self.telegram = TelegramPanel(self.settings, save_settings, self.server, self.shared)
+        self.telegram_tab_index = self.tabs.addTab(self.telegram, "Telegram")
         self.settings_tab_index = self.tabs.addTab(self._build_settings_tab(), "Settings")
         # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
@@ -2928,6 +2932,10 @@ class MainWindow(QMainWindow):
         as the server has a login for this app. The Schwab app's keys, on a computer without them,
         come from the main server (through this computer's server): saved to settings.json."""
         keys = (msg.get("keys") if msg.get("type") in ("welcome", "keys") else None) or {}
+        # the Telegram bot's token, as the main server has it (typed on any computer)
+        token = msg["telegram_token"] if "telegram_token" in msg else keys.get("telegram_token")
+        if token is not None and msg.get("type") in ("welcome", "keys") and hasattr(self, "telegram"):
+            self.telegram.token_from_server(token)
         if keys.get("api_key") and not self.settings.get("api_key", "").strip():
             # Massive's API key (the Download tab's): saved, and in its box
             self.settings["api_key"] = keys["api_key"]

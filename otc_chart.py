@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QApplication, QSizePolicy, QToolTip, QWidget
 
 from otc_drawings import DrawingsMixin
 from otc_zones import dollar_price
+from otc_trade import fmt_price     # (here before: imported from otc_chart by the others)
 
 BG = QColor("#000000")
 PANE_BORDER = QColor("#3a3a3a")
@@ -71,18 +72,6 @@ RULER_ZOOM_PX = 150         # dragging a ruler this far zooms that axis e (2.7) 
 
 
 # ------------------------------------------------------------- formatting ---
-
-def fmt_price(v) -> str:
-    """Under $1 always 4 decimals (0.0120), from $1 always 2 (12.50). A sub-penny price that
-    isn't on the 0.0001 grid, like a trade at .00035, keeps the digits it needs."""
-    if v is None:
-        return "-"
-    if abs(v) >= 1:
-        return f"{v:,.2f}"
-    if abs(v) < 0.01 and abs(v - round(v, 4)) > 1e-9:
-        return f"{v:.6f}".rstrip("0")
-    return f"{v:.4f}"
-
 
 def eastern_date(millis: float) -> date:
     """The US Eastern (market) date of a time in milliseconds since 1970."""

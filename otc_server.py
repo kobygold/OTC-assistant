@@ -31,7 +31,10 @@ What it does:
   computers within READ_BATCH_S share one read); the results go to every app (orders, positions);
 - the shared data (ATM trades, drawings, favorites per account, the computers' list): the one copy
   on the main server (shared.json), changed only there, by change requests (otc_shared.py); every
-  client keeps a copy.
+  client keeps a copy;
+- the Telegram bot (main server, otc_telegram.py): the ATM trades' news to the accounts' phones. Its
+  token (settings.json telegram_token) is typed in any app and goes to the main server, which passes
+  it to the others (keys), so whichever computer takes over runs the bot.
 
 What is streamed: the apps' chart tickers, their extra tickers (sent to them: the open ATM trades,
 orders, stocks owned) and their tracked tickers (recorded only: the favorites...), of every
@@ -48,6 +51,7 @@ Messages (JSON, one per WebSocket message), app -> server:
   login {token}              a new browser login (the token as schwab-py writes it)
   change {id, key, base, data}   a change of the shared data (data None: delete; see otc_shared.py)
   read {what: orders / positions, account}   read them soon (account None: every account)
+  telegram_token {token}     the Telegram bot's token, typed in the app (to the main server, then to all)
   bye                        the app is closing; quit  (an older server: ends it, the app starts a new one)
 server -> app:
   welcome {code, token, status, activity, login_needed, store?, role, leader, events, cluster}
@@ -61,9 +65,10 @@ server -> app:
   event {time, text}                a connection event, for the app's connection log
   orders / positions {account, data, error}   an account's orders / positions as read (otc_orders.py)
 Between servers (client -> main): hello {role "peer", secret: cluster_secret, name, address, proto,
-version}, want {symbols, extra, track, on, probe}, token_request, login, change; main -> client: welcome
-{leader, token (whole), store, activity}, l1 {c, t}, l2 {s, c, t}, q {ticker, q} (as Schwab sent
-them), order_event, activity, token (whole), changed, refused, streamed, cluster, login_needed.
+version}, want {symbols, extra, track, on, probe}, token_request, login, change, telegram_token; main ->
+client: welcome {leader, token (whole), store, activity, keys}, l1 {c, t}, l2 {s, c, t}, q {ticker, q}
+(as Schwab sent them), order_event, activity, token (whole), changed, refused, streamed, cluster,
+login_needed, keys (the Telegram bot's token changed).
 History: client -> main history_index; main -> client history_index {days: {day: coverage}}; client
 -> main history_get {day, ranges}; main -> client history_part {day, name, data (gzip, base64)} ...
 history_done {day}. The apps get history {done, total, from} while it goes on.
@@ -93,10 +98,11 @@ from pathlib import Path
 from otc_orders import account_numbers, read_orders, read_positions
 from otc_recorder import Recorder, at_close, last_close, subtract_ranges
 from otc_shared import SharedStore
+from otc_telegram import TelegramBot
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
-PROTO = 2                       # the servers' messages; computers must run the same to work together
+PROTO = 3                       # the servers' messages; computers must run the same to work together
 TOKEN_DAYS = 7                  # Schwab's refresh token runs out after this (a new browser login)
 RECONNECT_SECONDS = 15
 POLL_SECONDS = 0.3              # how often the stream loop looks at what is wanted
@@ -267,6 +273,9 @@ class Server:
         self.app_secret = settings.get("schwab_app_secret", "").strip()
         self.callback = settings.get("schwab_callback_url", "").strip()
         self.massive_key = settings.get("api_key", "").strip()      # Massive's (the daily candles)
+        self.telegram_token = str(settings.get("telegram_token") or "").strip()     # the phones' bot
+        self.bot = None                         # (main server) the Telegram bot, while it runs
+        self.log = log
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
         self.name_set = bool(str(settings.get("server_name") or "").strip())
@@ -467,6 +476,8 @@ class Server:
                     self.on_read(msg)
                 elif kind == "at_close":
                     asyncio.create_task(self.on_at_close(conn, str(msg.get("ticker") or "")))
+                elif kind == "telegram_token":
+                    self.on_telegram_token(msg.get("token"))
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -547,6 +558,8 @@ class Server:
                     await self.on_login(msg.get("token"))
                 elif kind == "takeover_request":
                     asyncio.create_task(self.hand_over(conn))
+                elif kind == "telegram_token":
+                    self.on_telegram_token(msg.get("token"))
                 elif kind == "history_index":
                     conn.put({"type": "history_index", "days": await asyncio.to_thread(self.recorder.coverage_index)})
                 elif kind == "history_get":
@@ -664,6 +677,8 @@ class Server:
             self.login_why = why
             self.broadcast({"type": "login_needed", "why": why})
             self.to_peers({"type": "login_needed", "why": why})
+            if why and self.leader and self.bot is not None:
+                self.bot.login_needed(why)
 
     # ------------------------------------------------------------ the shared data ---
     def on_change(self, conn, msg):
@@ -672,16 +687,66 @@ class Server:
             self.pending[str(msg.get("id"))] = conn
             self.up_send(msg)
             return
+        old = (self.store.items.get(str(msg.get("key"))) or {}).get("data")
         answer, new = self.store.apply(msg)
         if answer["type"] == "changed" and new:
             self.broadcast(answer)
             self.to_peers(answer)
             if answer["key"] == COMPUTERS_KEY:
                 self.send_cluster()
+            if self.bot is not None and answer["key"].startswith("atm/"):
+                try:
+                    self.bot.trade_changed(answer["key"], old, answer["data"])
+                except Exception as e:
+                    log(f"Telegram: the news of {answer['key']} failed: {type(e).__name__}: {e}")
         else:
             if answer["type"] == "refused":
                 self.event(f"Change refused: {answer['key']} ({answer.get('why')})")
-            conn.put(answer)
+            if conn is not None:
+                conn.put(answer)
+
+    def put_shared(self, key, data):
+        """(main server) A change of the shared data made here (the Telegram bot's): to everyone."""
+        if not self.leader:
+            return
+        item = self.store.items.get(key) or {"v": 0, "data": None}
+        if item["data"] == data:
+            return
+        answer, _ = self.store.apply({"id": f"{self.name}-{key}-{time.time()}", "key": key,
+                                      "base": item["v"], "data": data, "by": self.name})
+        if answer["type"] == "changed":
+            self.broadcast(answer)
+            self.to_peers(answer)
+
+    # ---- the Telegram bot (main server) ----
+    def on_telegram_token(self, token):
+        """The bot's token typed in an app: to the main server; it passes it on to all (keys)."""
+        token = str(token or "").strip()
+        if not self.leader:
+            self.up_send({"type": "telegram_token", "token": token})
+            return
+        if token == self.telegram_token:
+            return
+        self.telegram_token = token
+        self.event("Telegram: the bot's token " + ("changed" if token else "was removed: no phone news"))
+        msg = {"type": "keys", "keys": self.keys() or {}, "telegram_token": token}
+        self.broadcast(msg)
+        self.to_peers(msg)
+        asyncio.create_task(self.restart_bot())
+
+    def start_bot(self):
+        if self.leader and self.telegram_token and self.bot is None:
+            self.bot = TelegramBot(self, self.telegram_token)
+            self.leader_tasks += self.bot.start()
+
+    async def stop_bot(self):
+        bot, self.bot = self.bot, None
+        if bot is not None:
+            await bot.stop()
+
+    async def restart_bot(self):
+        await self.stop_bot()
+        self.start_bot()
 
     def add_computer(self, name, address):
         """(main server) The computers' list (shared, in priority order): a new one at the end."""
@@ -770,6 +835,21 @@ class Server:
         self.set_state("leader", "")
         self.wanted()
         self.wants_changed.set()
+        self.start_bot()
+        if self.bot is not None and self.cluster_secret:
+            self.bot.leader_moved(term, why)
+        # what this computer's apps sent while there was no main server (kept for it): done here now
+        waiting, self.waiting = self.waiting, []
+        for m in waiting:
+            kind = m.get("type")
+            if kind == "change":
+                self.on_change(self.pending.pop(str(m.get("id")), None), m)
+            elif kind == "login":
+                asyncio.create_task(self.on_login(m.get("token")))
+            elif kind == "telegram_token":
+                self.on_telegram_token(m.get("token"))
+        if waiting:
+            log(f"Done {len(waiting)} change(s) sent while there was no main server")
 
     async def stop_leader(self, why, handover_to=None):
         """Not the main server any more: the stream logs out first (one stream per login); a
@@ -781,6 +861,7 @@ class Server:
         for t in tasks:
             t.cancel()
         await asyncio.wait(tasks, timeout=6) if tasks else None
+        await self.stop_bot()
         self.client = None
         self.symbols = set()
         if handover_to is not None:
@@ -1036,7 +1117,7 @@ class Server:
         """(client) To the main server; kept until it is back when it's away."""
         if self.up is not None:
             self.up.put(msg)
-        elif msg.get("type") in ("change", "login", "token_request"):
+        elif msg.get("type") in ("change", "login", "token_request", "telegram_token"):
             self.waiting.append(msg)
 
     def send_want(self):
@@ -1069,6 +1150,8 @@ class Server:
                         schwab_callback_url=self.callback or "https://127.0.0.1")
         if self.massive_key:
             keys["api_key"] = self.massive_key
+        if self.telegram_token:
+            keys["telegram_token"] = self.telegram_token
         return keys or None
 
     def on_up_welcome(self, w):
@@ -1082,6 +1165,7 @@ class Server:
         if keys.get("api_key") and not self.massive_key:
             self.massive_key = keys["api_key"]
             self.event(f"Got Massive's API key from the main server {self.leader_name}")
+        self.take_telegram_token(keys.get("telegram_token"))
         if self.keys():
             self.broadcast({"type": "keys", "keys": self.keys()})
         if w.get("token"):
@@ -1161,6 +1245,17 @@ class Server:
             self.send_cluster()
         elif kind == "login_needed":
             self.need_login(m["why"])
+        elif kind == "keys":
+            self.take_telegram_token(m.get("telegram_token"), removed="telegram_token" in m)
+            self.broadcast({"type": "keys", "keys": self.keys() or {}, "telegram_token": self.telegram_token})
+
+    def take_telegram_token(self, token, removed=False):
+        """(client) The main server's bot token: the one to run if this computer takes over."""
+        token = str(token or "").strip()
+        if (token or removed) and token != self.telegram_token:
+            self.telegram_token = token
+            self.event(f"Got the Telegram bot's token from the main server {self.leader_name}" if token else
+                       "The Telegram bot's token was removed (on the main server)")
 
     def take_token(self, wrapped):
         """(client) The whole token from the main server (or a login made here): saved, to the apps."""

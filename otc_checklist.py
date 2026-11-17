@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBo
 from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
+from otc_trade import FEE_USD, bid_fill
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it)
 
@@ -42,7 +43,6 @@ def default_position(settings):
 def usd_plain(v):
     """$150 / $152.50: whole dollars without cents."""
     return f"${v:,.0f}" if abs(v - round(v)) < 1e-9 else f"${v:,.2f}"
-FEE_USD = 6.95          # the fee for each buy and each sell, in $, until Schwab's is read
 FEE_HIGH = 7.0          # a fee above this is shown in the section titles' yellow
 COVER_X = 2             # the stop: bids for at least this many times our amount of stocks
 VOL_DAYS = 30           # market days in the volume checks
@@ -485,17 +485,6 @@ def price_text(text):
     except ValueError:
         return text
     return fmt_price(v).replace(",", "") if v > 0 else text
-
-
-def bid_fill(bids, shares):
-    """Selling `shares` into the Level II bids, the best first: (the price that fills them all, or the
-    lowest bid when the bids add up to less, the stocks the bids down to it take)."""
-    total, price = 0, None
-    for _, p, size, *_ in sorted(bids, key=lambda r: -r[1]):
-        if price is not None and p < price and total >= shares:
-            break
-        price, total = p, total + size
-    return price, total
 
 
 def red_bang_icon(color="#d0101a"):
