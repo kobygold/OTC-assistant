@@ -62,7 +62,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.3.12"
+APP_VERSION = "2.3.13"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -136,7 +136,7 @@ ZONE_NAME_WIDTH = 170
 FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2f6fe0"),
               4: ("Cyan", "#16c2d5"), 5: ("Magenta", "#d81bd8"), 6: ("Red", "#e03030")}
 NOT_FAV = 99                    # sorts tickers that aren't favorites after every group
-FAV_COLUMNS = ["Fav", "Ticker", "Name", "Checks", "Last day", "Close", "Change %", "Volume", "$ Volume",
+FAV_COLUMNS = ["Fav", "Ticker", "Name", "Checks", "ATM", "Last day", "Close", "Change %", "Volume", "$ Volume",
                "VolAvg (50)", "VolDollar (50)", "Bid", "Ask", "Own", "Want to buy", "Own value", "Notes"]
 # Column -> saved field. All are numbers except Notes, which is free text.
 FAV_EDITABLE = {"Bid": "bid", "Ask": "ask", "Own": "own", "Want to buy": "want", "Notes": "notes"}
@@ -2792,6 +2792,7 @@ class MainWindow(QMainWindow):
         self.update_tracked()
         self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
+        self.refresh_fav_atm()
 
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""
@@ -3524,6 +3525,8 @@ class MainWindow(QMainWindow):
                    "Click this title to sort by group.",
             "Checks": "How many of the checklist's main checks it passes (Check L1/L2). Hover over a "
                       "number for each check. N/A: no Level 1 / Level II for it.",
+            "ATM": "The ticker's ATM trade in the chosen account, in the colors of the Schwab tab's ATM "
+                   "Trades table: the open one, else the last one there. Hover for its details.",
             "Last day": "The ticker's latest day with trades in the database.",
             "Close": "Close on the last day.",
             "Change %": "From the close of the day before.",
@@ -3683,6 +3686,7 @@ class MainWindow(QMainWindow):
         tbl.setSortingEnabled(False)
         tbl.setRowCount(len(tickers))
         self.fav_check_items = {}
+        self.fav_atm_items = {}
         for r, t in enumerate(tickers):
             fav = self.favs[t]
             rows, name = info[t]
@@ -3704,6 +3708,7 @@ class MainWindow(QMainWindow):
                 plain(t),
                 plain(name),
                 self.check_item(t, self.fav_check_items),
+                self.fav_atm_item(t),
                 plain(last[0] if last else "no data"),
                 cell(fmt_price(close) if close else "", close or 0),
                 cell(f"{change * 100:+.1f}%" if change is not None else "", change if change is not None else -1e9),
@@ -3734,6 +3739,66 @@ class MainWindow(QMainWindow):
         self.fav_status.setText(
             f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker, or press Enter, to open its chart."
             if tickers else "No favorites yet. Add a ticker here, or click a star on the Zones or Chart tab.")
+
+    def fav_atm_trade(self, ticker):
+        """The ticker's ATM trade in the chosen account: the open one, else the last one in the list."""
+        checklist_panel = getattr(self, "checklist", None)
+        if checklist_panel is None:       # (not made yet, at the start)
+            return None
+        atm_trades = checklist_panel.atm
+        chosen = atm_trades.chosen_account()
+        mine = [e for e in atm_trades.entries
+                if e.get("ticker") == ticker and (e.get("account") or chosen) == chosen]
+        open_ = [e for e in mine if e.get("state") not in ("sold", "canceled")]
+        return (open_ or mine or [None])[-1]
+
+    def fav_atm_item(self, ticker):
+        item = NumItem("", -1)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fav_atm_items[ticker] = item
+        self.fill_fav_atm(item, self.fav_atm_trade(ticker))
+        return item
+
+    @staticmethod
+    def fill_fav_atm(item, e):
+        """The ATM cell: the trade's state in its colors (as the ATM Trades table's), empty without one."""
+        if e is None:
+            item.setText("")
+            item.value = -1
+            item.setBackground(QBrush())
+            item.setForeground(QBrush())
+            item.setToolTip("No ATM trade for it in this account")
+            return
+        state = e.get("state", "buy_open")
+        name, bg, fg = checklist.STATES.get(state, (state, None, "#ffffff"))
+        item.setText(name)
+        steps = list(checklist.STATES)
+        item.value = steps.index(state) if state in steps else len(steps)
+        item.setBackground(QBrush(QColor(bg)) if bg else QBrush())
+        item.setForeground(QBrush(QColor(fg)))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        lines = [f"ATM trade: {name}",
+                 f"{e.get('shares', 0):,} shares, entry {fmt_price(e.get('entry'))}, exit {fmt_price(e.get('exit'))}"]
+        for key, what in (("time", "Sent"), ("bought_time", "Bought"), ("sell_time", "Sell sent"),
+                          ("sold_time", "Sold"), ("canceled_time", "Canceled")):
+            if e.get(key):
+                lines.append(f"{what} {str(e[key]).replace('T', ' ')[:16]}")
+        if e.get("account"):
+            lines.append(f"Account ...{e['account']}")
+        item.setToolTip("\n".join(lines))
+
+    def refresh_fav_atm(self):
+        """The Favorites table's ATM cells again (a trade changed, or the chosen account)."""
+        for ticker, item in list(getattr(self, "fav_atm_items", {}).items()):
+            try:
+                self.fill_fav_atm(item, self.fav_atm_trade(ticker))
+                if item.tableWidget() is not None:
+                    item.setData(Qt.ItemDataRole.UserRole, item.value)     # (the table re-sorts by it)
+            except RuntimeError:        # (the table was filled again meanwhile)
+                pass
 
     def fav_row_ticker(self, row: int) -> str:
         item = self.fav_table.item(row, FAV_COLUMNS.index("Ticker"))
