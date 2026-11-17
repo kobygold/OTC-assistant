@@ -47,6 +47,8 @@ TARGETS = {"profit": 25.0, "ratio": 3.0}
 # the buy; the gains and losses worked out from them)
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_usd", "loss_usd", "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
+ORDER_EDITS = ("size", "entry", "shares")   # an open buy's values that can be changed (the order is replaced)
+CHANGED_COLOR = "#f0a020"   # a changed value in the change-order dialog
 LIVE_INDENT = 6           # px: a live value's text, where the text in the live price boxes starts
 LOCKED_INDENT = 8         # px: the fixed cells' left padding, for the values beside them to line up
 PRICE_STEP = Decimal("0.0001")      # the +/- buttons; a typed whole number means that many steps (12 -> 0.0012)
@@ -1981,6 +1983,51 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session)
 
+    def ask_change_buy(self, parent, e, shares, price, size):
+        """The checklist's boxes of an open buy (the position $, the entry, the amount of stocks) were
+        changed: after the dialog, Schwab replaces the order with `shares` at `price`; atm.json gets
+        the new values once it's done (_replaced)."""
+        if self.trader is None or self.busy(e) or e.get("state") != "buy_open":
+            return False
+        if e.get("filled"):
+            QMessageBox.warning(parent, "Change the buy order", f"{e['filled']:,} of the {e['shares']:,} were "
+                                "already bought: change it in thinkorswim.")
+            return False
+        order_id = e.get("order_id")
+        if not order_id:
+            QMessageBox.warning(parent, "Change the buy order", "The order's number isn't known. Change it in Schwab.")
+            return False
+        ticker, account = e["ticker"], e.get("account")
+        read = self.fee_of(ticker)
+        fee = read if read is not None else e.get("fee")
+        estimated = fee is None
+        fee = FEE_USD if estimated else fee
+        old_shares, old_price = e["shares"], e["entry"]
+        old_size = e.get("size") or e.get("usd") or old_shares * old_price
+        total = shares * price
+
+        def row(label, old, new):
+            return (label, (f"{old} → {new}", CHANGED_COLOR)) if old != new else (label, new)
+        rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC · an ATM trade"),
+                row("Position", f"${old_size:,.2f}", f"${size:,.2f}"),
+                row("Amount of stocks", f"{old_shares:,}", f"{shares:,}"),
+                row("Limit price (entry)", fmt_price(old_price), fmt_price(price)),
+                ("Total", f"${total:,.2f}")] + fee_rows(fee, total)
+        if estimated:
+            rows[-2] = ("Commission fee (usual, not read)", f"${fee:.2f}")
+        title = (f"Change the buy of {ticker} from {old_shares:,} @ {fmt_price(old_price)} "
+                 f"to {shares:,} @ {fmt_price(price)}?")
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        if not confirm_order(parent, self.account_name(account), title, rows, "Change BUY order", BUY_COLOR):
+            return False
+        self.sending.add(e["id"])
+        self.pending[e["id"]] = {"old_id": str(order_id), "key": f"atm:{e['id']}:BUY", "shares": int(shares),
+                                 "size": round(float(size), 2)}
+        self.changed.emit()
+        self.trader.replace(e["id"], ticker, "BUY", order_id, int(shares), price, account)
+        return True
+
     def _replaced(self, key, side, new_id, price, error):
         self.sending.discard(key)
         pending = self.pending.pop(key, {})
@@ -1989,7 +2036,17 @@ class AtmTrades(QObject):
             self.changed.emit()
             return
         e = self.find(key)
-        if e is not None:
+        if e is not None and "shares" in pending:       # the checklist's change: the amount too
+            old_shares, old_price = e["shares"], e["entry"]
+            if pending["shares"] != old_shares:
+                e.setdefault("shares-original", old_shares)
+            e["shares"], e["size"] = pending["shares"], pending["size"]
+            self._adopt(e, side, {"id": str(new_id) if new_id else None, "price": price},
+                        pending.get("old_id"), 0, "Changed in the checklist")
+            e["note"] = (f"Changed in the checklist: {old_shares:,} @ {fmt_price(old_price)} -> "
+                         f"{e['shares']:,} @ {fmt_price(price)}.")
+            self.save()
+        elif e is not None:
             self._adopt(e, side, {"id": str(new_id) if new_id else None, "price": price},
                         pending.get("old_id"), 0, "Changed from the chart")
         self.check()            # the account's orders again: the new one, and its number if not known
@@ -2456,6 +2513,8 @@ class ChecklistPanel(QWidget):
         self.widgets = []
         self.price_tools = {}
         self.locked = {}        # key -> its fixed cell (the plan sent with Buy ATM), shown once sent
+        self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
+        self.changing_order = False     # the change-order dialog is open
         self.boxes = {}         # key -> its live value's box
         for name, items in sections:
             head = QLabel(name)
@@ -2497,28 +2556,35 @@ class ChecklistPanel(QWidget):
                     else:
                         box = CopyBox(value, shown)
                     self.boxes[item.key] = box
-                    if item.key in LOCKED:
+                    if item.key in LOCKED or item.key in ORDER_EDITS:
                         # the fixed cell, the box, +/- and the pin close together, left to right
                         group = QWidget()
                         group.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
                         glay = QHBoxLayout(group)
                         glay.setContentsMargins(0, 0, 0, 0)
                         glay.setSpacing(2)
-                        lock = QLabel()
-                        lock.setObjectName("cl_locked")
-                        lock.setFixedWidth(LOCKED_W)       # the live cells beside them in one column
-                        lock.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                        lock.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                        lock.hide()
-                        lock.setFixedHeight(value.sizeHint().height() if isinstance(value, QLineEdit) else 22)
-                        self.locked[item.key] = lock
-                        glay.addWidget(lock, 0, Qt.AlignmentFlag.AlignVCenter)
+                        if item.key in LOCKED:
+                            lock = QLabel()
+                            lock.setObjectName("cl_locked")
+                            lock.setFixedWidth(LOCKED_W)       # the live cells beside them in one column
+                            lock.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                            lock.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                            lock.hide()
+                            lock.setFixedHeight(value.sizeHint().height() if isinstance(value, QLineEdit) else 22)
+                            self.locked[item.key] = lock
+                            glay.addWidget(lock, 0, Qt.AlignmentFlag.AlignVCenter)
+                        if item.key in ORDER_EDITS:     # (in the fixed cell's place while the buy is open)
+                            oe = self.make_order_edit(item.key)
+                            self.order_edits[item.key] = oe
+                            glay.addWidget(oe, 0, Qt.AlignmentFlag.AlignVCenter)
                         glay.addWidget(box)
                         if item.key in EDITABLE and item.key != "size":
                             stepper, pin = self.make_stepper(item.key, value), self.make_pin(item.key, value)
                             self.price_tools[item.key] = (stepper, pin)
                             glay.addWidget(stepper)
                             glay.addWidget(pin)
+                        if item.key not in LOCKED:
+                            glay.addStretch()
                         box = group
                     row.addWidget(box)
                 lay.addLayout(row)
@@ -2540,6 +2606,83 @@ class ChecklistPanel(QWidget):
         edit.textEdited.connect(lambda text, k=key: self.typed(k, text))
         edit.editingFinished.connect(lambda k=key, e=edit: self.edit_done(k, e))
         return edit
+
+    def make_order_edit(self, key):
+        """A box of the open buy order (the position $, the entry or the amount of stocks), in the
+        fixed cells' blue: Enter (or leaving it) after a change asks to change the order."""
+        edit = QLineEdit()
+        edit.setObjectName("cl_order_edit")
+        edit.setFixedWidth(LOCKED_W)
+        edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        edit.setValidator(QRegularExpressionValidator(QRegularExpression(
+            {"size": r"\$?[\d,]{0,9}(\.\d{0,2})?", "shares": r"[\d,]{0,12}"}.get(key, r"\d{0,6}(\.\d{0,6})?")), edit))
+        edit.setStyleSheet(f"color: {ORDER_COLOR};")
+        edit.setToolTip({"size": "The buy order's position in $. Change it and press Enter: the amount of "
+                                 "stocks follows (at the same price), and the order is changed at Schwab after "
+                                 "you approve it.",
+                         "entry": "The buy order's limit price. Change it and press Enter: the amount of stocks "
+                                  "follows (for the same position $), and the order is changed at Schwab after "
+                                  "you approve it. 12 = 0.0012.",
+                         "shares": "The buy order's amount of stocks. Change it and press Enter: the order is "
+                                   "changed at Schwab after you approve it (the position $ follows)."}[key])
+        edit.hide()
+        edit.editingFinished.connect(lambda k=key, w=edit: self.order_edit_done(k, w))
+        return edit
+
+    def can_change_order(self, e):
+        return (e is not None and e.get("state") == "buy_open" and not e.get("filled")
+                and self.trader is not None and not self.atm.busy(e, self.ticker))
+
+    @staticmethod
+    def order_size(e):
+        return e.get("size") or e.get("usd") or e["shares"] * e["entry"]
+
+    def order_edit_text(self, key, e):
+        if key == "size":
+            return f"${self.order_size(e):,.2f}"
+        if key == "entry":
+            return fmt_price(e["entry"])
+        return f"{e['shares']:,}"
+
+    def order_edit_done(self, key, edit):
+        """A box of the open buy changed: the new order (the others follow), asked, then sent."""
+        if self.changing_order:
+            return
+        e = self.order()
+        if not self.can_change_order(e) or edit.text() == self.order_edit_text(key, e):
+            return
+        try:
+            v = Decimal(edit.text().replace(",", "").replace("$", "").strip())
+        except InvalidOperation:
+            v = None
+        price, shares, size = e["entry"], e["shares"], self.order_size(e)
+        if v is not None and v > 0:
+            if key == "entry":
+                price = float(v * PRICE_STEP if v >= 1 else v)      # 12 -> 0.0012, as in the price boxes
+                shares = round(size / price)
+            elif key == "size":
+                size = float(v)
+                shares = round(size / price)
+            else:
+                shares = int(v)
+                size = round(shares * price, 2)
+        if v is None or v <= 0 or shares < 1:
+            edit.setText(self.order_edit_text(key, e))
+            return
+        if shares == e["shares"] and abs(price - e["entry"]) < 1e-9:
+            if abs(size - self.order_size(e)) > 0.005:      # the same order: only the position $ kept
+                e["size"] = round(size, 2)
+                self.atm.save()
+            self.refresh()
+            return
+        self.changing_order = True
+        try:
+            self.atm.ask_change_buy(self, e, shares, price, size)
+        finally:
+            self.changing_order = False
+            for k, w in self.order_edits.items():       # the order's values again (not changed, or until done)
+                w.setText(self.order_edit_text(k, e))
+            self.refresh()
 
     def make_stepper(self, key, edit):
         """+ above - beside a price box: one 0.0001 step up or down (held: repeats)."""
@@ -3007,8 +3150,15 @@ class ChecklistPanel(QWidget):
         order = self.order()
         self.update_trade_buttons()
         fixed = self.locked_texts(order) if order else {}
+        changeable = self.can_change_order(order)
+        for key, oe in self.order_edits.items():
+            oe.setVisible(changeable)
+            if changeable and not oe.hasFocus() and not self.changing_order:
+                oe.setText(self.order_edit_text(key, order))
+        if "shares" in self.boxes:
+            self.boxes["shares"].setVisible(not changeable)
         for key, lock in self.locked.items():
-            lock.setVisible(bool(order))
+            lock.setVisible(bool(order) and not (changeable and key in self.order_edits))
             if order:
                 lock.setText(fixed.get(key, NA))
                 lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
