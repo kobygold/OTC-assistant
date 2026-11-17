@@ -73,8 +73,20 @@ BUY_COLOR, SELL_COLOR = "#009300", "#cf0508"
 OK, BAD, WARN, UNKNOWN, INFO, EMPTY = "ok", "bad", "warn", "unknown", "info", "empty"
 MAYBE = "maybe"         # could be good or bad: a yellow ?
 SOLVED = "solved"       # an X that a checked manual item solved: a green X, counted as passed
+NOT_AVAILABLE = "na"    # nothing to check (no Level II yet, nobody on the Ask): a gray N/A
 MARKS = {OK: ("✔", "#1db31d"), BAD: ("✘", "#e0404f"), WARN: ("!", "#f0a020"), UNKNOWN: ("?", "#6c6c6c"),
-         EMPTY: ("☐", "#8a8a8a"), SOLVED: ("✘", "#1db31d"), MAYBE: ("?", "#f3c400")}
+         EMPTY: ("☐", "#8a8a8a"), SOLVED: ("✘", "#1db31d"), MAYBE: ("?", "#f3c400"),
+         NOT_AVAILABLE: (NA, "#6c6c6c")}
+
+
+def set_mark(mark, state):
+    """A checklist mark: its symbol in its color (N/A smaller, to fit the marks' column, and lower, in
+    line with the item's text)."""
+    symbol, color = MARKS[state]
+    small = len(symbol) > 1
+    mark.setContentsMargins(0, 4 if small else 0, 0, 0)
+    mark.setText(f"<span style='color:{color}; font-size:7pt'>{symbol}</span>" if small else
+                 f"<b style='color:{color}'>{symbol}</b>")
 NEXT_MARK = {EMPTY: OK, OK: BAD, BAD: EMPTY}     # a click on a manual item
 
 PANEL_STYLE = """
@@ -264,7 +276,7 @@ def l2_checks(bids, asks, bid, ask, p, reloaders=None):
     elif first:
         r["no_diluter"] = (OK, "", "First on the Ask: " + ", ".join(first))
     else:
-        r["no_diluter"] = (UNKNOWN, "", "Nobody on the Ask")
+        r["no_diluter"] = (NOT_AVAILABLE, "", "Nobody on the Ask")
     bid_total = sum(s for _, _, s, _ in bids)
     ask_total = sum(s for _, _, s, _ in asks)
     trips = is_trips(bid or ask or 1)
@@ -332,7 +344,7 @@ def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSIT
         out.update({k: v[::2] for k, v in l2_checks(bids, asks, bid, ask, p, reloaders).items()})
     else:
         for key in ("no_diluter", "buyers", "cushion"):
-            out[key] = (UNKNOWN, "No Level II")
+            out[key] = (NOT_AVAILABLE if key == "no_diluter" else UNKNOWN, "No Level II")
     vol = volume_checks(rows, market_days, period, p["shares"])
     out["avg_volume"] = vol["avg_volume"][::2]
     out["steady"] = vol["steady"][::2]
@@ -3165,7 +3177,7 @@ class ChecklistPanel(QWidget):
         r["range"] = range_check(self.rows, self.range)
         if not self.l2_live:
             for key in ("l2_live", "no_diluter", "buyers", "cushion"):
-                r[key] = (UNKNOWN, "", "No Level II for this ticker yet")
+                r[key] = (NOT_AVAILABLE if key == "no_diluter" else UNKNOWN, "", "No Level II for this ticker yet")
             r["l2_live"] = (BAD, "", "No Level II for this ticker yet")
         else:
             r["l2_live"] = (OK, "", "")
@@ -3177,7 +3189,7 @@ class ChecklistPanel(QWidget):
         if spike_bad or red_bad:
             r["no_dilution"] = (BAD, "", " · ".join(x[2] for x, bad in ((r["no_spike"], spike_bad),
                                                                         (r["no_diluter"], red_bad)) if bad))
-        elif UNKNOWN in (r["no_spike"][0], r["no_diluter"][0]):
+        elif {UNKNOWN, NOT_AVAILABLE} & {r["no_spike"][0], r["no_diluter"][0]}:
             r["no_dilution"] = (UNKNOWN, "", "Needs the candles and the Level II")
         else:
             r["no_dilution"] = (OK, "", "")
@@ -3305,8 +3317,7 @@ class ChecklistPanel(QWidget):
                 # ✔ once it reaches its target, else ✘ (? while unknown)
                 state, need = target_state(item.key, self.last_plan[0][item.key])
                 tip = (f"{tip} · " if tip else "") + need
-                symbol, color = MARKS[state]
-                mark.setText(f"<b style='color:{color}'>{symbol}</b>")
+                set_mark(mark, state)
                 for w in (mark, text):
                     w.setToolTip(tip)
                 total += 1
@@ -3317,8 +3328,7 @@ class ChecklistPanel(QWidget):
                 if item.key == "fee":
                     high = val.startswith("$") and float(val[1:]) > FEE_HIGH
                     value.setStyleSheet("color: #e3b23c;" if high else "")    # the section titles' color
-            symbol, color = MARKS[state]
-            mark.setText(f"<b style='color:{color}'>{symbol}</b>")
+            set_mark(mark, state)
             for w in (mark, text):
                 w.setToolTip(tip)
             total += 1
