@@ -12,7 +12,8 @@ Reloaders: a yellow market maker (MM_YELLOW) that kept its offer on the lowest A
 from, in the last 5 market days' record (otc_recorder.find_reloads: trades at its price without its
 amount getting smaller, or the amount dropping and quickly coming back), is a diluter: its sign turns
 red with a yellow ring (level 3, a black "!"; level 4, a white "!", when at least half of its amount
-was bought: a strong case) and the checklist counts it as one.
+was bought: a strong case) and the checklist counts it as one. On the lowest Ask price it is placed
+first in the Ask table.
 
 Hold at the close (on by default): outside the regular session (9:30-16:00 US Eastern, 16:30-23:00 in
 Israel most of the year) the chart's ticker shows its Level 1 and Level II as they were at the last
@@ -672,7 +673,15 @@ class Level2Panel(QWidget):
         bids, asks = self.shown_book
         orders = self.my_orders(self.ticker) if self.ticker else []
         self._fill(self.bid_table, self._with_mine(bids, orders, "BID"), "BID")
-        self._fill(self.ask_table, self._with_mine(asks, orders, "ASK"), "ASK")
+        self._fill(self.ask_table, self._with_mine(self.diluters_first(asks, self.reloaders), orders, "ASK"), "ASK")
+
+    @staticmethod
+    def diluters_first(asks, reloaders):
+        """The Ask rows with a market maker caught refilling its offer (a reloader) that is on the lowest
+        ask price placed first: it's the one sold from, so it's seen at the top."""
+        best = min((row[1] for row in asks), default=None)
+        top = [row for row in asks if row[1] == best and row[0] in reloaders]
+        return top + [row for row in asks if row not in top] if top else list(asks)
 
     @staticmethod
     def _with_mine(rows, orders, side):
