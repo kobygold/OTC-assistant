@@ -19,6 +19,11 @@ What matters (flags), each with a level: "warn" (red: think twice) or "info":
 
 import re
 
+# The rules' version: changed with any change of what's understood (flags, keywords, summaries), so that
+# every computer works out its news again from the posts kept (otc_news_db.ensure_rules), with no reading
+# of the channel again.
+RULES_VERSION = 1
+
 # tiers, best first (OTC Markets' names; a lower number is better)
 TIERS = {"OTCQX": 0, "OTCQB": 1, "OTCID": 2, "PINK CURRENT": 2, "PINK": 3, "PINK LIMITED": 4,
          "PINK NO INFORMATION": 5, "EXPERT MARKET": 6, "GREY": 7, "GREY MARKET": 7}

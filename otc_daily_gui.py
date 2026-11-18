@@ -67,13 +67,14 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.20"
+APP_VERSION = "2.7.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
 DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
+NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
@@ -2094,13 +2095,40 @@ class MainWindow(QMainWindow):
 
     # ---- the news channel (otc_news: read by the main server, in the shared data news/<ticker>/<id>) ----
     def news_of(self, ticker, days=30):
-        """The ticker's news that matters, newest first."""
-        if not self.shared_imported or not ticker:
+        """The ticker's news that matters, newest first: the history (news.db) and the newest (shared)."""
+        if not ticker:
             return []
-        items = [d for d in self.shared.get(f"news/{ticker}/").values() if isinstance(d, dict)]
-        cut = (datetime.now() - timedelta(days=days)).isoformat()[:19]
-        return sorted((d for d in items if str(d.get("time", ""))[:19] >= cut),
-                      key=lambda d: str(d.get("time", "")), reverse=True)
+        items = {}
+        try:
+            import otc_news_db
+            if NEWS_DB.exists():
+                con = otc_news_db.open_db(NEWS_DB)
+                try:
+                    items = {d["id"]: d for d in otc_news_db.of_ticker(con, ticker, days)}
+                finally:
+                    con.close()
+        except Exception:
+            pass
+        if self.shared_imported:
+            cut = (datetime.now() - timedelta(days=days)).isoformat()[:19]
+            for d in self.shared.get(f"news/{ticker}/").values():
+                if isinstance(d, dict) and str(d.get("time", ""))[:19] >= cut:
+                    items.setdefault(d.get("id"), d)
+        return sorted(items.values(), key=lambda d: str(d.get("time", "")), reverse=True)
+
+    def news_history(self, ticker, days=180):
+        """The ticker's months in a line ("6 months: dilution 3 times (outstanding +38.0%)..."), or None."""
+        try:
+            import otc_news_db
+            if not NEWS_DB.exists():
+                return None
+            con = otc_news_db.open_db(NEWS_DB)
+            try:
+                return otc_news_db.history_text(otc_news_db.history(con, ticker, days))
+            finally:
+                con.close()
+        except Exception:
+            return None
 
     def news_interest(self, ticker):
         """Why the chosen account cares about the ticker: [favorite, ATM trade, alert]."""
@@ -2132,7 +2160,7 @@ class MainWindow(QMainWindow):
             fresh = False
         why = self.news_interest(d.get("ticker"))
         if fresh and why:
-            QApplication.beep()
+            self.sound("news")
             first = (d.get("summary") or "").splitlines()[0][:160]
             self.notify(f"{'⚠️' if d.get('level') == 'warn' else '📰'} {d.get('ticker')} news "
                         f"({', '.join(why)}): {first}", 30000)
@@ -2146,15 +2174,17 @@ class MainWindow(QMainWindow):
         ticker = (self.chart.ticker or "").upper()
         news = self.news_of(ticker, days=7)
         base = "Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser"
+        months = self.news_history(ticker) if ticker else None
         if not news:
             btn.setText("News")
             btn.setStyleSheet("")
-            btn.setToolTip(base)
+            btn.setToolTip((f"<b>{ticker}</b>: {html.escape(months)}<br><br>" if months else "") + base)
             return
         warn = any(d.get("level") == "warn" for d in news)
         btn.setText(f"News ({len(news)})")
         btn.setStyleSheet(f"QPushButton {{ color: {'#ff5050' if warn else '#f0a020'}; font-weight: bold; }}")
-        lines = [f"<b>{ticker}: the news channel, the last 7 days</b>"]
+        lines = ([f"<b>{ticker}</b>: {html.escape(months)}", ""] if months else []) + \
+            [f"<b>{ticker}: the news channel, the last 7 days</b>"]
         for d in news[:8]:
             when = str(d.get("time", "")).replace("T", " ")[5:16]
             text = html.escape(d.get("summary") or "").replace("\n", "<br>")
@@ -2893,6 +2923,11 @@ class MainWindow(QMainWindow):
             self.on_alerts_changed(key)
         if key.startswith("news/") or key == "":
             self.on_news(key)
+        if key in ("", "telegram/news_phone") and hasattr(self, "news_settings"):
+            self.news_settings.put_shared = self.shared.put
+            self.news_settings.show_phone((self.shared.items.get("telegram/news_phone") or [0, None])[1])
+        if key in ("", "telegram/news_backfill") and hasattr(self, "news_settings"):
+            self.news_settings.show_backfill(((self.shared.items.get("telegram/news_backfill") or [0, None])[1]))
 
     def on_shared_refused(self, key, why):
         what = key.split("/")[0]
@@ -3770,6 +3805,21 @@ class MainWindow(QMainWindow):
         row.addWidget(note)
         row.addStretch()
         form.addRow("Default position $:", row)
+        # the sounds (this computer's): each can be muted; the messages still show
+        sounds = QHBoxLayout()
+        self.sound_boxes = {}
+        for kind, text, tip in (("news", "News of my stocks", "A beep when news of a favorite, an ATM trade or an "
+                                 "alerted stock comes (the News Telegram Bot)"),
+                                ("alerts", "Price / volume alerts", "A beep when a price or volume alert fires")):
+            box = QCheckBox(text)
+            box.setToolTip(tip + ". Unchecked: no sound, the message still shows.")
+            box.setChecked(self.settings.get(f"sound_{kind}", True))
+            box.toggled.connect(lambda on, k=kind: self.set_sound(k, on))
+            self.sound_boxes[kind] = box
+            sounds.addWidget(box)
+            sounds.addSpacing(12)
+        sounds.addStretch()
+        form.addRow("Sounds:", sounds)
         root.addLayout(form)
         root.addSpacing(10)
         from otc_news_tab import NewsSettings
@@ -3778,6 +3828,15 @@ class MainWindow(QMainWindow):
         root.addSpacing(6)
         root.addWidget(self.telegram, 1)
         return tab
+
+    def set_sound(self, kind, on):
+        self.settings[f"sound_{kind}"] = bool(on)
+        save_settings(self.settings)
+
+    def sound(self, kind):
+        """A beep for "news" / "alerts", unless muted in Settings → Sounds (this computer)."""
+        if self.settings.get(f"sound_{kind}", True):
+            QApplication.beep()
 
     def telegram_demo(self):
         """The sell buttons' demo (Settings → Telegram): a made-up trade of the Chart's ticker, bought as the
@@ -3985,7 +4044,7 @@ class MainWindow(QMainWindow):
             return
         if time.time() - fired > 300:
             return                  # (an old one, read at the start)
-        QApplication.beep()
+        self.sound("alerts")
         now = a.get("triggered_value")
         self.notify(f"🔔 Alert: {a.get('ticker')} {otc_alerts.describe(a)}" +
                     (f" (now {fmt_price(now) if a.get('field') != 'volume' else f'{int(now):,}'})" if now is not None else "")

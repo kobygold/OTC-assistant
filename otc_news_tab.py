@@ -6,7 +6,7 @@ posts. The keys and the session are kept in this computer's settings.json (never
 
 from PyQt6.QtCore import QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPixmap
-from PyQt6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+from PyQt6.QtWidgets import (QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
 import otc_news
@@ -303,7 +303,12 @@ class NewsSettings(QWidget):
         self.test_btn.clicked.connect(self.test)
         self.logout_btn = QPushButton("Log out")
         self.logout_btn.clicked.connect(self.log_out)
-        for b in (self.login_btn, self.test_btn, self.logout_btn):
+        self.backfill_btn = QPushButton("Read back 6 months")
+        self.backfill_btn.setToolTip("The main server reads the channel back 6 months (once; a few minutes, slowly, "
+                                     "as Telegram allows): the dilutions, filings, tier changes and big headlines of "
+                                     "every stock, for the charts' News and the phone. Goes on if stopped.")
+        self.backfill_btn.clicked.connect(self.backfill)
+        for b in (self.login_btn, self.test_btn, self.logout_btn, self.backfill_btn):
             row.addWidget(b)
         row.addStretch()
         root.addLayout(row)
@@ -311,6 +316,17 @@ class NewsSettings(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self.status)
+        # the phones: off by default (the news is read in the app: the beep, the Chart's News button)
+        self.phone = QCheckBox("Also send the news of my stocks (favorites, ATM trades, alerts) to my phone")
+        self.phone.setToolTip("Off: the news is only in the app (a beep and a message, the Chart's News button). "
+                              "On: the main server's bot sends each fresh news of your stocks to the account's "
+                              "phones too. The same on every computer.")
+        self.phone.toggled.connect(self.phone_changed)
+        self.put_shared = None          # (the app's: the choice in the shared data)
+        root.addWidget(self.phone)
+        self.backfill_note = QLabel("")
+        self.backfill_note.setStyleSheet(f"color: {DIM};")
+        root.addWidget(self.backfill_note)
         self.show_state()
 
     # ---- the keys ----
@@ -342,6 +358,8 @@ class NewsSettings(QWidget):
         self.login_btn.setText("Log in again..." if logged else "Log in...")
         self.test_btn.setEnabled(bool(keys) and logged)
         self.logout_btn.setEnabled(logged)
+        self.backfill_btn.setEnabled(logged and self.send is not None
+                                     and not getattr(self, "backfill_running", False))
         if logged:
             self.say(f"Logged in as {self.settings.get('telegram_user_name') or 'your account'}.", "#1db31d")
         elif keys:
@@ -370,6 +388,47 @@ class NewsSettings(QWidget):
             self.settings["telegram_user_name"] = dlg.name
             self.save(self.settings)
             self.share()
+        self.show_state()
+
+    # ---- the news to the phones too (a choice in the shared data, telegram/news_phone) ----
+    def phone_changed(self, on):
+        if self.put_shared is not None and on != getattr(self, "phone_shown", None):
+            self.put_shared(otc_news.PHONE_KEY, {"on": bool(on)})
+        self.phone_shown = on
+
+    def show_phone(self, data):
+        on = bool((data or {}).get("on"))
+        self.phone_shown = on
+        self.phone.blockSignals(True)
+        self.phone.setChecked(on)
+        self.phone.blockSignals(False)
+
+    # ---- reading back months (the main server does it) ----
+    def backfill(self):
+        if self.send is not None and self.send({"type": "news_backfill", "months": 6}) is not False:
+            self.backfill_note.setText("Asked the main server to read back 6 months...")
+
+    def show_backfill(self, p):
+        """The read-back's progress (the shared data's telegram/news_backfill)."""
+        if not isinstance(p, dict):
+            self.backfill_note.setText("")
+            self.backfill_running = False
+            self.show_state()
+            return
+        self.backfill_running = bool(p.get("running"))
+        at = str(p.get("at") or "").replace("T", " ")[:16]
+        if p.get("running"):
+            text = (f"Reading back {p.get('months', 6)} months: {p.get('read', 0):,} posts read, "
+                    f"{p.get('kept', 0):,} that matter" + (f", back to {at}" if at else "") + "...")
+        elif p.get("done"):
+            text = (f"Read back {p.get('months', 6)} months: {p.get('read', 0):,} posts, {p.get('kept', 0):,} "
+                    "that matter.")
+        else:
+            text = (f"Reading back stopped at {at or 'the start'} ({p.get('read', 0):,} posts)"
+                    + (f": {p['error']}" if p.get("error") else "") + ". Click again to go on.")
+        self.backfill_note.setText(text)
+        self.backfill_btn.setText("Reading back..." if p.get("running") else
+                                  "Read back 6 months again" if p.get("done") else "Read back 6 months")
         self.show_state()
 
     # ---- the login on all the computers (the main server reads with it) ----

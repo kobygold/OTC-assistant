@@ -162,7 +162,7 @@ def book_table(bids, asks):
     return out
 
 
-def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_list, news_list=()):
+def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_list, news_list=(), months=None):
     """A ticker's details, for the phone."""
     def field(name, value):
         return f"<b>{name}:</b> {value}"
@@ -193,6 +193,8 @@ def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_
     for _, e in trade_list[:2]:
         lines.append(field("ATM", f"{steps_line(e).replace(chr(10), chr(10) + '   ')}\n   "
                                   f"{trade_what(e).replace(chr(10), chr(10) + '   ')}"))
+    if months:                          # the news channel's months: "6 months: dilution 3 times (+38%)..."
+        lines.append(field("📰 History", esc(months)))
     for d in news_list:                 # the news channel: dilution, filings, tier, big headlines
         day = str(d.get("time", "")).replace("T", " ")[5:16]
         lines.append(field(("⚠️" if d.get("level") == "warn" else "📰") + f" News {day}",

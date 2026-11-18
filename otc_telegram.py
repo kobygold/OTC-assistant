@@ -623,8 +623,17 @@ class TelegramBot:
         details = await asyncio.to_thread(info.daily, ticker, None, m.get("day"))
         text = info.ticker_text(tail, ticker, favs.get(ticker), m["q"], m["when"], details,
                                 m["bids"], m["asks"], info.trades(self.server.store, tail, ticker),
-                                info.alerts(self.server.store, tail, ticker), info.news(self.server.store, ticker))
+                                info.alerts(self.server.store, tail, ticker), *self.news_of(ticker))
         return text, info.ticker_buttons(tail, ticker)
+
+    def news_of(self, ticker):
+        """(the ticker's last news, its months in a line) from the history (news.db)."""
+        import otc_news_db
+        try:
+            con = self.server.news_db()
+            return otc_news_db.of_ticker(con, ticker, 30, 3), otc_news_db.history_text(otc_news_db.history(con, ticker))
+        except Exception:
+            return info.news(self.server.store, ticker), None
 
     async def ask_info(self, chat, what):
         """/favs, /trades, /alerts: for each account the phone is linked to."""

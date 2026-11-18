@@ -15,6 +15,9 @@ drawings.tmp
 otc_daily.db
 otc_daily.db-wal
 otc_daily.db-shm
+news.db
+news.db-wal
+news.db-shm
 error_log.txt
 shortcut_created.txt
 *.csv

@@ -236,9 +236,13 @@ NEWS_PREFIX = "news/"               # shared data: news/<ticker>/<post id> = the
 NEWS_STATE = "telegram/news_state"  # {"last_id"}: the last post read (a new main server goes on from it)
 POLL_S = 15                         # the channel read this often
 FIRST_POSTS = 50                    # the first time ever: the last ones only
-KEEP_DAYS = 30                      # the news kept this long
+KEEP_DAYS = 3                       # the news kept this long in the shared data (the live notices);
+                                    # the history (months) in news.db (otc_news_db)
+BACKFILL_KEY = "telegram/news_backfill"     # {"running", "months", "read", "kept", "at", "done"}: reading back
+BACKFILL_WAIT_S = 1.0               # between the pages of 100 posts (Telegram's limits)
 RETRY_S = 60                        # after an error
 TELL_HOURS = 2                      # the phones are told of posts this fresh only
+PHONE_KEY = "telegram/news_phone"   # {"on"}: the news of the accounts' stocks to their phones too (off: the app only)
 
 
 def login_ok(login):
@@ -257,12 +261,15 @@ class NewsReader:
         self.entity = None
         self.tasks = []
         self.pruned = 0.0
+        self.backfilling = None         # the task reading back months, while it runs
 
     def start(self):
         self.tasks = [asyncio.create_task(self.run())]
         return self.tasks
 
     async def stop(self):
+        if self.backfilling is not None:
+            self.backfilling.cancel()
         for t in self.tasks:
             t.cancel()
         if self.tasks:
@@ -301,6 +308,9 @@ class NewsReader:
                     self.server.event(f"News: reading \"{getattr(self.entity, 'title', 'the channel')}\" "
                                       f"(as {self.login.get('name') or 'your account'})")
                     told = False
+                    for key, it in list(self.server.store.items.items()):   # (the shared ones: the history too)
+                        if key.startswith(NEWS_PREFIX) and isinstance(it.get("data"), dict):
+                            self.server.news_add(it["data"])
                 await self.poll()
                 self.prune()
                 await asyncio.sleep(POLL_S)
@@ -322,7 +332,10 @@ class NewsReader:
         import otc_news_parse as parse
         last = int((self.item(NEWS_STATE) or {}).get("last_id") or 0)
         posts = []
-        async for m in self.client.iter_messages(self.entity, min_id=last, limit=200 if last else FIRST_POSTS):
+        # every post since the last one read (however many: no computer read for a while), a page of 100
+        # at a time; the very first time ever: the last FIRST_POSTS only
+        async for m in self.client.iter_messages(self.entity, min_id=last, limit=None if last else FIRST_POSTS,
+                                                 wait_time=BACKFILL_WAIT_S if last else None):
             posts.append(m)
         if not posts:
             return
@@ -331,34 +344,83 @@ class NewsReader:
             self.take(m.id, getattr(m, "date", None), m.message or "", parse, tell=bool(last))
         self.server.put_shared(NEWS_STATE, {"last_id": max(m.id for m in posts)})
 
-    def take(self, post_id, when, text, parse, tell=True):
-        p = parse.parse(text)
-        level = parse.level(p)
-        if not p["ticker"] or level is None:
-            return None
-        from datetime import datetime, timedelta, timezone
+    def take(self, post_id, when, text, parse, tell=True, shared=True):
+        """A post read: kept as it came (every post: news.db's posts), and when it matters (news.db's news):
+        a recent one to the shared data and the phones. Its news, or None (known, or nothing that matters)."""
+        from datetime import datetime, timezone
         when = when or datetime.now(timezone.utc)
         local = when.astimezone() if when.tzinfo else when
-        item = {"id": post_id, "ticker": p["ticker"], "time": local.isoformat(timespec="seconds"),
-                "kind": p["kind"], "level": level, "flags": p["flags"], "summary": parse.summary(p),
-                "text": text[:800]}
-        key = f"{NEWS_PREFIX}{p['ticker']}/{post_id}"
+        new, item = self.server.news_post(post_id, local.isoformat(timespec="seconds"), text)
+        if item is None:                        # (known already, or nothing that matters)
+            return None
+        fresh = (datetime.now() - local.replace(tzinfo=None)).total_seconds() < KEEP_DAYS * 86400
+        if not shared or not fresh:             # (an old post read back: the history only)
+            return item
+        key = f"{NEWS_PREFIX}{item['ticker']}/{post_id}"
         if self.item(key) is not None:
             return None
-        # the channel posts some news twice: the same ticker's same news within a day is kept once
-        day_ago = (local - timedelta(days=1)).isoformat()[:19]
-        pre = f"{NEWS_PREFIX}{p['ticker']}/"
-        if any(isinstance(it.get("data"), dict) and it["data"].get("summary") == item["summary"]
-               and str(it["data"].get("time", ""))[:19] >= day_ago
-               for k, it in self.server.store.items.items() if k.startswith(pre)):
-            return None
         self.server.put_shared(key, item)
-        self.server.log(f"News: {p['ticker']} {level}: {item['summary'].splitlines()[0][:120]}")
+        self.server.log(f"News: {item['ticker']} {item['level']}: {item['summary'].splitlines()[0][:120]}")
         # the phones: fresh news only (TELL_HOURS: a post read late, after no computer read for a while)
         if tell and (datetime.now(timezone.utc) - (when if when.tzinfo else when.replace(tzinfo=timezone.utc))
                      ).total_seconds() < TELL_HOURS * 3600:
             self.tell(item)
         return item
+
+    # ---- reading back months (once; a click in Settings → News Telegram Bot) ----
+    def backfill(self, months):
+        if self.backfilling is not None and not self.backfilling.done():
+            return False
+        self.backfilling = asyncio.create_task(self._backfill(int(months)))
+        return True
+
+    async def _backfill(self, months):
+        """The channel read back from the oldest post known down to `months` ago, a page of 100 posts at a
+        time: the posts that matter into the history (no notices). Goes on where it stopped if broken."""
+        import otc_news_parse as parse
+        from datetime import datetime, timedelta, timezone
+        cut = datetime.now(timezone.utc) - timedelta(days=30 * months)
+        state = dict(self.item(BACKFILL_KEY) or {})
+        start = state.get("oldest_id") if state.get("months") == months and not state.get("done") else None
+        if start is None:
+            low, _high = self.server.news_bounds()
+            start = low or int((self.item(NEWS_STATE) or {}).get("last_id") or 0) + 1
+        read = int(state.get("read") or 0) if state.get("months") == months and not state.get("done") else 0
+        kept = int(state.get("kept") or 0) if read else 0
+        self.server.event(f"News: reading back {months} months of the channel (from post {start})")
+        progress = {"running": True, "months": months, "read": read, "kept": kept, "oldest_id": start, "at": None}
+        self.show_backfill(progress)
+        try:
+            while self.client is None or self.entity is None:       # (the live reader connects first)
+                await asyncio.sleep(1)
+            last_page = 0
+            async for m in self.client.iter_messages(self.entity, offset_id=start, wait_time=BACKFILL_WAIT_S):
+                when = getattr(m, "date", None)
+                if when is not None and when < cut:
+                    break
+                read += 1
+                if self.take(m.id, when, m.message or "", parse, tell=False, shared=False):
+                    kept += 1               # (every post is kept raw; these are the ones that matter)
+                progress.update(read=read, kept=kept, oldest_id=m.id,
+                                at=when.astimezone().isoformat(timespec="minutes") if when else None)
+                if read - last_page >= 200:
+                    last_page = read
+                    self.show_backfill(progress)
+            progress.update(running=False, done=True)
+            self.server.event(f"News: read back {months} months: {read:,} posts, {kept:,} that matter")
+        except asyncio.CancelledError:
+            progress.update(running=False)
+            self.show_backfill(progress)
+            raise
+        except Exception as e:
+            progress.update(running=False, error=error_text(e))
+            self.server.event(f"News: reading back stopped: {error_text(e)} (click again to go on)")
+        self.show_backfill(progress)
+        self.server.news_updated()
+
+    def show_backfill(self, progress):
+        """The progress in the shared data (every app's Settings shows it; a new main server goes on)."""
+        self.server.put_shared(BACKFILL_KEY, dict(progress))
 
     def interest(self, ticker):
         """{account: [why]} of the accounts with the ticker: a favorite, an ATM trade working, an alert."""
@@ -377,8 +439,10 @@ class NewsReader:
         return {a: list(dict.fromkeys(w)) for a, w in out.items()}
 
     def tell(self, item):
+        """The phones of the accounts with the stock: only when chosen (Settings → News Telegram Bot: off by
+        default, the news is read in the app)."""
         bot = getattr(self.server, "bot", None)
-        if bot is None:
+        if bot is None or not (self.item(PHONE_KEY) or {}).get("on"):
             return
         for tail, why in self.interest(item["ticker"]).items():
             chats = [p["chat_id"] for p in bot.phones(tail)]

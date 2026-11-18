@@ -102,6 +102,7 @@ from otc_recorder import Recorder, at_close, in_session, last_close, subtract_ra
 from otc_shared import SharedStore
 from otc_telegram import TelegramBot
 import otc_news
+import otc_news_db
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
@@ -296,6 +297,8 @@ class Server:
         # the news channel's reader (otc_news): the user's Telegram login, typed in an app, passed to all
         self.news_login = news_login_of(settings)
         self.news = None                        # (main server) the reader, while it runs
+        self.news_db_path = Path(shared_path).parent / "news.db"     # the news' history (months), every computer
+        self.news_con = None
         self.log = log
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
@@ -505,6 +508,8 @@ class Server:
                     self.on_telegram_token(msg.get("token"))
                 elif kind == "news_login":
                     self.on_news_login(msg.get("login"))
+                elif kind == "news_backfill":
+                    self.on_news_backfill(msg.get("months"))
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -589,6 +594,10 @@ class Server:
                     self.on_telegram_token(msg.get("token"))
                 elif kind == "news_login":
                     self.on_news_login(msg.get("login"))
+                elif kind == "news_backfill":
+                    self.on_news_backfill(msg.get("months"))
+                elif kind == "news_get":
+                    self.serve_news(conn, msg)
                 elif kind == "history_index":
                     conn.put({"type": "history_index", "days": await asyncio.to_thread(self.recorder.coverage_index)})
                 elif kind == "history_get":
@@ -804,6 +813,72 @@ class Server:
             self.event(f"News: got the Telegram login from the main server {self.leader_name}" if login else
                        "News: the Telegram login was removed (on the main server)")
 
+    # ---- the news' history (news.db): the main server writes it, the clients get it ----
+    def news_db(self):
+        if self.news_con is None:
+            self.news_con = otc_news_db.open_db(self.news_db_path)
+            if otc_news_db.ensure_rules(self.news_con):     # (new rules: the news worked out again)
+                n = otc_news_db.counts(self.news_con)
+                if n["posts"]:
+                    log(f"News: worked out again from the {n['posts']:,} posts kept: {n['news']:,} that matter")
+        return self.news_con
+
+    def news_post(self, post_id, time, text):
+        """A post (the main server's reader's, or a raw one from it): kept, its news worked out.
+        (new post?, its news if it matters and is new)."""
+        try:
+            return otc_news_db.add_post(self.news_db(), post_id, time, text)
+        except Exception as e:
+            log(f"News: can't keep post {post_id}: {type(e).__name__}: {e}")
+            return False, None
+
+    def news_add(self, item):
+        """(a client) A post that matters, as the shared data has it: kept here too."""
+        if isinstance(item, dict) and item.get("id") is not None and item.get("text"):
+            return self.news_post(item["id"], item.get("time"), item["text"])[0]
+        return False
+
+    def news_bounds(self):
+        try:
+            return otc_news_db.bounds(self.news_db())
+        except Exception:
+            return None, None
+
+    def ask_news(self):
+        """(client) The posts this computer doesn't have, from the main server (newer and older ones)."""
+        low, high = self.news_bounds()
+        self.up_send({"type": "news_get", "low": low, "high": high})
+
+    def serve_news(self, conn, msg):
+        """(main server) A client's missing posts (raw: it works out the news itself), 1000 at a time
+        (it asks again for more)."""
+        posts = otc_news_db.missing_for(self.news_db(), msg.get("low"), msg.get("high"))
+        conn.put({"type": "news_part", "posts": posts, "more": len(posts) >= 1000})
+
+    def take_news_part(self, m):
+        con = self.news_db()
+        try:
+            for post in m.get("posts") or []:
+                otc_news_db.add_post(con, post.get("id"), post.get("time"), post.get("text"), commit=False)
+        finally:
+            con.commit()
+        if m.get("more"):
+            self.ask_news()
+
+    def news_updated(self):
+        """(main server) The history grew (read back): the clients ask for what they miss."""
+        self.to_peers({"type": "news_updated"})
+
+    def on_news_backfill(self, months):
+        """Read back the channel's months (Settings): by the main server's reader."""
+        if not self.leader:
+            self.up_send({"type": "news_backfill", "months": months})
+            return
+        if self.news is None:
+            self.event("News: no Telegram login on the main server: can't read back")
+            return
+        self.news.backfill(max(1, min(int(months or 6), 24)))
+
     def start_news(self):
         if self.leader and self.news_login and self.news is None:
             self.news = otc_news.NewsReader(self, self.news_login)
@@ -935,6 +1010,8 @@ class Server:
                 self.on_telegram_token(m.get("token"))
             elif kind == "news_login":
                 self.on_news_login(m.get("login"))
+            elif kind == "news_backfill":
+                self.on_news_backfill(m.get("months"))
         if waiting:
             log(f"Done {len(waiting)} change(s) sent while there was no main server")
 
@@ -1205,7 +1282,8 @@ class Server:
         """(client) To the main server; kept until it is back when it's away."""
         if self.up is not None:
             self.up.put(msg)
-        elif msg.get("type") in ("change", "login", "token_request", "telegram_token", "news_login"):
+        elif msg.get("type") in ("change", "login", "token_request", "telegram_token", "news_login",
+                                 "news_backfill"):
             self.waiting.append(msg)
 
     def send_want(self):
@@ -1257,6 +1335,7 @@ class Server:
             self.event(f"Got Massive's API key from the main server {self.leader_name}")
         self.take_telegram_token(keys.get("telegram_token"))
         self.take_news_login(keys.get("news_login"))
+        self.ask_news()                         # the news' history this computer missed
         if self.keys():
             self.broadcast({"type": "keys", "keys": self.keys()})
         if w.get("token"):
@@ -1310,6 +1389,10 @@ class Server:
                 self.hist_wait.set_result(m)
         elif kind == "history_part":
             self.hist_writes.append(asyncio.create_task(self.take_history_part(m)))
+        elif kind == "news_part":
+            self.take_news_part(m)
+        elif kind == "news_updated":
+            self.ask_news()
         elif kind in ("orders", "positions"):
             if m.get("data") is not None:
                 self.last_reads[(kind, m.get("account"))] = m
@@ -1322,6 +1405,8 @@ class Server:
             self.store.take(m)
             self.pending.pop(str(m.get("id")), None)
             self.broadcast(m)
+            if str(m.get("key", "")).startswith(otc_news.NEWS_PREFIX) and isinstance(m.get("data"), dict):
+                self.news_add(m["data"])        # (the history: news.db here too)
             if m.get("key") == COMPUTERS_KEY:
                 self.send_cluster()
         elif kind == "refused":
