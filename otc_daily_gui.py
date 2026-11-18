@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.17"
+APP_VERSION = "2.6.18"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -3690,6 +3690,10 @@ class MainWindow(QMainWindow):
         form.addRow("Default position $:", row)
         root.addLayout(form)
         root.addSpacing(10)
+        from otc_news_tab import NewsSettings
+        self.news_settings = NewsSettings(self.settings, save_settings)     # the news channel's reader
+        root.addWidget(self.news_settings)
+        root.addSpacing(6)
         root.addWidget(self.telegram, 1)
         return tab
 
