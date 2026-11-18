@@ -724,9 +724,20 @@ class DrawingsMixin:
         clear = menu.addAction(f"Remove all drawings of {self.ticker}" + (f" ({n})" if n else ""))
         clear.setEnabled(n > 0)
         clear.triggered.connect(self._remove_all)
+        # a price / volume alert, where it was right-clicked (on the volume pane: a volume alert)
+        menu.addSeparator()
+        _, vol = self._layout()
+        on_volume = vol.contains(pos) and not self.intraday
+        start = _tick(at[1]) if at is not None and at[1] > 0 else (self.c[-1] if self.c else 0.0)
+        if on_volume:
+            alert = menu.addAction(_dot_icon("#f0a020"), "Add volume alert...")
+            alert.triggered.connect(lambda _c=False, v=self._volume_at_y(pos.y()): self.new_alert.emit("volume", float(v)))
+        else:
+            alert = menu.addAction(_dot_icon("#f0a020"), "Add price alert...")
+            alert.triggered.connect(lambda _c=False: self.new_alert.emit("price", float(start)))
+        menu.addAction("Alerts...").triggered.connect(lambda _c=False: self.show_alerts.emit())
         # a buy or a sell order (not an ATM trade), its price from where it was right-clicked
         menu.addSeparator()
-        start = _tick(at[1]) if at is not None and at[1] > 0 else (self.c[-1] if self.c else 0.0)
         for side, dot in (("BUY", "#1f9d1f"), ("SELL", "#d83a3a")):
             act = menu.addAction(_dot_icon(dot), f"{side}...")
             act.setToolTip(f"A {side} order of {self.ticker} at {start}")

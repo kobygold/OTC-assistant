@@ -97,7 +97,8 @@ from datetime import datetime
 from pathlib import Path
 
 from otc_orders import account_numbers, place_limit, read_orders, read_positions
-from otc_recorder import Recorder, at_close, last_close, subtract_ranges
+import otc_alerts
+from otc_recorder import Recorder, at_close, in_session, last_close, subtract_ranges
 from otc_shared import SharedStore
 from otc_telegram import TelegramBot
 
@@ -300,6 +301,8 @@ class Server:
         self.state_since = time.time()
         self.lost = ""                  # the main server that stopped answering
         self.leader_tasks = []
+        self.alert_index = {}                   # (main server) ticker -> the keys of its alerts (alerts/...)
+        self.alert_rev = None                   # the shared data's rev the index was made at
         self.cluster_task = None
         self.version = app_version()
         self.token_path = token_path
@@ -1350,6 +1353,36 @@ class Server:
                 raise RuntimeError("no Schwab login")
             return (read_orders if what == "orders" else read_positions)(client, account_hash)
 
+    # ---- the price / volume alerts (otc_alerts): checked by the main server on each quote ----
+    def check_alerts(self, ticker):
+        """(main server) The ticker's active alerts against its quote now, in the regular session: one
+        that fires is marked triggered (once) and its account's phones are told."""
+        if self.alert_rev != self.store.rev:
+            index = {}
+            for key, it in self.store.items.items():
+                a = it.get("data")
+                if key.startswith(otc_alerts.PREFIX) and isinstance(a, dict) and a.get("state") == "active":
+                    index.setdefault(a.get("ticker"), []).append(key)
+            self.alert_index, self.alert_rev = index, self.store.rev
+        keys = self.alert_index.get(ticker)
+        if not keys or not in_session():
+            return
+        q = self.l1.get(ticker) or {}
+        for key in list(keys):
+            a = (self.store.items.get(key) or {}).get("data")
+            fired, now = otc_alerts.check(a, q)
+            if not fired:
+                continue
+            at = datetime.now().isoformat(timespec="seconds")
+            done = self.change_shared(key, lambda d: dict(d, state="triggered", triggered_at=at, triggered_value=now)
+                                      if isinstance(d, dict) and d.get("state") == "active" else None)
+            if done is None:
+                continue
+            tail = key[len(otc_alerts.PREFIX):].split("/")[0]
+            self.event(f"Alert: {ticker} {otc_alerts.describe(a)} (now {now}, account ...{tail})")
+            if self.bot is not None and a.get("telegram", True):
+                self.bot.alert_fired(tail, a, now)
+
     # ---- orders sent by the main server (a sell from Telegram) ----
     async def place_sell(self, tail, ticker, shares, price):
         """A GTC limit sell of `shares` at `price` in the account (its last 3 digits), with this
@@ -1821,6 +1854,8 @@ class Server:
                 # After the first message only changed fields come
                 changed = {k: v for k, v in c.items() if k.isupper()}
                 self.l1[key].update(changed)
+                if self.leader:
+                    self.check_alerts(key)
                 self.recorder.level1(key, changed, msg.get("timestamp"), full=self.l1[key])
                 self.broadcast({"type": "quote", "ticker": key, "q": dict(self.l1[key])},
                                [x for x in self.conns if x.sees(key)])

@@ -44,6 +44,7 @@ import secrets
 import time
 from datetime import datetime
 
+import otc_alerts
 from otc_trade import bid_fill, fmt_price, plan_profit, remaining, sold_profit, usd_signed
 
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
@@ -428,6 +429,12 @@ class TelegramBot:
                     f"{e.get('sold', 0):,} bought @ {fmt_price(entry)}, sold for ${e.get('proceeds') or 0:,.2f}\n"
                     f"Profit after both fees: {usd_signed(sold_profit(e))}")
         return ""
+
+    def alert_fired(self, tail, a, now):
+        """A price / volume alert of the account fired (the server marked it): its phones are told."""
+        chats = [p["chat_id"] for p in self.phones(tail)]
+        if chats:
+            self.send_to(chats, otc_alerts.fired_text(a, now, tail))
 
     # ---- the Schwab login, the main server ----
     async def login_loop(self):

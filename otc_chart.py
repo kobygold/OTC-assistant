@@ -195,6 +195,11 @@ class CandleChart(DrawingsMixin, QWidget):
     cancel_order = pyqtSignal(str)          # an open order's key: the x on its tag was clicked
     move_order = pyqtSignal(str, float)     # an open order's key, and the price its tag was dragged to
     new_order = pyqtSignal(str, float)      # the right-click menu's BUY / SELL, and the price where clicked
+    new_alert = pyqtSignal(str, float)      # the right-click menu's Add alert: "price" / "volume" and the value there
+    show_alerts = pyqtSignal()              # the right-click menu's Alerts...
+    move_alert = pyqtSignal(str, float)     # an alert's id, and the price (or volume) its tag was dragged to
+    delete_alert = pyqtSignal(str)          # an alert's id: the x on its tag was clicked
+    edit_alert = pyqtSignal(str)            # an alert's id: its tag was double-clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -235,6 +240,12 @@ class CandleChart(DrawingsMixin, QWidget):
         self.order_lines = None
         self._order_tags = []       # (the x's rect, key, the tag's rect, tooltip) as last drawn
         self.order_drag = None      # a tag being dragged: {"key", "price" (its own), "to" (now)}
+        # the price / volume alerts of the ticker (the app gives them): [{"key", "field", "cond", "value",
+        # "level" (the price, or the volume it fires at), "text"}]
+        self.alert_lines = None
+        self._alert_tags = []       # [(x rect, key, tag rect, pane "price" / "volume", level, tip)]
+        self.alert_drag = None      # an alert's tag being dragged: {"key", "pane", "level", "to"}
+        self._vgeom = (0.0, 1.0, 1.0)   # the volume pane's top, bottom and top value, as last drawn
         self._init_drawings()       # trendlines, price levels, notes... (otc_drawings)
         # Shift is caught for the whole app: the chart rarely has the keyboard focus
         QApplication.instance().installEventFilter(self)
@@ -521,6 +532,7 @@ class CandleChart(DrawingsMixin, QWidget):
 
         def vy(v):
             return vbot - (v / vmax) * (vbot - vtop)
+        self._vgeom = (vtop, vbot, vmax)
 
         # Pane frames
         p.setPen(QPen(PANE_BORDER, 1))
@@ -607,6 +619,7 @@ class CandleChart(DrawingsMixin, QWidget):
 
         self._draw_drawings(p, price)          # the trendlines, price levels, notes...
         self._draw_orders(p, price, py, orders)
+        self._draw_alerts(p, price, py, vol, vy)
 
         # The last price tag on the right axis: live from Schwab when the Level II panel streams
         # this ticker, else the last candle's close. Colored like a candle: close vs open.
@@ -1116,6 +1129,74 @@ class CandleChart(DrawingsMixin, QWidget):
         f.setBold(False)
         p.setFont(f)
 
+    def _draw_alerts(self, p, price, py, vol, vy):
+        """The ticker's active alerts: a dotted amber line at its price (or, a volume alert, at the volume it
+        fires at, on the volume pane: by the day only), and a tag "ALERT Ask ≥ 0.0012 x" on it. Dragging the
+        tag moves the alert; the x deletes it; a double-click edits it."""
+        self._alert_tags = []
+        alerts = self.alert_lines(self.ticker) if self.alert_lines and self.ticker else []
+        if not alerts:
+            return
+        f = QFont(p.font())
+        f.setBold(True)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        color, back = QColor("#f0a020"), QColor("#4a3608")
+        drag = self.alert_drag
+        edge_x = {}
+        for a in alerts:
+            pane = "volume" if a["field"] == "volume" else "price"
+            if pane == "volume" and self.intraday:
+                continue            # (the average is of days: no line on minute bars)
+            level = drag["to"] if drag is not None and drag["key"] == a["key"] else a["level"]
+            rect, y = (vol, vy(level)) if pane == "volume" else (price, py(level))
+            off = -1 if y < rect.top() + 9 else 1 if y > rect.bottom() - 9 else 0
+            if not off:
+                y = round(y) + 0.5
+                p.setPen(QPen(color, 1, Qt.PenStyle.DotLine))
+                p.drawLine(QPointF(rect.left() + 1, y), QPointF(rect.right() - 1, y))
+                self._axis_tag(p, rect.right() + 1, y, (f"{level / 1e6:.2f}M" if level >= 1e6 else f"{level / 1e3:.0f}K") if pane == "volume" else fmt_axis(level),
+                               back, QColor("#ffffff"), bold=True, arrow="axis", outline=color)
+                p.setFont(f)
+            text = "ALERT " + a["text"]
+            tw = fm.horizontalAdvance(text)
+            w = tw + 30
+            cx = rect.left() + rect.width() * 0.30
+            if off:
+                cx = edge_x.get((pane, off), cx + w / 2) - w / 2
+                edge_x[(pane, off)] = cx - w / 2 - 6
+                y = rect.top() + 17 if off < 0 else rect.bottom() - 9
+            r = QRectF(cx - w / 2, y - 8, w, 16)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(QPen(color, 1))
+            p.setBrush(back)
+            p.drawRoundedRect(r, 8, 8)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRectF(r.left() + 8, r.top(), tw, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
+            x = QRectF(r.right() - 18, r.top(), 14, r.height())
+            p.drawText(x, Qt.AlignmentFlag.AlignCenter, "×")
+            tip = (f"Alert: {a['text']}" + (f"\nIts level is {'above' if off < 0 else 'below'} the scale." if off else "")
+                   + "\nDrag it to change it, double-click to edit it. The x deletes it.")
+            self._alert_tags.append((x.adjusted(-3, -3, 3, 3), a["key"], r, pane, a["level"], tip))
+        f.setBold(False)
+        p.setFont(f)
+
+    def _alert_x_at(self, pos):
+        return next((key for x, key, *_ in self._alert_tags if x.contains(pos)), None)
+
+    def _alert_tag_at(self, pos):
+        for x, key, r, pane, level, _ in self._alert_tags:
+            if r.contains(pos) and not x.contains(pos):
+                return {"key": key, "pane": pane, "level": level}
+        return None
+
+    def _volume_at_y(self, y):
+        """The volume at a height in the volume pane, as last drawn (kept on the pane)."""
+        vtop, vbot, vmax = self._vgeom
+        y = min(max(y, vtop), vbot)
+        return max((vbot - y) / max(vbot - vtop, 1) * vmax, 0.0)
+
     def _order_x_at(self, pos):
         """The key of the open order whose x is under pos, else None."""
         return next((key for x, key, _, _ in self._order_tags if x.contains(pos)), None)
@@ -1302,6 +1383,7 @@ class CandleChart(DrawingsMixin, QWidget):
     def event(self, e):
         if e.type() == QEvent.Type.ToolTip:
             tag = next((tip for _, _, r, tip in self._order_tags if r.contains(QPointF(e.pos()))), None)
+            tag = tag or next((t[5] for t in self._alert_tags if t[2].contains(QPointF(e.pos()))), None)
             if self.risk_icon is not None and self.dates and self._risk_rect().contains(e.pos()):
                 QToolTip.showText(e.globalPos(), self.risk_tip, self)
             elif tag:
@@ -1374,12 +1456,19 @@ class CandleChart(DrawingsMixin, QWidget):
             self.order_drag["to"] = self._price_at_y(e.position().y())
             self.update()
             return
+        if self.alert_drag is not None:
+            y = e.position().y()
+            self.alert_drag["to"] = self._volume_at_y(y) if self.alert_drag["pane"] == "volume" else self._price_at_y(y)
+            self.update()
+            return
         if self._drawing_move(e):       # a drawing dragged
             return
         if self.drag is None:
             self.setCursor(self._drawing_cursor(e.position()) or
-                           (Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position()) else
-                            Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position()) else
+                           (Qt.CursorShape.PointingHandCursor if self._order_x_at(e.position())
+                            or self._alert_x_at(e.position()) else
+                            Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position())
+                            or self._alert_tag_at(e.position()) else
                             Qt.CursorShape.PointingHandCursor if self._on_title(e.position()) else
                             Qt.CursorShape.OpenHandCursor if self._ruler_at(e.position()) == "price"
                             and e.modifiers() & Qt.KeyboardModifier.ControlModifier else     # Ctrl: pans it
@@ -1404,6 +1493,15 @@ class CandleChart(DrawingsMixin, QWidget):
             self._copy_ticker(e.position())
             return
         if self.placing is None:
+            key = self._alert_x_at(e.position())
+            if key:
+                self.delete_alert.emit(key)
+                return
+            tag = self._alert_tag_at(e.position())
+            if tag:
+                self.alert_drag = {**tag, "to": tag["level"]}
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+                return
             key = self._order_x_at(e.position())
             if key:
                 self.cancel_order.emit(key)
@@ -1435,6 +1533,11 @@ class CandleChart(DrawingsMixin, QWidget):
             self.update()
             if abs(drag["to"] - drag["price"]) > 1e-9:
                 self.move_order.emit(drag["key"], drag["to"])     # asks before changing it
+        adrag, self.alert_drag = self.alert_drag, None
+        if adrag is not None:
+            self.update()
+            if abs(adrag["to"] - adrag["level"]) > 1e-9:
+                self.move_alert.emit(adrag["key"], float(adrag["to"]))
         self.drag = self.ruler = None
         self.setCursor(self._ruler_cursor(self._ruler_at(e.position())))
         self.update()
@@ -1442,6 +1545,10 @@ class CandleChart(DrawingsMixin, QWidget):
     def mouseDoubleClickEvent(self, e):
         """On the price or volume ruler: that axis fits itself again; on a text note: edits it; elsewhere
         the whole view resets."""
+        tag = self._alert_tag_at(e.position())
+        if tag:
+            self.edit_alert.emit(tag["key"])
+            return
         if self._drawing_double_click(e):
             return
         axis = self._ruler_at(e.position())

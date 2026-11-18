@@ -27,6 +27,7 @@ import math
 import sys
 import threading
 import html
+import socket
 import time
 import traceback
 from datetime import date, datetime, timedelta, timezone
@@ -39,14 +40,16 @@ from PyQt6.QtGui import (
     QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
 
+import otc_alerts
 import otc_atm as atm
+from otc_alert_dialog import AlertDialog, AlertsDialog
 from otc_atm_trades import AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
 import otc_daily as core
@@ -63,7 +66,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.5.4"
+APP_VERSION = "2.6.0"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1155,6 +1158,14 @@ class MainWindow(QMainWindow):
         self.chart.move_order.connect(self.move_chart_order)
         self.chart.new_order.connect(lambda side, price: self.checklist.atm.ask_order(
             self, self.chart.ticker, side, price, self.chart_quotes))
+        # the price / volume alerts (otc_alerts): on the chart, made and changed here, checked by the main server
+        self.alerts_told = set()            # the alerts whose firing was shown here
+        self.chart.alert_lines = self.chart_alerts
+        self.chart.new_alert.connect(self.add_alert)
+        self.chart.move_alert.connect(self.move_alert)
+        self.chart.delete_alert.connect(self.delete_alert)
+        self.chart.edit_alert.connect(self.edit_alert)
+        self.chart.show_alerts.connect(self.show_alerts)
         self.level2.watch(atm_trades.stream_tickers())
         if self.shared_imported:
             atm_trades.use_shared(self.shared)
@@ -2601,7 +2612,8 @@ class MainWindow(QMainWindow):
                 if isinstance(f, dict) and (ticker not in favs or f.get("group", 9) < favs[ticker].get("group", 9)):
                     favs[ticker] = f
         favs = sorted(favs, key=lambda t: (favs[t].get("group", 9), t))
-        self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + favs)))
+        alerted = sorted({a.get("ticker") for a in self.all_alerts() if a.get("state") == "active" and a.get("ticker")})
+        self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + alerted + favs)))
 
     # ---- the shared data: favorites, drawings and ATM trades, per account (otc_server_link) ----
     def shared_account(self):
@@ -2693,6 +2705,8 @@ class MainWindow(QMainWindow):
             self.checklist.atm.reload_shared()
         if key == "" or key == f"settings/{self.shared_account()}":
             self.show_position_default()
+        if key == "" or key.startswith(otc_alerts.PREFIX):
+            self.on_alerts_changed(key)
 
     def on_shared_refused(self, key, why):
         what = key.split("/")[0]
@@ -3607,6 +3621,164 @@ class MainWindow(QMainWindow):
             self.shared_imported else "Raise it as your portfolio grows.")
         if hasattr(self, "checklist"):
             self.checklist.refresh()
+
+    # ================================================== Alerts ===
+    def alerts(self, account=None):
+        """The account's alerts (the chosen one's): [alert]."""
+        if not self.shared_imported:
+            return []
+        acct = account or self.shared_account()
+        return [a for a in self.shared.get(f"{otc_alerts.PREFIX}{acct}/").values() if isinstance(a, dict)]
+
+    def all_alerts(self):
+        if not self.shared_imported:
+            return []
+        return [a for a in self.shared.get(otc_alerts.PREFIX).values() if isinstance(a, dict)]
+
+    def alert(self, alert_id):
+        return next((a for a in self.alerts() if a.get("id") == alert_id), None)
+
+    def put_alert(self, a):
+        self.shared.put(f"{otc_alerts.PREFIX}{self.shared_account()}/{a['id']}", a)
+        self.alerts_refresh()           # (the shared data tells only of the others' changes)
+
+    def chart_alerts(self, ticker):
+        """The chart's alert lines: the chosen account's active alerts of the ticker."""
+        out = []
+        for a in self.alerts():
+            if a.get("ticker") == ticker and a.get("state") == "active":
+                short = dict(a)
+                text = otc_alerts.describe(short).replace(f" the {otc_alerts.VOLUME_DAYS}-day average", " avg")
+                out.append({"key": a["id"], "field": a["field"], "cond": a["cond"], "value": a["value"],
+                            "level": otc_alerts.threshold(a), "text": text})
+        return out
+
+    def avg_volume(self, ticker):
+        """The ticker's average daily volume over its last VOLUME_DAYS days with trades before today, from
+        the database; None without any."""
+        con = db()
+        try:
+            rows = con.execute("SELECT volume FROM candles WHERE ticker = ? AND date < ? ORDER BY date DESC LIMIT ?",
+                               (ticker, date.today().isoformat(), otc_alerts.VOLUME_DAYS)).fetchall()
+        finally:
+            con.close()
+        return sum(r[0] or 0 for r in rows) / len(rows) if rows else None
+
+    def alert_quote(self, ticker):
+        cl = self.checklist
+        q = {"last": self.chart.c[-1] if self.chart.ticker == ticker and self.chart.c else None}
+        if cl.ticker == ticker:
+            q.update(bid=cl.bid, ask=cl.ask)
+        return q
+
+    def alerts_ready(self):
+        if not self.shared_imported or not self.settings.get("schwab_account"):
+            QMessageBox.information(self, "Alerts", "Alerts are kept per account, on all your computers: choose an "
+                                                    "account at the top, and wait for the main server.")
+            return False
+        return True
+
+    def add_alert(self, kind, value):
+        """The chart's right-click Add alert: the dialog, from where it was clicked."""
+        ticker = self.chart.ticker
+        if not ticker or not self.alerts_ready():
+            return
+        dlg = AlertDialog(self, ticker, (kind, value), self.avg_volume(ticker), self.alert_quote(ticker))
+        if dlg.exec() != QDialog.DialogCode.Accepted or not isinstance(dlg.result_alert(), dict):
+            return
+        now = datetime.now().isoformat(timespec="seconds")
+        a = {"id": f"{ticker}-{int(time.time() * 1000)}", "ticker": ticker, **dlg.result_alert(),
+             "avg_volume": self.avg_volume(ticker), "state": "active", "created": now,
+             "by": socket.gethostname()}
+        self.put_alert(a)
+        self.notify(f"Alert made: {ticker} {otc_alerts.describe(a)}", 8000)
+
+    def edit_alert(self, alert_id):
+        a = self.alert(alert_id)
+        if a is None:
+            return
+        level = otc_alerts.threshold(a)
+        dlg = AlertDialog(self, a["ticker"], ("volume" if a["field"] == "volume" else "price", level),
+                          a.get("avg_volume") or self.avg_volume(a["ticker"]), self.alert_quote(a["ticker"]), alert=a)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dlg.result_alert() == "delete":
+            self.delete_alert(alert_id, ask=False)
+            return
+        new = dict(a, **dlg.result_alert())
+        if new["field"] == "volume":
+            new["avg_volume"] = self.avg_volume(a["ticker"]) or a.get("avg_volume")
+        self.put_alert(new)
+
+    def move_alert(self, alert_id, level):
+        """An alert's tag dragged on the chart: its price, or (a volume alert) its ratio to the average."""
+        a = self.alert(alert_id)
+        if a is None:
+            return
+        if a["field"] == "volume":
+            avg = a.get("avg_volume") or 0
+            if not avg:
+                return
+            value = max(round(level / avg, 1), 0.1)
+        else:
+            value = level
+        if value != a.get("value"):
+            self.put_alert(dict(a, value=value))
+            self.notify(f"Alert moved: {a['ticker']} {otc_alerts.describe(dict(a, value=value))}", 6000)
+
+    def delete_alert(self, alert_id, ask=True):
+        a = self.alert(alert_id)
+        if a is None:
+            return
+        if ask and QMessageBox.question(self, "Delete alert", f"Delete the alert {a['ticker']} "
+                                                              f"{otc_alerts.describe(a)}?") != QMessageBox.StandardButton.Yes:
+            return
+        self.shared.put(f"{otc_alerts.PREFIX}{self.shared_account()}/{alert_id}", None)
+        self.alerts_refresh()
+
+    def rearm_alert(self, alert_id):
+        a = self.alert(alert_id)
+        if a is not None and a.get("state") != "active":
+            new = {k: v for k, v in a.items() if k not in ("triggered_at", "triggered_value")}
+            new["state"] = "active"
+            if new["field"] == "volume":
+                new["avg_volume"] = self.avg_volume(a["ticker"]) or a.get("avg_volume")
+            self.put_alert(new)
+
+    def show_alerts(self):
+        if not self.alerts_ready():
+            return
+        dlg = AlertsDialog(self, self.shared_account(), self.alerts(), self.edit_alert, self.rearm_alert,
+                           self.delete_alert, lambda t: (self.tabs.setCurrentIndex(1), self.show_chart(t)))
+        self.alerts_dialog = dlg
+        dlg.exec()
+        self.alerts_dialog = None
+
+    def alerts_refresh(self):
+        """The alerts changed: the chart's tags, the stream (their tickers), the list if open."""
+        self.chart.update()
+        self.update_tracked()
+        if getattr(self, "alerts_dialog", None) is not None:
+            self.alerts_dialog.show_alerts(self.alerts())
+
+    def on_alerts_changed(self, key):
+        """An alert changed elsewhere: shown; one that just fired: a beep and a message (once a computer)."""
+        self.alerts_refresh()
+        a = (self.shared.items.get(key) or [0, None])[1] if key else None
+        if not isinstance(a, dict) or a.get("state") != "triggered" or key in self.alerts_told:
+            return
+        self.alerts_told.add(key)
+        try:
+            fired = datetime.fromisoformat(str(a.get("triggered_at"))).timestamp()
+        except ValueError:
+            return
+        if time.time() - fired > 300:
+            return                  # (an old one, read at the start)
+        QApplication.beep()
+        now = a.get("triggered_value")
+        self.notify(f"🔔 Alert: {a.get('ticker')} {otc_alerts.describe(a)}" +
+                    (f" (now {fmt_price(now) if a.get('field') != 'volume' else f'{int(now):,}'})" if now is not None else "")
+                    + f", account ...{key[len(otc_alerts.PREFIX):].split('/')[0]}", 30000)
 
     # ================================================== Favorites ===
     def _build_favorites_tab(self):
