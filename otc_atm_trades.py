@@ -1,4 +1,4 @@
-"""The Schwab tab's list of ATM trades (atm.json): one row per trade, from the Buy ATM to the sale; and
+"""The Monitor tab's list of ATM trades (atm.json): one row per trade, from the Buy ATM to the sale; and
 its list of the account's other orders (sent from thinkorswim), to change or cancel.
 
 Each row shows the plan and the market when the buy was sent next to the market now (live while
@@ -9,14 +9,14 @@ Cancel Sell while the sell waits, and Clear once sold.
 import json
 from decimal import Decimal, InvalidOperation
 
-from PyQt6.QtCore import QRegularExpression, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFont, QRegularExpressionValidator
+from PyQt6.QtCore import QPointF, QRectF, QRegularExpression, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QRegularExpressionValidator
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QPushButton,
-                             QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
+                             QStyledItemDelegate, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            AtmTrades, red_x_icon, reset_icon, usd_signed)
-from otc_trade import current_exit
+from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, trade_steps
 
 
 
@@ -26,16 +26,18 @@ def fmt_price(v) -> str:
 
 
 def limit_text(v) -> str:
-    """A price in a Sell at box: 0.0350."""
+    """A price in a New Price box: 0.0350."""
     return f"{v:.4f}"
 
 
 GREEN, RED, YELLOW, DIM = "#1db31d", "#e0404f", "#e3b23c", "#8a8a8a"
-CHANGED = "#f0a020"     # a Sell at price changed from the exit plan
+CHANGED = "#f0a020"     # a New Price changed from the exit plan (or the open order's price)
 
 # (title, tooltip)
 COLUMNS = [
     ("Ticker", ""),
+    ("Steps", "1 Buy order placed · 2 Got the stocks · 3 Sell order placed · 4 Sold. Green ✔: done. "
+              "Yellow half: partly (some bought / some sold so far). Empty: not yet."),
     ("State", "Step 1/4: Wait for Buy → 2/4: Sell the Shares (you own them) → 3/4: Wait for Sell → 4/4: Done!"
               " · Transaction Canceled: the buy was canceled before anything was bought"),
     ("Sent", "When the Buy ATM was sent"),
@@ -50,9 +52,12 @@ COLUMNS = [
     ("Bid now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
     ("Ask now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
     ("P/L", "After both fees. Sold: of the sale. Owned: if the rest sold at the bid now."),
-    ("Sell at", "The price Sell ATM sells all the stocks at, GTC. Starts as the exit plan; the checklist's "
-                "exit follows it. A whole number is a count of 0.0001 steps (12 -> 0.0012). "
-                "+/-: 0.0001 up / down. The round arrow: back to the exit plan."),
+    ("New Price", "Step 1: a new limit for the buy order (Update). Step 2: the price Sell ATM sells all the "
+                  "stocks at (starts as the exit plan; the checklist's exit follows it). Step 3: a new limit for "
+                  "the sell order (Update). A whole number is a count of 0.0001 steps (12 -> 0.0012). +/-: 0.0001 "
+                  "up / down. The round arrow: back to the order's price (step 2: the exit plan)."),
+    ("Update", "Changes the open order to the New Price (Schwab replaces it, after you approve it): only while "
+               "the New Price isn't the order's own"),
     ("Order", ""),
     ("", ""),
 ]
@@ -110,6 +115,68 @@ def book_html(title, bids, asks):
             f"<td>&nbsp;&nbsp;</td><td valign=top><b>Asks</b><table>{side(asks)}</table></td></tr></table>")
 
 
+STEP_GREEN, STEP_YELLOW, STEP_GRAY = "#1db31d", "#e3b23c", "#5a6068"
+
+
+def steps_tip(e, steps):
+    words = {DONE: "✔", HALF: "partly", TODO: "not yet"}
+    lines = [f"{i + 1}. {name}: {words[st]}" for i, (name, st) in enumerate(zip(STEP_NAMES, steps))]
+    if steps[1] == HALF:
+        lines[1] += f" ({e.get('filled', 0):,} of {e.get('shares', 0):,})"
+    if steps[3] == HALF:
+        lines[3] += f" ({e.get('sell_filled', 0):,} of {AtmTrades.remaining(e):,})"
+    return "\n".join(lines)
+
+
+class StepsDelegate(QStyledItemDelegate):
+    """The Steps cell: 4 circles joined by a line, a green ✔ in each step done, a yellow half for one
+    partly done, empty gray for the rest. The steps: the item's UserRole ([DONE / HALF / TODO] x 4)."""
+    R, GAP = 8, 26          # the circles' radius, the distance between their centres
+
+    def sizeHint(self, option, index):
+        return QSize(2 * self.R + 3 * self.GAP + 16, 2 * self.R + 8)
+
+    def paint(self, p, option, index):
+        steps = index.data(Qt.ItemDataRole.UserRole)
+        if not steps:
+            return super().paint(p, option, index)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r, gap = self.R, self.GAP
+        rect = option.rect
+        x0 = rect.left() + (rect.width() - (2 * r + 3 * gap)) / 2 + r
+        y = rect.center().y() + 0.5
+        centres = [QPointF(x0 + i * gap, y) for i in range(4)]
+        for i in range(3):          # the joining lines: green between steps done
+            color = STEP_GREEN if steps[i + 1] in (DONE, HALF) and steps[i] == DONE else STEP_GRAY
+            p.setPen(QPen(QColor(color), 2))
+            p.drawLine(QPointF(centres[i].x() + r, y), QPointF(centres[i + 1].x() - r, y))
+        for c, st in zip(centres, steps):
+            circle = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            if st == DONE:
+                p.setPen(QPen(QColor(STEP_GREEN), 1.5))
+                p.setBrush(QColor(STEP_GREEN))
+                p.drawEllipse(circle)
+                tick = QPainterPath(QPointF(c.x() - r * 0.45, c.y()))
+                tick.lineTo(QPointF(c.x() - r * 0.1, c.y() + r * 0.38))
+                tick.lineTo(QPointF(c.x() + r * 0.5, c.y() - r * 0.4))
+                p.setPen(QPen(QColor("#ffffff"), 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(tick)
+            elif st == HALF:            # the left half filled, yellow
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(STEP_YELLOW))
+                p.drawPie(circle, 90 * 16, 180 * 16)
+                p.setPen(QPen(QColor(STEP_YELLOW), 1.5))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(circle)
+            else:
+                p.setPen(QPen(QColor(STEP_GRAY), 1.5))
+                p.setBrush(QColor("#1b1e22"))
+                p.drawEllipse(circle)
+        p.restore()
+
+
 class SortMixin:
     """Sorting by a column: a click on its title sorts by it, highest first; another click, lowest
     first. The rows are sorted when the table is (re)built, so the live updates keep the order.
@@ -158,12 +225,16 @@ class AtmTable(SortMixin, QTableWidget):
         super().__init__(0, len(COLUMNS), parent)
         self.atm = atm
         self.ids = []               # the entries' ids, in row order (newest first)
-        self.edits = {}             # entry id -> its Sell at box, while it can be changed
+        self.edits = {}             # entry id -> its New Price box at step 2 (the Sell ATM price), while it can be changed
+        self.order_boxes = {}       # entry id -> (its New Price box, its Update button) at steps 1 and 3
+        self.new_prices = {}        # entry id -> a new price typed for its open order (not sent yet)
         self.signature = None       # what the rows were built from: rebuilt only when it changes
         self.dirty = set()          # tickers whose market changed since the last update
         self.setHorizontalHeaderLabels([t for t, _ in COLUMNS])
         for i, (_, tip) in enumerate(COLUMNS):
             self.horizontalHeaderItem(i).setToolTip(tip)
+        self.steps_delegate = StepsDelegate(self)          # the 4 steps, drawn
+        self.setItemDelegateForColumn(COL["Steps"], self.steps_delegate)
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -197,6 +268,8 @@ class AtmTable(SortMixin, QTableWidget):
             return e["ticker"]
         if title == "State":
             return list(STATES).index(e.get("state")) if e.get("state") in STATES else None
+        if title == "Steps":            # the steps done (a half: half a step)
+            return sum({DONE: 1.0, HALF: 0.5, TODO: 0.0}[st] for st in trade_steps(e))
         if title == "Sent":
             return e.get("time")
         if title == "Shares":
@@ -211,8 +284,8 @@ class AtmTable(SortMixin, QTableWidget):
             return first(m.get("bid" if title == "Bid now" else "ask"))
         if title == "P/L":
             return AtmTrades.profit(e, first(m.get("bid")))
-        if title == "Sell at":
-            return e.get("sell_price") or e.get("exit-live") or e.get("sell_at") or e.get("exit")
+        if title == "New Price":
+            return self.new_prices.get(e["id"]) or self.order_price(e) or current_exit(e)
         return None
 
     def double_clicked(self, row, col):
@@ -236,7 +309,7 @@ class AtmTable(SortMixin, QTableWidget):
         return item
 
     def rebuild(self):
-        # only the trades of the account chosen at the top of the Schwab tab (all while none is)
+        # only the trades of the account chosen at the top of the Monitor tab (all while none is)
         account = self.atm.settings.get("schwab_account", "")
         entries = self.sorted_rows(e for e in reversed(self.atm.entries) if not account or e.get("account") == account)
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
@@ -254,6 +327,9 @@ class AtmTable(SortMixin, QTableWidget):
         self.signature = signature
         self.ids = [e["id"] for e in entries]
         self.edits = {}
+        self.order_boxes = {}
+        open_ids = {e["id"] for e in entries if e.get("state") in ("buy_open", "sell_open")}
+        self.new_prices = {k: v for k, v in self.new_prices.items() if k in open_ids}
         self.setRowCount(len(entries))
         for row, e in enumerate(entries):
             self.fill(row, e)
@@ -271,6 +347,9 @@ class AtmTable(SortMixin, QTableWidget):
         top = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         self.cell(row, COL["Ticker"], e["ticker"], "#ffffff", bold=True, align=top)
         busy = self.atm.busy(e) or (state == "buy_open" and e["ticker"] in self.atm.sending)
+        steps = trade_steps(e)
+        item = self.cell(row, COL["Steps"], "", tip=steps_tip(e, steps))
+        item.setData(Qt.ItemDataRole.UserRole, steps)
         self.cell(row, COL["State"], name + (" ..." if busy else ""), fg,
                   bold=True, bg=color, tip=e.get("note") or "")
         self.cell(row, COL["Sent"], (e.get("time") or "").replace("T", " ")[5:16], DIM,
@@ -306,25 +385,46 @@ class AtmTable(SortMixin, QTableWidget):
         self.cell(row, COL["Bid then"], quote_text(e.get("bid")), tip=then)
         self.cell(row, COL["Ask then"], quote_text(e.get("ask")), tip=then)
 
-        # Sell at: typed while it can still change, else the sell order's price
+        # New Price: step 2, the price Sell ATM sells at; steps 1 and 3, a new limit for the open order
+        # (Update sends it); else the sell order's price
         edit = SelectAllEdit()
         edit.setFixedWidth(80)
         edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,6}(\.\d{0,6})?"), edit))
-        if state in ("sell_open", "sold", "canceled"):
-            edit.setText(fmt_price(e["sell_price"]) if e.get("sell_price") else "")
-            edit.setReadOnly(True)
-            edit.setToolTip("The sell order's price" + (": Cancel Sell to change it" if state == "sell_open" else ""))
-            edit.setStyleSheet("QLineEdit { background: #101214; color: #a8a8a8; border: 1px solid #22262a; }")
-        else:
+        update = button("Update", "#2f6fe0")
+        update.setEnabled(False)
+        if state in ("buy_open", "sell_open") and self.order_price(e):
+            new = self.new_prices.get(e["id"])
+            edit.setText(limit_text(new or self.order_price(e)))
+            update.setText("Update Buy" if state == "buy_open" else "Update Sell")
+            update.clicked.connect(lambda _c=False, e=e, w=edit: self.update_order(e, w))
+            self.order_boxes[e["id"]] = (edit, update)
+            edit.textChanged.connect(lambda _t, e=e: self.show_new_price(e))
+            edit.editingFinished.connect(lambda e=e, w=edit: self.new_price_typed(e, w))
+            self.show_new_price(e)
+            editable = True
+        elif state == "bought":
             price = current_exit(e)         # the trade's exit now (the checklist's too)
             edit.setText(limit_text(price) if price else "")
-            edit.setToolTip(COLUMNS[COL["Sell at"]][1])
+            edit.setToolTip(COLUMNS[COL["New Price"]][1])
             self.tint_sell_at(e, edit)
             edit.textChanged.connect(lambda _t, e=e, w=edit: self.tint_sell_at(e, w))
             edit.editingFinished.connect(lambda e=e, w=edit: self.sell_at_typed(e, w))
             self.edits[e["id"]] = edit
-        self.setCellWidget(row, COL["Sell at"], self.sell_at_box(e, edit, state in ("buy_open", "bought")))
+            update.setToolTip("No order to update yet: Sell ATM sends the sell at the New Price")
+            editable = True
+        else:
+            edit.setText(fmt_price(e["sell_price"]) if e.get("sell_price") else "")
+            edit.setReadOnly(True)
+            edit.setToolTip("The sell order's price")
+            edit.setStyleSheet("QLineEdit { background: #101214; color: #a8a8a8; border: 1px solid #22262a; }")
+            editable = False
+        self.setCellWidget(row, COL["New Price"], self.sell_at_box(e, edit, editable))
+        if state in ("sold", "canceled"):
+            self.removeCellWidget(row, COL["Update"])
+            self.cell(row, COL["Update"], "")
+        else:
+            self.setCellWidget(row, COL["Update"], centered(update))
 
         # The order button of the state, and Clear once sold
         b = None
@@ -414,10 +514,12 @@ class AtmTable(SortMixin, QTableWidget):
         reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
             "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
             "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
-        reset.setToolTip(f"Back to the exit plan ({fmt_price(e.get('exit'))})")
+        own = self.order_price(e)
+        reset.setToolTip(f"Back to the {'buy' if e.get('state') == 'buy_open' else 'sell'} order's price "
+                         f"({fmt_price(own)})" if own else f"Back to the exit plan ({fmt_price(e.get('exit'))})")
         reset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset.setEnabled(editable and bool(e.get("exit")))
+        reset.setEnabled(editable and bool(own or e.get("exit")))
         reset.clicked.connect(lambda _c=False, e=e, w=edit: self.reset_sell_at(e, w))
         lay.addWidget(reset)
         if not editable:        # the sell order's price, or sold: nothing to change, the room kept
@@ -439,7 +541,7 @@ class AtmTable(SortMixin, QTableWidget):
         color = GREEN if same else CHANGED
         edit.setStyleSheet(f"QLineEdit {{ background: #1b1e21; color: {color}; font-weight: bold;"
                            " border: 1px solid #3a4046; }")
-        edit.setToolTip(COLUMNS[COL["Sell at"]][1] + ("" if same else
+        edit.setToolTip(COLUMNS[COL["New Price"]][1] + ("" if same else
                         f"\nChanged from the exit plan ({fmt_price(e.get('exit'))})."))
 
     def sync_sell_at(self):
@@ -450,6 +552,67 @@ class AtmTable(SortMixin, QTableWidget):
             if price and not edit.hasFocus() and edit.text() != limit_text(price):
                 edit.setText(limit_text(price))
 
+    # ---- New Price of an open order (steps 1 and 3): typed here, sent with Update ----
+    @staticmethod
+    def order_price(e):
+        """The open order's own price: the buy's (step 1), the sell's (step 3); else None."""
+        if e.get("state") == "buy_open":
+            return e.get("entry")
+        if e.get("state") == "sell_open":
+            return e.get("sell_price")
+        return None
+
+    def show_new_price(self, e):
+        """The box green while it's the order's price, orange once changed; Update only then."""
+        edit, update = self.order_boxes.get(e["id"], (None, None))
+        if edit is None:
+            return
+        own = self.order_price(e)
+        try:
+            v = float(Decimal(edit.text().strip()))
+            v = v * float(PRICE_STEP) if v >= 1 else v
+        except (InvalidOperation, ValueError):
+            v = None
+        changed = bool(v) and own is not None and abs(v - own) > 1e-9
+        side = "buy" if e.get("state") == "buy_open" else "sell"
+        edit.setStyleSheet(f"QLineEdit {{ background: #1b1e21; color: {CHANGED if changed else GREEN}; "
+                           "font-weight: bold; border: 1px solid #3a4046; }")
+        edit.setToolTip(f"The {side} order's price: {fmt_price(own)}." + (
+            f" New: {fmt_price(v)}: Update changes the order." if changed else
+            " Type a new one (or + / -), then Update."))
+        busy = self.atm.busy(e)
+        update.setEnabled(changed and not busy and self.atm.trader is not None)
+        update.setToolTip(f"Change the {side} order from {fmt_price(own)} to {fmt_price(v)} (after you approve it)"
+                          if changed else f"The New Price is the {side} order's own ({fmt_price(own)}): nothing to update")
+
+    def new_price_typed(self, e, w):
+        price = self.typed_price(w)
+        own = self.order_price(e)
+        if price and own and abs(price - own) > 1e-9:
+            self.new_prices[e["id"]] = price
+        else:
+            self.new_prices.pop(e["id"], None)
+            if own:
+                w.setText(limit_text(own))
+        self.show_new_price(e)
+
+    def update_order(self, e, w):
+        """Update: Schwab replaces the open order with one at the New Price (the same amount), after the
+        dialog (as dragging its line on the chart)."""
+        self.new_price_typed(e, w)
+        price = self.new_prices.get(e["id"])
+        if not price:
+            return
+        side = "BUY" if e.get("state") == "buy_open" else "SELL"
+        self.atm.ask_move(self, f"atm:{e['id']}:{side}", price)
+        if e["id"] in self.atm.sending:         # sent (not canceled in the dialog)
+            self.new_prices.pop(e["id"], None)
+            if side == "SELL":                  # the new sell price: the checklist's pinned exit too
+                prices = self.atm.settings.setdefault("checklist_prices", {})
+                prices.setdefault(e["ticker"], {})["exit"] = limit_text(price)
+                self.atm.save_settings(self.atm.settings)
+        self.show_new_price(e)
+
     def step(self, e, w, direction):
         try:
             base = Decimal(w.text().strip())
@@ -458,9 +621,19 @@ class AtmTable(SortMixin, QTableWidget):
         new = base + direction * PRICE_STEP
         if new > 0:
             w.setText(limit_text(new))
-            self.atm.set_sell_at(e, float(new))
+            if e["id"] in self.order_boxes:     # an open order's new price: kept until Update
+                self.new_price_typed(e, w)
+            else:
+                self.atm.set_sell_at(e, float(new))
 
     def reset_sell_at(self, e, w):
+        """Back to the order's price (steps 1 and 3), or (step 2) to the plan's exit, as made with Buy
+        ATM: the checklist's exit unpinned too."""
+        if e["id"] in self.order_boxes:
+            self.new_prices.pop(e["id"], None)
+            w.setText(limit_text(self.order_price(e)))
+            self.show_new_price(e)
+            return
         if e.get("exit"):
             w.setText(limit_text(e["exit"]))
             self.atm.set_sell_at(e, e["exit"])
@@ -795,7 +968,7 @@ PCOL = {title: i for i, (title, _) in enumerate(POS_COLUMNS)}
 
 
 class PositionsTable(AtmTable):
-    """The portfolio: every stock owned in the account chosen on the Schwab tab (an ATM trade's too,
+    """The portfolio: every stock owned in the account chosen on the Monitor tab (an ATM trade's too,
     marked), from Schwab, with the market now:
     Sell on Bid / Sell on Ask open the sell dialog (amount, price, Day or GTC, the $ with the fee)."""
 

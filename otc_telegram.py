@@ -49,7 +49,7 @@ from datetime import datetime
 import otc_alerts
 import otc_telegram_info as info
 from otc_recorder import in_session
-from otc_trade import bid_fill, current_exit, fmt_price, plan_profit, remaining, sold_profit, usd_signed
+from otc_trade import bid_fill, current_exit, fmt_price, steps_line, plan_profit, remaining, sold_profit, usd_signed
 
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
 POLL_S = 25                 # getUpdates waits this long for news (long polling)
@@ -439,7 +439,21 @@ class TelegramBot:
         return "Now: " + " · ".join(parts) if parts else ""
 
     def trade_text(self, ev, e, tail, market=None):
-        """The news's text. market: the "Now: ..." line to use (a demo's), instead of the stream's."""
+        """The news's text: its title, the trade's 4 steps (🟢-🟢-⚪-⚪ Step 2/4...), what happened and
+        the Bid / Ask now. market: the "Now: ..." line to use (a demo's), instead of the stream's."""
+        text = self.trade_body(ev, e, tail, market)
+        if not text:
+            return ""
+        lines = text.split("\n")
+        lines.insert(1, steps_line(e))
+        if ev != "bought":              # (the buy's message has its Now line, with the Bid that takes them)
+            now = self.market_line(e.get("ticker", "?"), remaining(e)) \
+                if market is None else market
+            if now:
+                lines.insert(3 if len(lines) > 2 else len(lines), now)
+        return "\n".join(lines)
+
+    def trade_body(self, ev, e, tail, market=None):
         t = e.get("ticker", "?")
         acct = account_text(tail)
         entry = e.get("entry") or 0
@@ -494,7 +508,7 @@ class TelegramBot:
         self.update_state(login=(self.state().get("login") or [])[-9:] + [mark])
         left = max(0.0, (TOKEN_DAYS - age) * 24)
         self.send_to(self.all_chats(), f"🔑 The Schwab login runs out in {left:.0f} h: renew it in OTC Assistant "
-                                       f"(Schwab tab → Renew Schwab login).")
+                                       f"(Monitor tab → Renew Schwab login).")
 
     def login_needed(self, why):
         w = self.server.wrapped or self.server.read_token()
@@ -624,7 +638,8 @@ class TelegramBot:
             elif what == "trades":
                 items = [(k, e) for k, e in info.trades(self.server.store, tail)
                          if e.get("state") not in ("sold", "canceled")]
-                text = info.trades_text(tail, items)
+                m = await self.market(list(dict.fromkeys(e.get("ticker") for _, e in items if e.get("ticker"))))
+                text = info.trades_text(tail, items, {t: v["q"] for t, v in m.items()})
                 names = list(dict.fromkeys(e.get("ticker") for _, e in items if e.get("ticker")))
                 buttons = [[(t, f"i:t:{tail}:{t}") for t in names[i:i + 3]] for i in range(0, len(names), 3)]
             else:

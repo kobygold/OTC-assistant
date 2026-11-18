@@ -71,8 +71,8 @@ ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed
 # What is read from Schwab, and when. While the stream's account activity is on, an order event
 # (placed, changed, canceled, filled) reads the orders and positions at once, and so does each
 # (re)connect of the stream; nothing else is read on a timer unless it is needed:
-ORDER_CHECK_S = 15          # the timer's tick; the Schwab tab's quotes while it is open (not streamed tickers)
-POSITIONS_TAB_S = 60        # the positions while the Schwab tab is open (Schwab's Day P/L isn't streamed)
+ORDER_CHECK_S = 15          # the timer's tick; the Monitor tab's quotes while it is open (not streamed tickers)
+POSITIONS_TAB_S = 60        # the positions while the Monitor tab is open (Schwab's Day P/L isn't streamed)
 SAFETY_CHECK_S = 300        # the orders, while an ATM trade has an order working (a fill's event missed)
 NO_STREAM_CHECK_S = 60      # all of it, while the account activity stream is off (Level II off, reconnecting)
 ORDER_EVENT_DELAY_MS = 700  # an order event's check waits this long: the events come a few together
@@ -674,7 +674,7 @@ class FeeReader(QObject):
         return saved if saved in tails else (tails[0] if tails else "")
 
     def order_tail(self):
-        """The last 3 digits of the account orders go to, as chosen on the Schwab tab ("" if none)."""
+        """The last 3 digits of the account orders go to, as chosen on the Monitor tab ("" if none)."""
         saved = self.settings.get("schwab_account", "")
         return saved if saved in [tail for tail, _, _ in self.accounts] else ""
 
@@ -1489,7 +1489,7 @@ def _order_dialog(parent, account_name, title, rows, action, color, price_box=No
             form.addWidget(label, i, 1)
             values.append(label)
     values = values[1:]         # the rows', without the account's
-    form.itemAtPosition(0, 1).widget().setToolTip("Chosen on the Schwab tab")
+    form.itemAtPosition(0, 1).widget().setToolTip("Chosen on the Monitor tab")
     lay.addLayout(form)
     buttons = QHBoxLayout()
     buttons.addStretch()
@@ -1517,7 +1517,7 @@ class AtmTrades(QObject):
     """The ATM trades, kept in atm.json: each Buy ATM sent, with the plan and the market at that
     moment, and what happened since. state: "buy_open" (waiting for the buy) -> "bought" (you own
     it) -> "sell_open" (waiting for the sell) -> "sold". A buy canceled (or rejected, or expired)
-    before anything was bought is "canceled". They all stay until cleared on the Schwab tab. The open orders are checked
+    before anything was bought is "canceled". They all stay until cleared on the Monitor tab. The open orders are checked
     at Schwab every ORDER_CHECK_S seconds. Also keeps the latest market of the trades' tickers."""
     changed = pyqtSignal()          # the trades, or their states
     market_changed = pyqtSignal(str)    # a ticker's bid / ask / Level II
@@ -1555,7 +1555,7 @@ class AtmTrades(QObject):
             trader.sent.connect(self._sent)
         # The timer ticks every ORDER_CHECK_S; tick() reads only what is due (see ORDER_CHECK_S)
         self.activity_live = False
-        self.tab_open = False       # the Schwab tab is shown
+        self.tab_open = False       # the Monitor tab is shown
         self.orders_checked = 0.0
         self.positions_checked = 0.0
         self.quotes_checked = 0.0
@@ -1578,7 +1578,7 @@ class AtmTrades(QObject):
         """The trades as the shared data has them now (changed elsewhere, or a change refused)."""
         if getattr(self, "shared", None) is None:
             return
-        # Each trade kept as the same object, updated in place: the Schwab tab's rows (rebuilt only
+        # Each trade kept as the same object, updated in place: the Monitor tab's rows (rebuilt only
         # when what they show changes) hold their trade, and an old copy there would make Clear or a
         # new Sell-at price act on a trade that isn't in the list any more
         old = {e["id"]: e for e in self.entries}
@@ -1801,7 +1801,7 @@ class AtmTrades(QObject):
                 if (ticker is None or o["ticker"] == ticker) and o["open"] and o["price"] and o["shares"] > 0
                 and o["id"] not in tracked]
 
-    # ---- the stocks owned (the Schwab tab's list) ----
+    # ---- the stocks owned (the Monitor tab's list) ----
     def owned(self, account=None):
         """The stocks owned in the account (the chosen one), as last read: [position_info()]."""
         return self.positions.get(account or self.chosen_account(), [])
@@ -1857,7 +1857,7 @@ class AtmTrades(QObject):
 
     def ask_order(self, parent, ticker, side, price, quotes=None):
         """The chart's BUY / SELL: the order dialog, then a limit or market order of the account
-        chosen on the Schwab tab (not an ATM trade: it shows with the other orders). quotes(): the
+        chosen on the Monitor tab (not an ATM trade: it shows with the other orders). quotes(): the
         chart's {"bid", "ask", "current"} for the quick price buttons (the bid / ask read here when
         the chart has none)."""
         if not ticker:
@@ -1938,7 +1938,7 @@ class AtmTrades(QObject):
         return (account or self.chosen_account()) in self.schwab_orders
 
     def chart_orders(self, ticker):
-        """The ticker's open orders in the account chosen on the Schwab tab (one account at a time):
+        """The ticker's open orders in the account chosen on the Monitor tab (one account at a time):
         its ATM trade's, then the account's others.
         [{"key", "side", "shares", "price", "atm", "duration", "account" (its last 3 digits)}]."""
         out = []
@@ -2127,7 +2127,7 @@ class AtmTrades(QObject):
 
     def _adopt(self, e, side, new, old_id, old_filled, how):
         """The ATM trade follows its order's replacement `new` (order_info(), or {"id", "price"}):
-        the new order's number and price, kept in atm.json (the checklist and the Schwab tab show
+        the new order's number and price, kept in atm.json (the checklist and the Monitor tab show
         it, the chart draws it). old_filled: what the old order filled (a sell's)."""
         price = new["price"]
         if old_id:
@@ -2182,7 +2182,7 @@ class AtmTrades(QObject):
                     self._checked(e["id"], side, {"orderId": o["id"], "status": o["status"],
                                                   "filledQuantity": o["filled"]}, "")
         if account == self.chosen_account() and self.trader is not None:
-            # new tickers on the Schwab tab's list (another account chosen, say): their bid / ask now
+            # new tickers on the Monitor tab's list (another account chosen, say): their bid / ask now
             new = sorted({o["ticker"] for o in self.other_orders()} - set(self.market))
             if new:
                 self.trader.read_quotes(new)
@@ -2204,16 +2204,32 @@ class AtmTrades(QObject):
 
     def set_sell_at(self, e, price):
         """The price Sell ATM sells at (starts as the planned exit): the trade's exit now, the same on the
-        checklist, the Schwab tab and Telegram (exit-live too), and pinned on the checklist (shared)."""
-        if not price or price <= 0 or e.get("sell_at") == price and e.get("exit-live") == price:
+        checklist, the Monitor tab and Telegram (exit-live too). On the checklist (shared): pinned, or not
+        pinned when it's the plan's exit again (unpinned, or the Monitor tab's reset)."""
+        if not price or price <= 0:
             return
+        changed = not (e.get("sell_at") == price and e.get("exit-live") == price)
         e["sell_at"] = e["exit-live"] = price
-        self.save()
+        if changed:
+            self.save()
         if self.active(e["ticker"]) is e:
-            self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
-            self.save_settings(self.settings)
-        self.update_live(e["ticker"])
-        self.changed.emit()
+            prices = self.settings.setdefault("checklist_prices", {})
+            mine = prices.setdefault(e["ticker"], {})
+            pin = None if e.get("exit") and abs(price - e["exit"]) < 1e-9 else limit_text(price)
+            if mine.get("exit") != pin:
+                if pin is None:
+                    mine.pop("exit", None)
+                else:
+                    mine["exit"] = pin
+                if not mine:
+                    prices.pop(e["ticker"], None)
+                self.save_settings(self.settings)
+                changed = True
+            elif not mine:
+                prices.pop(e["ticker"], None)
+        if changed:
+            self.update_live(e["ticker"])
+            self.changed.emit()
 
     def reset(self, e):
         """The checklist leaves the fulfilled trade (it stays in atm.json) and its typed values."""
@@ -2235,7 +2251,7 @@ class AtmTrades(QObject):
     def tick(self):
         """Every ORDER_CHECK_S: reads only what is due.
         Account activity stream off: all of it every NO_STREAM_CHECK_S.
-        On: nothing, unless the Schwab tab is open (its quotes; the positions every POSITIONS_TAB_S)
+        On: nothing, unless the Monitor tab is open (its quotes; the positions every POSITIONS_TAB_S)
         or an ATM trade has an order working (the orders every SAFETY_CHECK_S)."""
         if self.trader is None:
             return
@@ -2269,7 +2285,7 @@ class AtmTrades(QObject):
             self.event_timer.start()        # (the server reads them by itself when its stream connects)
 
     def set_tab_open(self, shown):
-        """The Schwab tab shown: all of it read at once, then its quotes and positions while shown."""
+        """The Monitor tab shown: all of it read at once, then its quotes and positions while shown."""
         was, self.tab_open = self.tab_open, bool(shown)
         if self.tab_open and not was:
             self.check()
@@ -2298,11 +2314,11 @@ class AtmTrades(QObject):
             e.get("account") for e in self.entries if e.get("state") in ("buy_open", "sell_open")}
         for account in sorted(a for a in accounts if a):
             self.trader.read_orders(account)
-            self.trader.read_positions(account)     # the stocks owned (the chosen one's: the Schwab tab's list)
+            self.trader.read_positions(account)     # the stocks owned (the chosen one's: the Monitor tab's list)
 
     def _check_quotes(self):
         # the open trades' tickers, and the chosen account's other orders' and stocks owned (the
-        # Schwab tab's bid / ask); while the stream is on, they all come from it: none read
+        # Monitor tab's bid / ask); while the stream is on, they all come from it: none read
         tickers = [] if self.activity_live else self.stream_tickers()
         if tickers:
             self.quotes_checked = time.time()
@@ -2449,7 +2465,7 @@ class AtmTrades(QObject):
                 changed = True
         if changed:
             self.save()
-            self.changed.emit()         # the Schwab tab's Sell at follows the live exit
+            self.changed.emit()         # the Monitor tab's New Price follows the live exit
 
     # ---- the market of the trades' tickers ----
     def _known(self, ticker):
@@ -2457,7 +2473,7 @@ class AtmTrades(QObject):
 
     def stream_tickers(self):
         """The tickers streamed (Level I and II) besides the chart's: the open ATM trades', and the
-        chosen account's other orders' and stocks owned (the Schwab tab's), so their bid / ask are
+        chosen account's other orders' and stocks owned (the Monitor tab's), so their bid / ask are
         live instead of read on a timer."""
         return sorted(set(self.open_tickers()) | {o["ticker"] for o in self.other_orders()}
                       | {p["ticker"] for p in self.owned()})
@@ -2503,7 +2519,7 @@ class ChecklistPanel(QWidget):
         self.fees = {}          # ticker -> (fee or None, details), read from Schwab once a session
         self.fee_reader = FeeReader(settings, token_path) if token_path else None
         self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
-        # The ATM trades (atm.json), shared with the Schwab tab and the chart
+        # The ATM trades (atm.json), shared with the Monitor tab and the chart
         self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
         self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
         self.atm.read_fee = self.read_fee
@@ -2546,7 +2562,7 @@ class ChecklistPanel(QWidget):
         self.done_btn = QPushButton("ATM fulfilled!\nPress to reset")     # on their left once sold
         self.done_btn.setObjectName("cl_done")
         self.done_btn.setToolTip("Sold. Resets the checklist of this ticker to its automatic values. "
-                                 "The trade stays on the Schwab tab until you clear it there.")
+                                 "The trade stays on the Monitor tab until you clear it there.")
         self.done_btn.clicked.connect(self.reset_done)
         self.done_btn.hide()
         self.bid_btn = QPushButton("Sell on Bid")      # beside Sell ATM while the stocks are owned
@@ -3165,8 +3181,11 @@ class ChecklistPanel(QWidget):
             if not mine:
                 prices.pop(self.ticker, None)
             order = self.order()
-            if valid and key == "exit" and order and order.get("state") in ("buy_open", "bought"):
-                self.atm.set_sell_at(order, float(text))    # Sell ATM sells at it
+            if key == "exit" and order and order.get("state") in ("buy_open", "bought"):
+                if valid:
+                    self.atm.set_sell_at(order, float(text))    # Sell ATM sells at it
+                elif order.get("exit"):
+                    self.atm.set_sell_at(order, order["exit"])  # unpinned: the plan's exit again
             if key in ("exit", "stop"):
                 self.atm.update_live(self.ticker)
         self.refresh()
@@ -3256,7 +3275,7 @@ class ChecklistPanel(QWidget):
             self.buy_btn.setToolTip(
                 "Cancel the buy order (after you approve it)" if state == "buy_open" else
                 "Send a GTC limit buy at the entry price for the amount of stocks, after you approve it"
-                if state is None else "There is an ATM trade for this ticker (Schwab tab)")
+                if state is None else "There is an ATM trade for this ticker (Monitor tab)")
             self.sell_btn.setToolTip(
                 "Cancel the sell order, to change its price or keep the stocks longer" if state == "sell_open" else
                 "Sell all the stocks at the exit price, GTC, after you approve it" if state == "bought" else
@@ -3277,8 +3296,7 @@ class ChecklistPanel(QWidget):
             if state == "buy_open":
                 text = (f"Buy order open{status}: {e['shares']:,} @ {fmt_price(e['entry'])} GTC"
                         + (f" · {e['filled']:,} bought so far" if e.get("filled") else ""))
-                if draft and draft[3]:
-                    text += f"\nNew: {draft[1]:,} @ {fmt_price(draft[0])} (${draft[2]:,.2f}): Update Buy sends it"
+                # (new values typed: shown in the right column, sent with Update Buy; no line here)
             elif state == "bought":
                 text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
             elif state == "sell_open":
@@ -3340,7 +3358,7 @@ class ChecklistPanel(QWidget):
         self.fee_reader.load_accounts()
         account = self.fee_reader.order_tail()
         if not account:
-            QMessageBox.warning(self, "Buy ATM", "Choose the account for orders on the Schwab tab first."
+            QMessageBox.warning(self, "Buy ATM", "Choose the account for orders on the Monitor tab first."
                                 if self.fee_reader.accounts else "Can't read the Schwab accounts. Check the Schwab login.")
             return
         aon = aon_box()
@@ -3405,7 +3423,7 @@ class ChecklistPanel(QWidget):
         self.fees[ticker] = (fee, details)
         if ticker == self.ticker:
             self.refresh()
-        self.atm.market_changed.emit(ticker)        # the Schwab tab's orders show it
+        self.atm.market_changed.emit(ticker)        # the Monitor tab's orders show it
 
     # ---- data in ----
     def set_chart(self, ticker, rows, market_days, rng, period):
@@ -3489,7 +3507,7 @@ class ChecklistPanel(QWidget):
         if selling:                             # the open sell: its price, or the new exit typed
             own["exit"] = self.sell_draft_price(selling) or selling["sell_price"]
         elif order and order.get("state") in ("buy_open", "bought") and not own.get("exit"):
-            own["exit"] = current_exit(order)   # not pinned: the trade's exit (as the Schwab tab's Sell at)
+            own["exit"] = current_exit(order)   # not pinned: the trade's exit (as the Monitor tab's New Price)
         new = self.drafting()
         if new is not None:
             price, n, _, changed = self.draft_values(new)
@@ -3515,8 +3533,8 @@ class ChecklistPanel(QWidget):
                      f"The amount pinned x the entry (unpin the amount, or pin this, to go by the $)" if pinned_shares
                      else f"The default {usd_plain(default)} (the Settings tab), or pin your own for all tickers"),
             "shares": (INFO, f"{p['shares']:,}" if p["shares"] else NA,
-                       "From the ATM trade (Schwab tab)" if order else f"round({usd:g} / entry)"),
-            "exit": (INFO, price(current_exit(order)), "The ATM trade's exit now (as the Schwab tab's Sell at; "
+                       "From the ATM trade (Monitor tab)" if order else f"round({usd:g} / entry)"),
+            "exit": (INFO, price(current_exit(order)), "The ATM trade's exit now (as the Monitor tab's New Price; "
                      "Sell ATM sells at it). " + typed) if order and order.get("state") in ("buy_open", "bought") else
                     (INFO, price(auto["exit"]), "Trips: the Ask. Dubs and up: the Ask - 0.0001. " + typed),
             "order": (INFO, "GTC", ""),

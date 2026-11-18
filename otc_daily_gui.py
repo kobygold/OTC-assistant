@@ -66,7 +66,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.5"
+APP_VERSION = "2.6.8"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -726,7 +726,7 @@ class MainWindow(QMainWindow):
         self.zone_tab_index = self.tabs.addTab(self._build_zones_tab(), "Zones")
         self.atm_tab_index = self.tabs.addTab(self._build_atm_tab(), "ATM Scanner")
         self.fav_tab_index = self.tabs.addTab(self._build_favorites_tab(), "Favorites")
-        self.schwab_tab_index = self.tabs.addTab(self._build_schwab_tab(), "Schwab")
+        self.schwab_tab_index = self.tabs.addTab(self._build_schwab_tab(), "Monitor")
         # my computers: the main server and its clients, their priority, the connection log
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
@@ -1145,7 +1145,7 @@ class MainWindow(QMainWindow):
         self.show_position_default()
         self.checklist.setVisible(self.checklist_btn.isChecked())
         # The ATM trades: a Buy ATM makes the ticker a yellow favorite; their tickers are streamed
-        # too (the Schwab tab's market now); their open orders are lines on the chart
+        # too (the Monitor tab's market now); their open orders are lines on the chart
         atm_trades = self.checklist.atm
         atm_trades.buy_sent.connect(lambda ticker: self.set_fav(ticker, 1))
         self.level2.any_quote.connect(atm_trades.on_quote)
@@ -1784,7 +1784,7 @@ class MainWindow(QMainWindow):
             self.refresh_screener_dates()
         if index == self.schwab_tab_index and not self.schwab_accounts_read:
             self.read_schwab_accounts()
-        # the Schwab tab's lists are read while it is shown (and on order events), not all the time
+        # the Monitor tab's lists are read while it is shown (and on order events), not all the time
         self.checklist.atm.set_tab_open(index == self.schwab_tab_index)
         if index == self.fav_tab_index:
             if self.tickers_stale:
@@ -2514,7 +2514,7 @@ class MainWindow(QMainWindow):
         self.show_chart(item.text(), channel)
 
     # ================================================== ATM tab ===
-    # ================================================== Schwab tab ===
+    # ================================================== Monitor tab ===
     def _build_schwab_tab(self):
         tab = QWidget()
         root = QVBoxLayout(tab)
@@ -3864,7 +3864,7 @@ class MainWindow(QMainWindow):
                    "Click this title to sort by group.",
             "Checks": "How many of the checklist's main checks it passes (Check L1/L2). Hover over a "
                       "number for each check. N/A: no Level 1 / Level II for it.",
-            "ATM": "The ticker's ATM trade in the chosen account, in the colors of the Schwab tab's ATM "
+            "ATM": "The ticker's ATM trade in the chosen account, in the colors of the Monitor tab's ATM "
                    "Trades table: the open one, else the last one there. Hover for its details.",
             "Last day": "The ticker's latest day with trades in the database.",
             "Close": "Close on the last day.",
@@ -4222,7 +4222,7 @@ class MainWindow(QMainWindow):
         if self.checklist_btn.isChecked():   # the chart / checklist split
             self.settings["checklist_split"] = self.checklist_split.sizes()
             save_settings(self.settings)
-        if all(self.schwab_split.sizes()):  # the Schwab tab's three lists (once it was shown)
+        if all(self.schwab_split.sizes()):  # the Monitor tab's three lists (once it was shown)
             self.settings["schwab_sizes"] = self.schwab_split.sizes()
             self.settings.pop("schwab_split", None)
             save_settings(self.settings)

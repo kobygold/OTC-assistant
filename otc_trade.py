@@ -34,8 +34,31 @@ def bid_fill(bids, shares):
     return price, total
 
 
+DONE, HALF, TODO = "done", "half", "todo"
+STEP_NAMES = ("Buy order placed", "Got the stocks", "Sell order placed", "Sold")
+STATE_NAMES = {"buy_open": "Step 1/4: Wait for Buy", "bought": "Step 2/4: Sell the Shares",
+               "sell_open": "Step 3/4: Wait for Sell", "sold": "Step 4/4: Done!", "canceled": "Transaction Canceled"}
+
+
+def trade_steps(e):
+    """The ATM trade's 4 steps: (buy placed, got the stocks, sell placed, sold), each DONE, HALF (partly
+    filled) or TODO."""
+    state = e.get("state", "buy_open")
+    bought = state in ("bought", "sell_open", "sold")
+    got = DONE if bought else HALF if state == "buy_open" and e.get("filled") else TODO
+    sell = DONE if state in ("sell_open", "sold") else TODO
+    sold = DONE if state == "sold" else HALF if state == "sell_open" and e.get("sell_filled") else TODO
+    return [DONE, got, sell, sold]
+
+
+def steps_line(e):
+    """The steps as a phone shows them: 🟢-🟢-🟡-⚪, and on the next line Step 3/4: Wait for Sell."""
+    dots = {DONE: "🟢", HALF: "🟡", TODO: "⚪"}
+    return "-".join(dots[st] for st in trade_steps(e)) + "\n" + STATE_NAMES.get(e.get("state"), str(e.get("state")))
+
+
 def current_exit(e):
-    """The ATM trade's exit now, the same everywhere (the checklist, the Schwab tab's Sell at, Telegram):
+    """The ATM trade's exit now, the same everywhere (the checklist, the Monitor tab's New Price, Telegram):
     the sell order's price once sent, else the exit set since the buy (Sell at / the checklist's pinned
     exit), else the planned one."""
     if e.get("state") in ("sell_open", "sold") and e.get("sell_price"):

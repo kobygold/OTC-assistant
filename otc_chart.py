@@ -1122,7 +1122,7 @@ class CandleChart(DrawingsMixin, QWidget):
             p.drawText(x, Qt.AlignmentFlag.AlignCenter, "×")
             tip = (f"{'Buy' if side == 'BUY' else 'Sell'} {shares:,} @ {fmt_price(value)}, limit, "
                    f"{o.get('duration') or 'GTC'} "
-                   + ("(an ATM trade, Schwab tab)." if o.get("atm") else "(a Schwab order, not an ATM trade).")
+                   + ("(an ATM trade, Monitor tab)." if o.get("atm") else "(a Schwab order, not an ATM trade).")
                    + (f"\nIts price is {'above' if off < 0 else 'below'} the chart's scale." if off else "")
                    + "\nDrag it to change its price. The x cancels it.")
             self._order_tags.append((x.adjusted(-3, -3, 3, 3), o["key"], r, tip))

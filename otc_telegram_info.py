@@ -17,13 +17,13 @@ from datetime import date, datetime
 from pathlib import Path
 
 import otc_alerts
-from otc_trade import current_exit, fmt_price, remaining
+from otc_trade import current_exit, fmt_price, remaining, steps_line
 
 DB_PATH = Path(__file__).resolve().parent / "otc_daily.db"     # the daily candles (names, the volume's average)
 # the favorites' groups (otc_daily_gui.FAV_GROUPS): their name and the emoji for the star's color
 STARS = {1: ("Yellow", "🟡"), 2: ("Green", "🟢"), 3: ("Blue", "🔵"), 4: ("Cyan", "🩵"), 5: ("Magenta", "🟣"),
          6: ("Red", "🔴")}
-# the ATM trades' steps (otc_checklist.STATES), with emoji for their colors
+# (old: the steps as squares; the messages use otc_trade.steps_line now)
 STEPS = {"buy_open": "🟥 Step 1/4: Wait for Buy", "bought": "🟨 Step 2/4: Sell the Shares",
          "sell_open": "🟦 Step 3/4: Wait for Sell", "sold": "🟩 Step 4/4: Done!",
          "canceled": "⬜ Transaction Canceled"}
@@ -181,13 +181,8 @@ def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_
     if bids or asks:
         lines.append("<b>Level II:</b> (bids | asks)\n<pre>" + esc("\n".join(book_table(bids, asks))) + "</pre>")
     for _, e in trade_list[:2]:
-        own = remaining(e) if e.get("state") not in ("buy_open", "canceled") else 0
-        what = f"{e.get('shares', 0):,} @ {fmt_price(e.get('entry') or 0)}"
-        if own:
-            what = f"own {own:,} @ {fmt_price(e.get('entry') or 0)}"
-        exit_ = current_exit(e)
-        lines.append(field("ATM", f"{STEPS.get(e.get('state'), e.get('state'))}\n   {what}"
-                           + (f", exit {fmt_price(exit_)}" if exit_ and e.get("state") not in ("sold", "canceled") else "")))
+        lines.append(field("ATM", f"{steps_line(e).replace(chr(10), chr(10) + '   ')}\n   "
+                                  f"{trade_what(e).replace(chr(10), chr(10) + '   ')}"))
     for a in alert_list:
         lines.append(field("🔔 Alert", esc(otc_alerts.describe(a)) + (" (fired)" if a.get("state") == "triggered" else "")))
     if fav:
@@ -204,17 +199,40 @@ def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_
     return "\n".join(lines)
 
 
+def trade_what(e):
+    """The trade's order (or stocks) in a line, with the right price for its step: buying at the entry;
+    owning (bought at the entry) with the exit Sell ATM sells at; selling at the sell order's price."""
+    state, entry = e.get("state"), fmt_price(e.get("entry") or 0)
+    if state == "buy_open":
+        got = e.get("filled") or 0
+        return f"Buying {e.get('shares', 0):,} @ {entry}" + (f" ({got:,} bought)" if got else "")
+    if state == "bought":
+        exit_ = current_exit(e)
+        return f"Own {remaining(e):,} @ {entry}" + (f", exit {fmt_price(exit_)}" if exit_ else "")
+    if state == "sell_open":
+        sold = e.get("sell_filled") or 0
+        return (f"Selling {remaining(e):,} @ {fmt_price(current_exit(e))}" + (f" ({sold:,} sold)" if sold else "")
+                + f"\nBought @ {entry}")
+    if state == "sold":
+        return f"Sold {e.get('sold') or e.get('filled') or 0:,}\nBought @ {entry}"
+    return f"{e.get('shares', 0):,} @ {entry}"
+
+
 def ticker_buttons(tail, ticker):
     return [[("🔄 Refresh", f"i:t:{tail}:{ticker}"), ("⭐ Favorites", f"i:f:{tail}")]]
 
 
-def trades_text(tail, items):
+def trades_text(tail, items, quotes=None):
+    """The open ATM trades: each with its 4 steps, its amount and price, and the Bid / Ask now."""
     if not items:
         return f"No open ATM trades in account ...{esc(tail)}."
     lines = [f"<b>ATM trades, account ...{esc(tail)}</b>"]
     for _, e in items:
-        lines.append(f"<b>{esc(e.get('ticker', '?'))}</b> {STEPS.get(e.get('state'), e.get('state'))}\n"
-                     f"   {e.get('shares', 0):,} @ {fmt_price(e.get('entry') or 0)}")
+        q = (quotes or {}).get(e.get("ticker")) or {}
+        now = " · ".join(f"<b>{n}:</b> {fmt_price(q[k])}" for k, n in (("BID_PRICE", "Bid"), ("ASK_PRICE", "Ask"))
+                         if q.get(k))
+        lines.append(f"\n<b>{esc(e.get('ticker', '?'))}</b> {steps_line(e).replace(chr(10), chr(10) + '   ')}\n"
+                     f"   {trade_what(e).replace(chr(10), chr(10) + '   ')}" + (f"\n   {now}" if now else ""))
     return "\n".join(lines)
 
 
