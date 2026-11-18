@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import otc_alerts
-from otc_trade import fmt_price, remaining
+from otc_trade import current_exit, fmt_price, remaining
 
 DB_PATH = Path(__file__).resolve().parent / "otc_daily.db"     # the daily candles (names, the volume's average)
 # the favorites' groups (otc_daily_gui.FAV_GROUPS): their name and the emoji for the star's color
@@ -185,7 +185,7 @@ def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_
         what = f"{e.get('shares', 0):,} @ {fmt_price(e.get('entry') or 0)}"
         if own:
             what = f"own {own:,} @ {fmt_price(e.get('entry') or 0)}"
-        exit_ = e.get("sell_price") if e.get("state") == "sell_open" else e.get("exit-live") or e.get("exit")
+        exit_ = current_exit(e)
         lines.append(field("ATM", f"{STEPS.get(e.get('state'), e.get('state'))}\n   {what}"
                            + (f", exit {fmt_price(exit_)}" if exit_ and e.get("state") not in ("sold", "canceled") else "")))
     for a in alert_list:

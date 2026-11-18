@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            AtmTrades, red_x_icon, reset_icon, usd_signed)
+from otc_trade import current_exit
 
 
 
@@ -283,7 +284,9 @@ class AtmTable(SortMixin, QTableWidget):
             shares = f"{e.get('filled', 0):,}"
         else:
             shares = f"{left:,}" + (f" ({e['sell_filled']:,} sold)" if e.get("sell_filled") else "")
-        self.cell(row, COL["Shares"], shares, bold=True)
+        aon = e.get("sell_aon") if state in ("sell_open", "sold") else e.get("aon")
+        self.cell(row, COL["Shares"], shares + (" AON" if aon else ""), bold=True,
+                  tip="All or none: filled all at once, or not at all" if aon else "")
         if e.get("usd"):        # as the other orders': amount + commission = total
             fee = FEE_USD if e.get("fee") is None else e["fee"]
             self.cell(row, COL["$"], f"${e['usd']:,.2f} + ${fee:.2f} = ${e['usd'] + fee:,.2f}", YELLOW, bold=True,
@@ -314,7 +317,7 @@ class AtmTable(SortMixin, QTableWidget):
             edit.setToolTip("The sell order's price" + (": Cancel Sell to change it" if state == "sell_open" else ""))
             edit.setStyleSheet("QLineEdit { background: #101214; color: #a8a8a8; border: 1px solid #22262a; }")
         else:
-            price = e.get("exit-live") or e.get("sell_at") or e.get("exit")      # the checklist's live exit
+            price = current_exit(e)         # the trade's exit now (the checklist's too)
             edit.setText(limit_text(price) if price else "")
             edit.setToolTip(COLUMNS[COL["Sell at"]][1])
             self.tint_sell_at(e, edit)
@@ -443,7 +446,7 @@ class AtmTable(SortMixin, QTableWidget):
         """The boxes show the Sell at prices (changed on the checklist, say), unless being typed in."""
         for eid, edit in self.edits.items():
             e = self.atm.find(eid)
-            price = e and (e.get("exit-live") or e.get("sell_at") or e.get("exit"))
+            price = e and current_exit(e)
             if price and not edit.hasFocus() and edit.text() != limit_text(price):
                 edit.setText(limit_text(price))
 

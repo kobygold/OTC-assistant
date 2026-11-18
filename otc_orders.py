@@ -53,7 +53,8 @@ def order_info(o):
                 "price": o.get("price"), "status": status,
                 "open": status not in ORDER_DONE and status not in ("PENDING_CANCEL", "PENDING_REPLACE"),
                 "entered": o.get("enteredTime", ""), "duration": o.get("duration"),
-                "session": o.get("session"), "type": o.get("orderType")}
+                "session": o.get("session"), "type": o.get("orderType"),
+                "aon": str(o.get("specialInstruction") or "").startswith("ALL_OR_NONE")}
     except (TypeError, ValueError, AttributeError):
         return None
 
@@ -63,9 +64,10 @@ def limit_text(price) -> str:
     return f"{price:.6f}".rstrip("0").rstrip(".") if price < 1 else f"{price:.2f}"
 
 
-def limit_order(ticker, side, shares, price, duration=None, session=None):
-    """A limit order (schwab-py's JSON): GTC and the normal session unless given."""
-    from schwab.orders.common import Duration, Session
+def limit_order(ticker, side, shares, price, duration=None, session=None, aon=False):
+    """A limit order (schwab-py's JSON): GTC and the normal session unless given. aon: All or none
+    (filled all at once, or not at all)."""
+    from schwab.orders.common import Duration, Session, SpecialInstruction
     from schwab.orders.equities import equity_buy_limit, equity_sell_limit
     make = equity_buy_limit if side == "BUY" else equity_sell_limit
     try:
@@ -76,14 +78,17 @@ def limit_order(ticker, side, shares, price, duration=None, session=None):
         session = Session(session) if session else Session.NORMAL
     except ValueError:
         session = Session.NORMAL
-    return make(ticker, int(shares), limit_text(price)).set_duration(duration).set_session(session).build()
+    order = make(ticker, int(shares), limit_text(price)).set_duration(duration).set_session(session)
+    if aon:
+        order = order.set_special_instruction(SpecialInstruction.ALL_OR_NONE)
+    return order.build()
 
 
-def place_limit(client, account_hash, ticker, side, shares, price):
+def place_limit(client, account_hash, ticker, side, shares, price, aon=False):
     """Sends a GTC limit order: (order id or None, "" or why it wasn't sent). An order Schwab took
     without giving its id comes back as (None, "Schwab took the order...")."""
     from schwab.utils import Utils
-    r = client.place_order(account_hash, limit_order(ticker, side, shares, price))
+    r = client.place_order(account_hash, limit_order(ticker, side, shares, price, aon=aon))
     if r.status_code not in (200, 201):
         return None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}"
     try:

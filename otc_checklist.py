@@ -20,13 +20,13 @@ from statistics import median
 from PyQt6.QtCore import QObject, QPoint, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
 from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
-from otc_trade import FEE_USD, bid_fill
+from otc_trade import FEE_USD, bid_fill, current_exit
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
@@ -812,11 +812,11 @@ class SchwabTrader(QObject):
     def _start(self, target, *args):
         threading.Thread(target=target, args=args, name="order", daemon=True).start()
 
-    def place(self, key, ticker, side, shares, price, account):
-        """account: the last 3 digits of the account to send it to."""
+    def place(self, key, ticker, side, shares, price, account, aon=False):
+        """account: the last 3 digits of the account to send it to. aon: All or none."""
         if self._refused(lambda why: self.placed.emit(key, side, None, why)):
             return
-        self._start(self._place, key, ticker, side, shares, price, account)
+        self._start(self._place, key, ticker, side, shares, price, account, aon)
 
     def check(self, key, side, order_id, account=None):
         if self.link is not None and self.link.is_connected:
@@ -840,13 +840,13 @@ class SchwabTrader(QObject):
             return
         self._start(self._orders, account)
 
-    def replace(self, key, ticker, side, order_id, shares, price, account, duration=None, session=None):
+    def replace(self, key, ticker, side, order_id, shares, price, account, duration=None, session=None, aon=False):
         """Changes an open limit order's price, as thinkorswim does: Schwab replaces it with a new
-        order (the old one becomes REPLACED). duration / session: the old order's (GTC, NORMAL
-        when not given)."""
+        order (the old one becomes REPLACED). duration / session / aon: the old order's (GTC, NORMAL,
+        not All or none when not given)."""
         if self._refused(lambda why: self.replaced.emit(key, side, None, price, why)):
             return
-        self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session)
+        self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session, aon)
 
     def read_positions(self, account):
         """The stocks owned in the account, as position_info()."""
@@ -854,13 +854,13 @@ class SchwabTrader(QObject):
             return
         self._start(self._positions, account)
 
-    def send(self, key, ticker, side, shares, price, account, duration=None, order_type="LIMIT"):
+    def send(self, key, ticker, side, shares, price, account, duration=None, order_type="LIMIT", aon=False):
         """An order that isn't an ATM trade (the stocks owned list, the chart's BUY / SELL): a limit
         order, or a market one (order_type "MARKET": price not used, always Day). The answer comes
         as sent()."""
         if self._refused(lambda why: self.sent.emit(key, None, why)):
             return
-        self._start(self._send, key, ticker, side, shares, price, account, duration, order_type)
+        self._start(self._send, key, ticker, side, shares, price, account, duration, order_type, aon)
 
     def _positions(self, account_tail):
         try:
@@ -875,11 +875,11 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.positions.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
-    def _send(self, key, ticker, side, shares, price, account_tail, duration, order_type="LIMIT"):
+    def _send(self, key, ticker, side, shares, price, account_tail, duration, order_type="LIMIT", aon=False):
         try:
             from schwab.utils import Utils
             order = (self._market_order(ticker, side, shares) if order_type == "MARKET"
-                     else self._limit_order(ticker, side, shares, price, duration))
+                     else self._limit_order(ticker, side, shares, price, duration, aon=aon))
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
                 r = client.place_order(account, order)
@@ -903,15 +903,15 @@ class SchwabTrader(QObject):
         return make(ticker, int(shares)).set_duration(Duration.DAY).set_session(Session.NORMAL).build()
 
     @staticmethod
-    def _limit_order(ticker, side, shares, price, duration=None, session=None):
-        return limit_order(ticker, side, shares, price, duration, session)       # (otc_orders: the server's too)
+    def _limit_order(ticker, side, shares, price, duration=None, session=None, aon=False):
+        return limit_order(ticker, side, shares, price, duration, session, aon)  # (otc_orders: the server's too)
 
-    def _place(self, key, ticker, side, shares, price, account_tail):
+    def _place(self, key, ticker, side, shares, price, account_tail, aon=False):
         try:
             from schwab.utils import Utils
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                order = self._limit_order(ticker, side, shares, price)
+                order = self._limit_order(ticker, side, shares, price, aon=aon)
                 r = client.place_order(account, order)
                 if r.status_code not in (200, 201):
                     self.placed.emit(key, side, None, f"Schwab refused the order: HTTP {r.status_code} {r.text[:300]}")
@@ -965,12 +965,12 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.orders.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
-    def _replace(self, key, ticker, side, order_id, shares, price, account_tail, duration, session):
+    def _replace(self, key, ticker, side, order_id, shares, price, account_tail, duration, session, aon=False):
         try:
             from schwab.utils import Utils
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                order = self._limit_order(ticker, side, shares, price, duration, session)
+                order = self._limit_order(ticker, side, shares, price, duration, session, aon)
                 r = client.replace_order(account, order_id, order)
                 if r.status_code not in (200, 201):
                     self.replaced.emit(key, side, None, price,
@@ -1279,7 +1279,7 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     owned None: none known) and its $ what they come to. remember_usd($): called with a buy's $
     when it is sent. quotes(): {"bid", "ask", "current"} now (None when not known), for the quick
     price buttons over the price (with "Clicked": start), read again every second.
-    {"shares", "price" (None at Market), "duration", "type"} or None when canceled."""
+    {"shares", "price" (None at Market), "duration", "type", "aon"} or None when canceled."""
     selling = side == "SELL"
     usual = fee is None
     fee = FEE_USD if usual else fee
@@ -1358,8 +1358,9 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     shares.setToolTip("The amount of shares: the $ follows it")
     total = QLabel()
     total_name = "$ less the commission" if selling else "$ with the commission"
+    aon = aon_box()
     rows = [("Ticker", ticker), ("Order", (side, BUY_COLOR if side == "BUY" else SELL_COLOR)),
-            ("Type", kind), ("Duration", duration), ("Quick price", quick), ("Price", PRICE_ROW), ("Amount in $", usd),
+            ("Type", kind), ("Duration", duration), ("Fill", aon), ("Quick price", quick), ("Price", PRICE_ROW), ("Amount in $", usd),
             ("Shares", shares), (total_name + (" (usual)" if usual else ""), total)]
     if selling:
         rows.insert(2, ("Owned", "-" if owned is None else f"{owned:,}" + (f" ({in_orders:,} in sell orders)"
@@ -1414,7 +1415,9 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         box.setEnabled(not market)
         if market:
             duration.setCurrentIndex(duration.findData("DAY"))
+            aon.setChecked(False)
         duration.setEnabled(not market)
+        aon.setEnabled(not market)          # (All or none: limit orders)
         refresh_quick()
         update()
     usd.value_changed.connect(lambda _v: sync("usd"))
@@ -1440,7 +1443,17 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
     if remember_usd and usd.value() > 0:
         remember_usd(round(usd.value(), 2))     # the buy's default $ next time
     return {"shares": n, "price": None if market else p, "type": kind.currentData(),
-            "duration": "DAY" if market else duration.currentData()}
+            "duration": "DAY" if market else duration.currentData(), "aon": not market and aon.isChecked()}
+
+
+def aon_box():
+    """The order dialogs' "All or none" checkbox: unchecked each time (a choice for this order only)."""
+    box = QCheckBox("All or none")
+    box.setChecked(False)
+    box.setToolTip("All or none (AON): filled all at once, or not at all: no partial fills (such as 300 of "
+                   "125,000, whose commission costs more than they're worth).\nBut an AON order usually "
+                   "isn't shown on Level II, and fills only when someone trades the whole amount at your price.")
+    return box
 
 
 def confirm_order(parent, account_name, title, rows, action, color=BUY_COLOR):
@@ -1691,7 +1704,8 @@ class AtmTrades(QObject):
         self.sending.add(ticker)
         self.pending[ticker] = snapshot
         self.changed.emit()
-        self.trader.place(ticker, ticker, "BUY", snapshot["shares"], snapshot["entry"], snapshot["account"])
+        self.trader.place(ticker, ticker, "BUY", snapshot["shares"], snapshot["entry"], snapshot["account"],
+                          bool(snapshot.get("aon")))
 
     def ask_sell(self, parent, e, price, fee=None, on_bid=None):
         """Sells all the stocks owned at `price`, GTC, after the dialog is approved.
@@ -1711,15 +1725,18 @@ class AtmTrades(QObject):
         used = FEE_USD if fee is None else fee
         gain = (e.get("proceeds") or 0) + total - (e.get("filled") or 0) * e["entry"] - 2 * used
         rows.append(("Profit after both fees", usd_signed(gain)))
+        aon = aon_box()
+        rows.append(("Fill", aon))
         if self.fee_reader:
             self.fee_reader.load_accounts()
         if not confirm_order(parent, self.account_name(e.get("account")), f"Sell {shares:,} {e['ticker']} at "
                              f"{fmt_price(price)}?", rows, "Send SELL order", SELL_COLOR):
             return
+        aon = aon.isChecked()
         self.sending.add(e["id"])
-        self.pending[e["id"]] = {"sell_price": price, "shares": shares}
+        self.pending[e["id"]] = {"sell_price": price, "shares": shares, "aon": aon}
         self.changed.emit()
-        self.trader.place(e["id"], e["ticker"], "SELL", shares, price, e.get("account"))
+        self.trader.place(e["id"], e["ticker"], "SELL", shares, price, e.get("account"), aon)
 
     def ask_cancel(self, parent, e, side):
         """Cancels the trade's open buy or sell order, after asking."""
@@ -1887,7 +1904,7 @@ class AtmTrades(QObject):
         self.sending.add(key)
         self.changed.emit()
         self.trader.send(key, ticker, side, res["shares"], res["price"], self.chosen_account(), res["duration"],
-                         res["type"])
+                         res["type"], res.get("aon", False))
 
     def _remember_usd(self, side):
         """Keeps the $ typed in the chart's BUY / SELL dialog: that dialog starts with it next time."""
@@ -1985,9 +2002,11 @@ class AtmTrades(QObject):
                 return
             if side == "BUY" and e.get("state") == "buy_open":
                 order_id, old, shares, done = e.get("order_id"), e["entry"], e["shares"], e.get("filled") or 0
+                aon = bool(e.get("aon"))
             elif side == "SELL" and e.get("state") == "sell_open":
                 order_id, old, shares, done = (e.get("sell_id"), e.get("sell_price"), self.remaining(e),
                                                e.get("sell_filled") or 0)
+                aon = bool(e.get("sell_aon"))
             else:
                 return
             if done:
@@ -2000,6 +2019,7 @@ class AtmTrades(QObject):
             if key in self.canceling or key in self.sending:
                 return
             order_id, old, shares, ticker = o["id"], o["price"], o["shares"], o["ticker"]
+            aon = bool(o.get("aon"))
             account, fee, duration, session = self.chosen_account(), None, o.get("duration"), o.get("session")
             if o.get("filled"):
                 QMessageBox.warning(parent, "Change the order", f"{o['filled']:,} were already filled: "
@@ -2020,7 +2040,8 @@ class AtmTrades(QObject):
         def make(p):
             """The dialog's title and rows for the new price p (editable in it)."""
             total = shares * p
-            rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"), ("Amount of stocks", f"{shares:,}"),
+            rows = [("Ticker", ticker), ("Order", f"{side} · Limit{' · All or none' if aon else ''} · {what}"),
+                    ("Amount of stocks", f"{shares:,}"),
                     ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW)
                     ] + fee_rows(None if estimated else fee, total, sell=side == "SELL")
             return f"Change the {side.lower()} of {shares:,} {ticker} from {fmt_price(old)} to {fmt_price(p)}?", rows
@@ -2034,7 +2055,7 @@ class AtmTrades(QObject):
         self.sending.add(busy_key)
         self.pending[busy_key] = {"old_id": str(order_id), "key": key}
         self.changed.emit()
-        self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session)
+        self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session, aon)
 
     def ask_change_buy(self, parent, e, shares, price, size):
         """The checklist's boxes of an open buy (the position $, the entry, the amount of stocks) were
@@ -2061,7 +2082,8 @@ class AtmTrades(QObject):
 
         def row(label, old, new):
             return (label, (f"{old} → {new}", CHANGED_COLOR)) if old != new else (label, new)
-        rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC · an ATM trade"),
+        rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC" + (" · All or none" if e.get("aon") else "")
+                                    + " · an ATM trade"),
                 row("Position", f"${old_size:,.2f}", f"${size:,.2f}"),
                 row("Amount of stocks", f"{old_shares:,}", f"{shares:,}"),
                 row("Limit price (entry)", fmt_price(old_price), fmt_price(price))
@@ -2076,7 +2098,7 @@ class AtmTrades(QObject):
         self.pending[e["id"]] = {"old_id": str(order_id), "key": f"atm:{e['id']}:BUY", "shares": int(shares),
                                  "size": round(float(size), 2)}
         self.changed.emit()
-        self.trader.replace(e["id"], ticker, "BUY", order_id, int(shares), price, account)
+        self.trader.replace(e["id"], ticker, "BUY", order_id, int(shares), price, account, aon=bool(e.get("aon")))
         return True
 
     def _replaced(self, key, side, new_id, price, error):
@@ -2181,10 +2203,11 @@ class AtmTrades(QObject):
         self.changed.emit()
 
     def set_sell_at(self, e, price):
-        """The price Sell ATM sells at (starts as the planned exit). The checklist's exit follows."""
-        if not price or price <= 0 or e.get("sell_at") == price:
+        """The price Sell ATM sells at (starts as the planned exit): the trade's exit now, the same on the
+        checklist, the Schwab tab and Telegram (exit-live too), and pinned on the checklist (shared)."""
+        if not price or price <= 0 or e.get("sell_at") == price and e.get("exit-live") == price:
             return
-        e["sell_at"] = price
+        e["sell_at"] = e["exit-live"] = price
         self.save()
         if self.active(e["ticker"]) is e:
             self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
@@ -2307,7 +2330,7 @@ class AtmTrades(QObject):
             if e is None:
                 return
             e.update(state="sell_open", sell_price=pending.get("sell_price"), sell_id=order_id,
-                     sell_time=now, sell_filled=0, note=message)
+                     sell_time=now, sell_filled=0, note=message, sell_aon=bool(pending.get("aon")))
             e.pop("status", None)
         self.save()
         self.changed.emit()
@@ -2537,7 +2560,12 @@ class ChecklistPanel(QWidget):
         self.update_btn.setObjectName("cl_update")
         self.update_btn.clicked.connect(self.update_buy)
         self.update_btn.hide()
-        for b in (self.buy_btn, self.update_btn, self.sell_btn, self.bid_btn, self.done_btn):
+        self.update_sell_btn = QPushButton("Update Sell")   # beside Cancel Sell once a new exit is typed
+        self.update_sell_btn.setObjectName("cl_update")
+        self.update_sell_btn.clicked.connect(self.update_sell)
+        self.update_sell_btn.hide()
+        self.sell_draft = {}    # a new exit typed for the open sell order: {"id", "exit"}
+        for b in (self.buy_btn, self.update_btn, self.sell_btn, self.update_sell_btn, self.bid_btn, self.done_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setLayoutDirection(Qt.LayoutDirection.LeftToRight)     # the X before the text
             trade.addWidget(b)
@@ -3008,21 +3036,43 @@ class ChecklistPanel(QWidget):
         e = self.order()
         return e if key == "exit" and e and e.get("state") == "sell_open" and e.get("sell_price") else None
 
-    def change_sell(self, e, price):
-        """A new exit for the open sell order: Schwab replaces it, after the usual dialog (as dragging
-        its tag on the chart); sent, the new price is the pinned exit (shared with the other computers)."""
-        if not price or price <= 0 or abs(price - (e.get("sell_price") or 0)) < 1e-9:
-            self.refresh()
+    def sell_draft_price(self, e):
+        """The new exit typed for the open sell order e (a number), or None."""
+        if not e or self.sell_draft.get("id") != e["id"]:
+            return None
+        return self.draft_number(self.sell_draft.get("exit"), price=True)
+
+    def set_sell_draft(self, e, text):
+        """A new exit for the open sell: only shown, with what it gives (Update Sell sends it)."""
+        self.sell_draft = {"id": e["id"], "exit": text.strip()} if text.strip() else {}
+        self.refresh()
+
+    def update_sell(self):
+        """Update Sell: the open sell order changed to the new exit, after the usual dialog (as dragging
+        its tag on the chart); sent, the new price is the pinned exit (on every computer)."""
+        e = self.selling("exit")
+        price = self.sell_draft_price(e)
+        if e is None or not price or abs(price - (e.get("sell_price") or 0)) < 1e-9:
             return
         self.atm.ask_move(self, f"atm:{e['id']}:SELL", price)
         if e["id"] in self.atm.sending:         # sent (not canceled in the dialog)
+            self.sell_draft = {}
             prices = self.settings.setdefault("checklist_prices", {})
             prices.setdefault(e["ticker"], {})["exit"] = limit_text(price)
             self.save_settings(self.settings)
+            box = self.boxes and next((v for it, _, _, v in self.widgets if it.key == "exit"), None)
+            if isinstance(box, QLineEdit):
+                box.clear()
         self.refresh()
 
     def toggle_pin(self, key, edit):
-        if not edit.isEnabled() or edit.isReadOnly() or self.selling(key):
+        if not edit.isEnabled() or edit.isReadOnly():
+            return
+        e = self.selling(key)
+        if e:           # the open sell: pinned = a new exit typed; unpin = back to the order's price
+            if self.sell_draft_price(e) is not None:
+                edit.clear()
+                self.set_sell_draft(e, "")
             return
         if self.override_text(key):         # pinned: unpin, the automatic value again
             edit.clear()
@@ -3045,14 +3095,16 @@ class ChecklistPanel(QWidget):
             return
         e = self.selling(key)
         try:
-            base = Decimal(str(e["sell_price"])) if e else Decimal(edit.shown().replace(",", "").replace("$", "").strip())
+            base = Decimal(str(self.sell_draft_price(e) or e["sell_price"])) if e else \
+                Decimal(edit.shown().replace(",", "").replace("$", "").strip())
         except InvalidOperation:
             return
         new = base + direction * PRICE_STEP
         if new <= 0:
             return
-        if e:
-            self.change_sell(e, float(new))
+        if e:                                   # a new exit for the open sell: shown, not sent
+            edit.setText(format(new, "f"))
+            self.set_sell_draft(e, format(new, "f"))
             return
         text = format(new, "f")
         edit.setText(text)
@@ -3081,8 +3133,10 @@ class ChecklistPanel(QWidget):
         return self.settings.get("checklist_prices", {}).get(self.ticker, {}).get(key, "")
 
     def typed(self, key, text):
-        if self.selling(key):
-            return                              # (the open sell's new exit: on Enter, it asks)
+        e = self.selling(key)
+        if e:
+            self.set_sell_draft(e, text)        # the open sell's new exit: Update Sell sends it
+            return
         if key in ("size", "entry") and self.drafting() is not None:
             self.draft_typed(key, text)         # a new value for the open buy, not the plan's
             return
@@ -3124,16 +3178,11 @@ class ChecklistPanel(QWidget):
             self.draft_done(key, edit)
             return
         e = self.selling(key) if edit is not None else None
-        if e:                                   # the open sell's exit: a new one changes the order
-            try:
-                v = Decimal(edit.text().strip())
-            except InvalidOperation:
-                v = None
-            edit.clear()
-            if v is not None and v > 0:
-                self.change_sell(e, float(v * PRICE_STEP if v >= 1 else v))
-            else:
-                self.refresh()
+        if e:                                   # the open sell's new exit: shown as a price (12 -> 0.0012)
+            v = self.draft_number(edit.text(), price=True)
+            text = price_text(format(Decimal(str(v)), "f")) if v else ""
+            edit.setText(text)
+            self.set_sell_draft(e, text)
             return
         if edit is not None and key != "size":
             try:
@@ -3189,6 +3238,16 @@ class ChecklistPanel(QWidget):
             price, n, size = draft[:3]
             self.update_btn.setToolTip(f"Change the buy order to {n:,} @ {fmt_price(price)} (${size:,.2f}), "
                                        "after you approve it")
+        selling = self.selling("exit")
+        new_exit = self.sell_draft_price(selling)
+        if selling is None:
+            self.sell_draft = {}
+        show = bool(new_exit and abs(new_exit - selling["sell_price"]) > 1e-9)
+        self.update_sell_btn.setVisible(show)
+        self.update_sell_btn.setEnabled(can)
+        if show:
+            self.update_sell_btn.setToolTip(f"Change the sell order from {fmt_price(selling['sell_price'])} to "
+                                            f"{fmt_price(new_exit)}, after you approve it")
         self.bid_btn.setEnabled(can)
         if self.trader is None:
             self.buy_btn.setToolTip("Needs the Schwab login")
@@ -3284,10 +3343,14 @@ class ChecklistPanel(QWidget):
             QMessageBox.warning(self, "Buy ATM", "Choose the account for orders on the Schwab tab first."
                                 if self.fee_reader.accounts else "Can't read the Schwab accounts. Check the Schwab login.")
             return
+        aon = aon_box()
+        rows.append(("Fill", aon))
         if not confirm_order(self, self.atm.account_name(account),
                              f"Buy {p['shares']:,} {ticker} at {fmt_price(p['entry'])}?", rows, "Send BUY order"):
             return
-        self.atm.send_buy(self.atm_snapshot(p, account))
+        snapshot = self.atm_snapshot(p, account)
+        snapshot["aon"] = aon.isChecked()
+        self.atm.send_buy(snapshot)
 
     def atm_snapshot(self, p, account):
         """The plan and the market now (Level I and the full Level II), for atm.json.
@@ -3422,6 +3485,11 @@ class ChecklistPanel(QWidget):
                   or order.get("filled") or order.get("shares")) if order else None
         if order:
             own["entry"] = order["entry"]       # the buy's price: exit and stop are worked out from it
+        selling = self.selling("exit")
+        if selling:                             # the open sell: its price, or the new exit typed
+            own["exit"] = self.sell_draft_price(selling) or selling["sell_price"]
+        elif order and order.get("state") in ("buy_open", "bought") and not own.get("exit"):
+            own["exit"] = current_exit(order)   # not pinned: the trade's exit (as the Schwab tab's Sell at)
         new = self.drafting()
         if new is not None:
             price, n, _, changed = self.draft_values(new)
@@ -3448,7 +3516,9 @@ class ChecklistPanel(QWidget):
                      else f"The default {usd_plain(default)} (the Settings tab), or pin your own for all tickers"),
             "shares": (INFO, f"{p['shares']:,}" if p["shares"] else NA,
                        "From the ATM trade (Schwab tab)" if order else f"round({usd:g} / entry)"),
-            "exit": (INFO, price(auto["exit"]), "Trips: the Ask. Dubs and up: the Ask - 0.0001. " + typed),
+            "exit": (INFO, price(current_exit(order)), "The ATM trade's exit now (as the Schwab tab's Sell at; "
+                     "Sell ATM sells at it). " + typed) if order and order.get("state") in ("buy_open", "bought") else
+                    (INFO, price(auto["exit"]), "Trips: the Ask. Dubs and up: the Ask - 0.0001. " + typed),
             "order": (INFO, "GTC", ""),
             "stop": (INFO, price(auto["stop"]),
                      f"The highest bid where the bids add up to {COVER_X}x our amount of stocks. " + typed),
@@ -3645,8 +3715,9 @@ class ChecklistPanel(QWidget):
                 if locked:
                     tip = "Sold at the sell order's price."
                 elif selling:
-                    tip = (f"The sell order's price: {fmt_price(order['sell_price'])}. Type a new price and Enter "
-                           f"(or + / -) to change the order (it asks first). 12 = 0.0012")
+                    tip = (f"The sell order's price: {fmt_price(order['sell_price'])}. Type a new exit (or + / -) to "
+                           f"see what it gives; Update Sell at the top changes the order (it asks first). The pin "
+                           f"(or clearing the box): back to the order's price. 12 = 0.0012")
                     val = fmt_price(order["sell_price"])
                     value.setPlaceholderText(val)
                 elif order and item.key == "exit":
@@ -3655,12 +3726,12 @@ class ChecklistPanel(QWidget):
                 value.setReadOnly(locked)
                 tools = self.price_tools.get(item.key)
                 own = self.override_text(item.key)
+                if selling:                     # the new exit typed (orange), else the order's price (white)
+                    own = self.sell_draft.get("exit", "") if self.sell_draft_price(order) else ""
                 if tools:
                     tools[0].setEnabled(not locked)
-                    tools[1].setEnabled(not locked and not selling)
+                    tools[1].setEnabled(not locked)
                     self.show_pin(tools[1], bool(own))
-                if selling:
-                    own = ""                    # the order's price shows (white); typed: orange, until Enter
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 if item.key == "size":
                     own = f"${own}" if own and not self.override_text("shares") else ""   # with its sign

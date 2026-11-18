@@ -49,7 +49,7 @@ from datetime import datetime
 import otc_alerts
 import otc_telegram_info as info
 from otc_recorder import in_session
-from otc_trade import bid_fill, fmt_price, plan_profit, remaining, sold_profit, usd_signed
+from otc_trade import bid_fill, current_exit, fmt_price, plan_profit, remaining, sold_profit, usd_signed
 
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
 POLL_S = 25                 # getUpdates waits this long for news (long polling)
@@ -451,7 +451,7 @@ class TelegramBot:
             m = self.market_line(t, own) if market is None else market
             if m:
                 lines.append(m)
-            exit_ = e.get("exit-live") or e.get("exit")
+            exit_ = current_exit(e)
             if exit_:
                 gain = plan_profit(dict(e, sold=0, proceeds=0), exit_)
                 lines.append(f"Planned exit {fmt_price(exit_)} ({usd_signed(gain)} after both fees)")
@@ -691,7 +691,7 @@ class TelegramBot:
         """The price to sell all the stocks at, now: the planned exit, the Ask, or the Bid that takes
         them all (None when there's none). demo: a demo's market ({"ask", "bids"}), instead of the stream."""
         if choice == "p":
-            return e.get("exit-live") or e.get("exit") or None
+            return current_exit(e)
         ticker = e.get("ticker")
         if choice == "a":           # one tick under the Ask (first in line to sell)
             ask = (demo.get("ask") if demo is not None else (self.server.l1.get(ticker) or {}).get("ASK_PRICE")) or 0

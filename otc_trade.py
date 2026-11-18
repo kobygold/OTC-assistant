@@ -34,6 +34,15 @@ def bid_fill(bids, shares):
     return price, total
 
 
+def current_exit(e):
+    """The ATM trade's exit now, the same everywhere (the checklist, the Schwab tab's Sell at, Telegram):
+    the sell order's price once sent, else the exit set since the buy (Sell at / the checklist's pinned
+    exit), else the planned one."""
+    if e.get("state") in ("sell_open", "sold") and e.get("sell_price"):
+        return e["sell_price"]
+    return e.get("exit-live") or e.get("sell_at") or e.get("exit") or None
+
+
 def remaining(e):
     """An ATM trade's stocks owned now."""
     return max(0, (e.get("filled") or 0) - (e.get("sold") or 0))
