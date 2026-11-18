@@ -1209,8 +1209,10 @@ def confirm_price_order(parent, account_name, start, make, action, color=BUY_COL
 def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, where, note=""):
     """Selling stocks owned (not an ATM trade): the amount (all those not in sell orders yet), the
     limit price (from the bid or ask: `where`), Day or GTC, and the $ with the commission, in yellow:
-    "$101.00 - $6.95 = $94.05". (shares, price, duration) or None when canceled."""
+    "$101.00 - $6.95 = $94.05", and All or none (unchecked). (shares, price, duration, aon) or None when
+    canceled."""
     free = max(int(owned - in_orders), 0)
+    aon = aon_box()
     amount = QSpinBox()
     amount.setRange(1, max(free, 1))
     amount.setValue(max(free, 1))
@@ -1240,7 +1242,7 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
         rows = [("Ticker", ticker), ("Order", "SELL · Limit · from the stocks owned"),
                 ("Owned", f"{owned:,}" + (f" ({in_orders:,} in sell orders)" if in_orders else "")),
                 ("Amount of stocks", amount_row), ("Limit price", PRICE_ROW), ("Duration", duration),
-                ("$ less the commission" + (" (usual)" if usual else ""), (dollars, "#e3b23c"))]
+                ("Fill", aon), ("$ less the commission" + (" (usual)" if usual else ""), (dollars, "#e3b23c"))]
         if note:
             rows.append(("Note", (note, "#f0a020")))
         return f"Sell {shares:,} {ticker} at {fmt_price(price)} (on the {where})?", rows
@@ -1265,7 +1267,7 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
         return None
     box._steps()
     price = box.price()
-    return (amount.value(), price, duration.currentData()) if price and free > 0 else None
+    return (amount.value(), price, duration.currentData(), aon.isChecked()) if price and free > 0 else None
 
 
 def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
@@ -1922,10 +1924,10 @@ class AtmTrades(QObject):
                           start, self.fee_of(ticker), where.title(), note)
         if res is None:
             return
-        shares, price, duration = res
+        shares, price, duration, aon = res
         self.sending.add(key)
         self.changed.emit()
-        self.trader.send(key, ticker, "SELL", shares, price, self.chosen_account(), duration)
+        self.trader.send(key, ticker, "SELL", shares, price, self.chosen_account(), duration, "LIMIT", aon)
 
     def ask_order(self, parent, ticker, side, price, quotes=None):
         """The chart's BUY / SELL: the order dialog, then a limit or market order of the account
@@ -2108,13 +2110,15 @@ class AtmTrades(QObject):
         fee = read if read is not None else fee
         estimated = fee is None
         fee = FEE_USD if estimated else fee
+        aon_check = aon_box()               # as the order is now: can be changed with the price
+        aon_check.setChecked(aon)
 
         def make(p):
             """The dialog's title and rows for the new price p (editable in it)."""
             total = shares * p
-            rows = [("Ticker", ticker), ("Order", f"{side} · Limit{' · All or none' if aon else ''} · {what}"),
+            rows = [("Ticker", ticker), ("Order", f"{side} · Limit · {what}"),
                     ("Amount of stocks", f"{shares:,}"),
-                    ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW)
+                    ("Limit price now", fmt_price(old)), ("New limit price", PRICE_ROW), ("Fill", aon_check)
                     ] + fee_rows(None if estimated else fee, total, sell=side == "SELL")
             return f"Change the {side.lower()} of {shares:,} {ticker} from {fmt_price(old)} to {fmt_price(p)}?", rows
         if self.fee_reader:
@@ -2123,9 +2127,10 @@ class AtmTrades(QObject):
                                     BUY_COLOR if side == "BUY" else SELL_COLOR)
         if price is None:
             return
+        aon = aon_check.isChecked()
         busy_key = e["id"] if e is not None else key
         self.sending.add(busy_key)
-        self.pending[busy_key] = {"old_id": str(order_id), "key": key}
+        self.pending[busy_key] = {"old_id": str(order_id), "key": key, "aon": aon}
         self.changed.emit()
         self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session, aon)
 
@@ -2194,6 +2199,9 @@ class AtmTrades(QObject):
         elif e is not None:
             self._adopt(e, side, {"id": str(new_id) if new_id else None, "price": price},
                         pending.get("old_id"), 0, "Changed from the chart")
+        if e is not None and "aon" in pending:     # All or none as chosen in the change dialog
+            e["aon" if side == "BUY" else "sell_aon"] = bool(pending["aon"])
+            self.save()
         self.check()            # the account's orders again: the new one, and its number if not known
         self.changed.emit()
 
