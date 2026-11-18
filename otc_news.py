@@ -50,6 +50,43 @@ def error_text(e):
     return words.get(name, f"{name}: {e}")
 
 
+def code_way(sent):
+    """Where Telegram sent the login code (its SentCode's type), in words, with what to do."""
+    t = getattr(sent, "type", None)
+    name = type(t).__name__ if t is not None else ""
+    length = getattr(t, "length", None)
+    digits = f"{length}-digit " if length else ""
+    if name == "SentCodeTypeApp":
+        way = (f"a {digits}code as a message in your Telegram app: the chat named \"Telegram\" (the official one, "
+               "with the blue check; maybe in Archived Chats), on your phone, desktop or web. Not an SMS.")
+    elif name in ("SentCodeTypeSms", "SentCodeTypeFirebaseSms", "SentCodeTypeSmsWord", "SentCodeTypeSmsPhrase"):
+        way = f"a {digits}code by SMS to your phone."
+    elif name == "SentCodeTypeEmailCode":
+        way = (f"a {digits}code by EMAIL to {getattr(t, 'email_pattern', 'your login email')} (your Telegram "
+               "account's login email): look in that mailbox, and its spam folder.")
+    elif name == "SentCodeTypeSetUpEmailRequired":
+        way = ("nothing yet: Telegram first wants a login email for your account. In the Telegram app: Settings → "
+               "Privacy and Security → Login Email, set one up, then Send code again.")
+    elif name == "SentCodeTypeCall":
+        way = f"a phone call that reads out the {digits}code."
+    elif name == "SentCodeTypeMissedCall":
+        way = (f"a missed call: the code is the last {length or ''} digits of the number that calls you "
+               f"(starting {getattr(t, 'prefix', '')}).")
+    elif name == "SentCodeTypeFlashCall":
+        way = "a flash call (the code is in the calling number)."
+    elif name == "SentCodeTypeFragmentSms":
+        way = f"a {digits}code via Fragment (an anonymous number): see {getattr(t, 'url', 'fragment.com')}."
+    else:
+        way = f"a {digits}code ({name or 'unknown way'})."
+    nxt = type(getattr(sent, "next_type", None)).__name__
+    later = {"CodeTypeSms": "an SMS", "CodeTypeCall": "a phone call", "CodeTypeFlashCall": "a flash call",
+             "CodeTypeMissedCall": "a missed call", "CodeTypeFragmentSms": "Fragment"}.get(nxt)
+    timeout = getattr(sent, "timeout", None)
+    if later:
+        way += f" If it doesn't come, Send again" + (f" after {timeout} s" if timeout else "") + f" sends it by {later}."
+    return way
+
+
 class PasswordNeeded(Exception):
     """The account has two-step verification: its password is needed after the code."""
 
@@ -76,13 +113,14 @@ class UserClient:
 
     # ---- the login ----
     def send_code(self, phone):
+        """Asks Telegram for the login code: where it sent it, in words (code_way)."""
         async def go():
             if not self.client.is_connected():
                 await self.client.connect()
             self.phone = phone
             sent = await self.client.send_code_request(phone)
             self.code_hash = getattr(sent, "phone_code_hash", None)
-            return True
+            return code_way(sent)
         return self.run(go())
 
     def sign_in(self, code):

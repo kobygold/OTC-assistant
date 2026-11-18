@@ -5,8 +5,8 @@ posts. The keys and the session are kept in this computer's settings.json (never
 """
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import (QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                             QPushButton, QVBoxLayout)
+from PyQt6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+                             QVBoxLayout, QWidget)
 
 import otc_news
 
@@ -103,14 +103,12 @@ class LoginDialog(QDialog):
         self.send_btn.setEnabled(False)
         self.say("Asking Telegram for a code...")
 
-        def done(_r, error):
+        def done(way, error):
             if error:
                 self.send_btn.setEnabled(True)
                 self.say(otc_news.error_text(error), "#e04040")
                 return
-            self.say("Telegram sent the code. Open the \"Telegram\" chat (the official one, with the blue check) "
-                     "in your Telegram app, on the phone, desktop or web: the code is there, it isn't an SMS. "
-                     "Type it above.", GOLD)
+            self.say(f"Telegram sent {way or 'the code.'} Type it above.", GOLD)
             self.code.setEnabled(True)
             self.ok.setEnabled(True)
             self.code.setFocus()
@@ -159,13 +157,26 @@ class LoginDialog(QDialog):
         super().done(result)
 
 
-class NewsSettings(QGroupBox):
-    """The settings of the news channel reader."""
+NEWS_COLOR = "#c792ea"      # the section's title (the Telegram bot's is blue, the Settings' gold)
+
+
+class NewsSettings(QWidget):
+    """The settings of the news channel reader: a colored section, as the Telegram one below it."""
 
     def __init__(self, settings, save, parent=None):
-        super().__init__("Channel news (OTC Markets changes and headlines, read with your Telegram account)", parent)
+        super().__init__(parent)
         self.settings, self.save = settings, save
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)         # (in line with the Settings tab's own)
+        title = QLabel("News Telegram Bot: OTC Markets changes and headlines")
+        title.setStyleSheet(f"font-size: 13pt; font-weight: bold; color: {NEWS_COLOR};")
+        root.addWidget(title)
+        intro = QLabel("Reads the OTC Markets news channel with your own Telegram account (a bot can't read a "
+                       "channel it isn't an admin of): share changes (dilution), new filings, tier changes and "
+                       "big headlines of your stocks. Your keys: my.telegram.org → API development tools.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #a8a8a8;")
+        root.addWidget(intro)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.api_id = QLineEdit(str(settings.get("telegram_api_id") or ""))
