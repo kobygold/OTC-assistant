@@ -73,8 +73,19 @@ ACTIONS = "telegram/actions/"
 DEMO = "telegram/demo/"
 
 
-def keyboard(buttons):
-    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in buttons]}
+def keyboard(buttons, styled=True):
+    """Rows of (text, data) or (text, data, style): style "success" (green), "danger" (red) or "primary"
+    (blue), Telegram's button colors (Bot API 9.4; older apps show them plain). styled False: without."""
+    def one(b):
+        out = {"text": b[0], "callback_data": b[1]}
+        if styled and len(b) > 2 and b[2]:
+            out["style"] = b[2]
+        return out
+    return {"inline_keyboard": [[one(b) for b in row] for row in buttons]}
+
+
+# the sell buttons' colors: as planned green, on the Ask blue, on the Bid red (it sells lower, now)
+STYLES = {"p": "success", "a": "primary", "b": "danger"}
 
 
 class TelegramError(Exception):
@@ -270,7 +281,13 @@ class TelegramBot:
             params["reply_markup"] = keyboard(buttons)
         try:
             async with lock:        # (fair: the messages of a chat arrive in the order they were made)
-                return await self.call("sendMessage", **params) or {"message_id": None}
+                try:
+                    return await self.call("sendMessage", **params) or {"message_id": None}
+                except TelegramError as e:
+                    if not buttons or e.code != 400:
+                        raise
+                    params["reply_markup"] = keyboard(buttons, styled=False)    # (colors refused: plain)
+                    return await self.call("sendMessage", **params) or {"message_id": None}
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -286,7 +303,13 @@ class TelegramBot:
             params["reply_markup"] = keyboard(buttons)
         try:
             async with self.chat_locks.setdefault(chat_id, asyncio.Lock()):
-                await self.call("editMessageText", **params)
+                try:
+                    await self.call("editMessageText", **params)
+                except TelegramError as e:
+                    if not buttons or e.code != 400 or "not modified" in str(e):
+                        raise
+                    params["reply_markup"] = keyboard(buttons, styled=False)    # (colors refused: plain)
+                    await self.call("editMessageText", **params)
             return True
         except asyncio.CancelledError:
             raise
@@ -531,8 +554,8 @@ class TelegramBot:
     def offer_buttons(self, aid, prices):
         rows = []
         if prices.get("p"):
-            rows.append([(f"Sell as planned @ {fmt_price(prices['p'])}", f"{aid}:p")])
-        side = [(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}") for c in ("a", "b") if prices.get(c)]
+            rows.append([(f"Sell as planned @ {fmt_price(prices['p'])}", f"{aid}:p", STYLES["p"])])
+        side = [(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}", STYLES[c]) for c in ("a", "b") if prices.get(c)]
         if side:
             rows.append(side)
         rows.append([("Ignore", f"{aid}:x")])
@@ -660,7 +683,7 @@ class TelegramBot:
             confirm.update(demo=offer["demo"], trade=offer.get("trade"))
         self.server.put_shared(ACTIONS + cid, confirm)
         await self.edit(chat, mid, text + "\n\n" + "\n".join(lines),
-                        [[("Yes, send", f"{cid}:y"), ("No", f"{cid}:n")]])
+                        [[("Yes, send", f"{cid}:y", "success"), ("No", f"{cid}:n")]])
 
     async def back_to_offer(self, chat, mid, offer_id, offer, text):
         """The offer's buttons again (as long as they work), under `text`."""
