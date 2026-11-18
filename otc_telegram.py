@@ -555,9 +555,9 @@ class TelegramBot:
         rows = []
         if prices.get("p"):
             rows.append([(f"Sell as planned @ {fmt_price(prices['p'])}", f"{aid}:p", STYLES["p"])])
-        side = [(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}", STYLES[c]) for c in ("a", "b") if prices.get(c)]
-        if side:
-            rows.append(side)
+        for c in ("a", "b"):            # (each on its own row: side by side, a phone cuts the price off)
+            if prices.get(c):
+                rows.append([(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}", STYLES[c])])
         rows.append([("Ignore", f"{aid}:x")])
         return rows
 
