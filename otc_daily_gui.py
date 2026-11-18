@@ -63,7 +63,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.5.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1136,6 +1136,8 @@ class MainWindow(QMainWindow):
         self.chart_split.setChildrenCollapsible(False)
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
                                         APP_DIR / "schwab_token.json")
+        self.checklist.default_usd = self.position_default_now      # the chosen account's (shared)
+        self.show_position_default()
         self.checklist.setVisible(self.checklist_btn.isChecked())
         # The ATM trades: a Buy ATM makes the ticker a yellow favorite; their tickers are streamed
         # too (the Schwab tab's market now); their open orders are lines on the chart
@@ -2689,6 +2691,8 @@ class MainWindow(QMainWindow):
             self.reload_drawings()
         if key == "" or key.startswith("atm/"):
             self.checklist.atm.reload_shared()
+        if key == "" or key == f"settings/{self.shared_account()}":
+            self.show_position_default()
 
     def on_shared_refused(self, key, why):
         what = key.split("/")[0]
@@ -3005,6 +3009,7 @@ class MainWindow(QMainWindow):
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
         self.checklist.atm.check()      # and read its orders
         self.telegram.refresh()         # Settings → Telegram: this account's phones
+        self.show_position_default()    # and its default position $
 
     def _build_atm_tab(self):
         tab = QWidget()
@@ -3409,7 +3414,7 @@ class MainWindow(QMainWindow):
         tol, gap = self.af_tol.value() / 100, self.af_gap.value() / 100
         period = self.avg_period.value()
         try:
-            usd = float(self.settings.get("checklist_size") or 0) or checklist.default_position(self.settings)
+            usd = float(self.settings.get("checklist_size") or 0) or self.position_default_now()
         except (TypeError, ValueError):
             usd = checklist.POSITION_USD
         prep = {}
@@ -3518,9 +3523,9 @@ class MainWindow(QMainWindow):
         the account chosen at the top)."""
         tab = QWidget()
         root = QVBoxLayout(tab)
-        position = QGroupBox("Position")
-        root.addWidget(position)
-        plain = QVBoxLayout(position)
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #e3b23c;")     # (the section titles' gold)
+        root.addWidget(title)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.position_default = QSpinBox()
@@ -3529,13 +3534,14 @@ class MainWindow(QMainWindow):
         self.position_default.setPrefix("$")
         self.position_default.setGroupSeparatorShown(True)
         self.position_default.setFixedWidth(130)
-        self.position_default.setValue(int(round(checklist.default_position(self.settings))))
+        self.position_default.setValue(int(round(self.position_default_now())))
         self.position_default.setToolTip(
             "The checklist's position $ when it isn't pinned: the amount of stocks of a new ATM trade is this "
             "$ / the entry. A $ pinned on the checklist is kept instead (unpin it to come back to this one). "
-            "The ATM Scanner's Check L1/L2 counts with it too.")
+            "The ATM Scanner's Check L1/L2 counts with it too.\nOne for each account (the one chosen at the "
+            "top), the same on all your computers.")
         self.position_default.valueChanged.connect(self.set_position_default)
-        note = QLabel("Raise it as your portfolio grows. Saved on this computer.")
+        self.position_note = note = QLabel("")
         note.setStyleSheet("color: #8a8a8a;")
         row = QHBoxLayout()
         row.addWidget(self.position_default)
@@ -3543,7 +3549,8 @@ class MainWindow(QMainWindow):
         row.addWidget(note)
         row.addStretch()
         form.addRow("Default position $:", row)
-        plain.addLayout(form)
+        root.addLayout(form)
+        root.addSpacing(10)
         root.addWidget(self.telegram, 1)
         return tab
 
@@ -3564,10 +3571,42 @@ class MainWindow(QMainWindow):
                           "bought_time": datetime.now().isoformat(timespec="seconds")},
                 "market": {"bid": bid, "ask": ask, "bids": [list(r[:3]) for r in cl.bids]}}
 
+    # ---- the default position $: per account, in the shared data (settings/<account>) ----
+    def position_default_now(self):
+        """The chosen account's default position $ (shared by all my computers); before it's set there,
+        this computer's old one, else $150."""
+        if self.shared_imported:
+            v = ((self.shared.items.get(f"settings/{self.shared_account()}") or [0, None])[1] or {}).get(
+                "position_default")
+            if v:
+                return float(v)
+        return checklist.default_position(self.settings)
+
     def set_position_default(self, value):
-        self.settings["position_default"] = int(value)
-        save_settings(self.settings)
+        if self.shared_imported and self.settings.get("schwab_account"):
+            key = f"settings/{self.shared_account()}"
+            data = dict((self.shared.items.get(key) or [0, None])[1] or {})
+            if data.get("position_default") != int(value):
+                data["position_default"] = int(value)
+                self.shared.put(key, data)
+        else:                               # no shared data yet: this computer's
+            self.settings["position_default"] = int(value)
+            save_settings(self.settings)
         self.checklist.refresh()
+
+    def show_position_default(self):
+        """The Settings tab's default position $: the chosen account's (it changed, here or elsewhere)."""
+        if not hasattr(self, "position_default"):
+            return
+        self.position_default.blockSignals(True)
+        self.position_default.setValue(int(round(self.position_default_now())))
+        self.position_default.blockSignals(False)
+        acct = self.settings.get("schwab_account")
+        self.position_note.setText(
+            f"For account ...{acct}, on all your computers. Raise it as your portfolio grows." if acct and
+            self.shared_imported else "Raise it as your portfolio grows.")
+        if hasattr(self, "checklist"):
+            self.checklist.refresh()
 
     # ================================================== Favorites ===
     def _build_favorites_tab(self):

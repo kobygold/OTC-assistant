@@ -28,11 +28,12 @@ from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 from otc_trade import FEE_USD, bid_fill
 
-POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it)
+POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
 
 def default_position(settings):
-    """The default position $ (the Settings tab's), else POSITION_USD."""
+    """This computer's default position $ (before it was kept per account, in the shared data), else
+    POSITION_USD. The app's is ChecklistPanel.default_usd() (the account's)."""
     try:
         v = float(settings.get("position_default") or 0)
     except (TypeError, ValueError):
@@ -2578,6 +2579,8 @@ class ChecklistPanel(QWidget):
         self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
         self.changing_order = False     # the change-order dialog is open
         self.draft = {}         # new values typed for the open buy: {"id", "entry", "size", "shares", "last"}
+        # the default position $ (the app sets it: the chosen account's, in the shared data)
+        self.default_usd = lambda: default_position(self.settings)
         self.draft_tools = {}   # key -> the +/- and reset buttons of its new value's box (an open buy)
         self.boxes = {}         # key -> its live value's box
         for name, items in sections:
@@ -3368,7 +3371,7 @@ class ChecklistPanel(QWidget):
         bid = self.bid or (self.bids[0][1] if self.bids else None)
         ask = self.ask or (self.asks[0][1] if self.asks else None)
         own = self.overrides()
-        default = default_position(self.settings)
+        default = self.default_usd()
         usd = own.get("size", default)
         fee, fee_details = self.fees.get(self.ticker, (None, "No ticker"))
         fee_used = FEE_USD if fee is None else fee
@@ -3522,7 +3525,7 @@ class ChecklistPanel(QWidget):
             if before and tools:
                 pin = tools[-1]
                 self.show_pin(pin, self.plan_pinned(key))
-                default = usd_plain(default_position(self.settings))
+                default = usd_plain(self.default_usd())
                 follows = {"size": f"the default {default} (the Settings tab)",
                            "shares": "the position $ / the entry"}[key]
                 kept = {"size": "this $ is kept, for all tickers",

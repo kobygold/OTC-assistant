@@ -63,6 +63,7 @@ class TelegramPanel(QWidget):
         self.test_done.connect(self.on_test_done)
         self.settings, self.save_settings, self.link, self.shared = settings, save_settings, link, shared
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)         # (in line with the Settings tab's own)
         title = QLabel("Telegram: the ATM trades' news on the phones")
         title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #4fc3f7;")
         root.addWidget(title)
