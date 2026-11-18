@@ -1047,13 +1047,35 @@ class PositionsTable(AtmTable):
         self.cell(row, PCOL["Day P/L"], "-" if day is None else usd_signed(day),
                   None if day is None else GREEN if day >= 0 else RED, bold=True)
         free = p["shares"] - in_orders
+        # an ATM trade at step 3 (its stocks in its sell order): the buttons change that order's price
+        selling = e if e is not None and e.get("state") == "sell_open" and e.get("sell_price") and free <= 0 else None
         for title, where, color in (("Sell on Bid", "bid", SELL_COLOR), ("Sell on Ask", "ask", SELL_COLOR)):
             b = button("Sending ..." if sending else title, color)
-            b.setToolTip(f"Sell {ticker} with a limit at the {where} now: the dialog asks the amount (up to "
-                         f"{max(free, 0):,}), the price and Day or GTC")
-            b.setEnabled(not sending and free > 0 and self.atm.trader is not None)
-            b.clicked.connect(lambda _c=False, t=ticker, w=where: self.atm.ask_sell_position(self, t, w))
+            if selling is not None:
+                b.setToolTip(f"Change the ATM sell order of {ticker} (now {AtmTrades.remaining(selling):,} @ "
+                             f"{fmt_price(selling['sell_price'])}) to the {where} now: the change dialog first")
+                b.setEnabled(not sending and not self.atm.busy(selling) and self.atm.trader is not None)
+                b.clicked.connect(lambda _c=False, e=selling, w=where: self.change_atm_sell(e, w))
+            else:
+                b.setToolTip(f"Sell {ticker} with a limit at the {where} now: the dialog asks the amount (up to "
+                             f"{max(free, 0):,}), the price and Day or GTC")
+                b.setEnabled(not sending and free > 0 and self.atm.trader is not None)
+                b.clicked.connect(lambda _c=False, t=ticker, w=where: self.atm.ask_sell_position(self, t, w))
             self.setCellWidget(row, PCOL[title], centered(b))
+
+    def change_atm_sell(self, e, where):
+        """Sell on Bid / Ask of an ATM trade whose stocks are in its sell order: that order changed to the
+        bid / ask now (Schwab replaces it), after the change dialog (the price can be changed there)."""
+        m = self.atm.market.get(e["ticker"], {})
+        price = (m.get(where) or [None])[0]
+        if not price:
+            QMessageBox.warning(self, f"Sell {e['ticker']}", f"No {where} for {e['ticker']} yet: try again in a moment.")
+            return
+        self.atm.ask_move(self, f"atm:{e['id']}:SELL", price)
+        if e["id"] in self.atm.sending:         # sent: the new price is the pinned exit too (shared)
+            prices = self.atm.settings.setdefault("checklist_prices", {})
+            prices.setdefault(e["ticker"], {})["exit"] = limit_text(price)
+            self.atm.save_settings(self.atm.settings)
 
     def fill_market(self, row, p):
         f = self.figures(p)
