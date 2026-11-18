@@ -52,6 +52,7 @@ import otc_atm as atm
 from otc_alert_dialog import AlertDialog, AlertsDialog
 from otc_atm_trades import AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
+from otc_trade import STEP_NAMES, trade_steps
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
@@ -66,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.11"
+APP_VERSION = "2.6.13"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -449,6 +450,26 @@ def star_icon(color=None) -> QIcon:
 
 def fmt_amount(v) -> str:
     return "" if v is None else f"{v:,.0f}" if v == int(v) else f"{v:,}"
+
+
+STEPS_ROLE = Qt.ItemDataRole.UserRole + 1     # an ATM cell's 4 steps ([DONE / HALF / TODO] x 4)
+
+
+class StepsCellDelegate(QStyledItemDelegate):
+    """The Favorites' ATM cell: the trade's 4 steps drawn (as the Monitor tab's Steps), empty without one."""
+
+    def sizeHint(self, option, index):
+        return QSize(2 * checklist.STEP_R + 3 * checklist.STEP_GAP + 16, 2 * checklist.STEP_R + 8)
+
+    def paint(self, p, option, index):
+        steps = index.data(STEPS_ROLE)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, p, opt.widget)    # background, selection
+        if steps:
+            checklist.paint_steps(p, option.rect, steps)
 
 
 class FavDelegate(QStyledItemDelegate):
@@ -3529,7 +3550,9 @@ class MainWindow(QMainWindow):
                 symbol, color = checklist.MARKS[state]
                 lines.append(f"<b style='color:{color}'>{symbol}</b> {html.escape(label)}"
                              + (f" <span style='color:#a8a8a8'>· {html.escape(tip)}</span>" if tip else ""))
-            passed = sum(res[k][0] == checklist.OK for k, _ in checklist.SCAN_CHECKS)
+            # a pass: ✔, and "?" on No diluter on the Ask (a so-so market maker first: not a diluter caught)
+            passed = sum(res[k][0] == checklist.OK or (k == "no_diluter" and res[k][0] == checklist.MAYBE)
+                         for k, _ in checklist.SCAN_CHECKS)
             c = {"passed": passed, "tip": f"<b>{ticker}</b> · {passed}/{len(lines)} · {when}<br>" + "<br>".join(lines)}
         self.atm_checks[ticker] = c
         for items in (self.atm_check_items, self.fav_check_items):     # shown on both tabs
@@ -3859,13 +3882,15 @@ class MainWindow(QMainWindow):
         self.fav_table = QTableWidget(0, len(FAV_COLUMNS))
         self.fav_table.setHorizontalHeaderLabels(FAV_COLUMNS)
         self.fav_table.setItemDelegateForColumn(0, FavDelegate(self.fav_table))
+        self.fav_table.setItemDelegateForColumn(FAV_COLUMNS.index("ATM"), StepsCellDelegate(self.fav_table))
         tips = {
             "Fav": "Favorites group, 1-6. Click a cell to move the ticker to another group or remove it. "
                    "Click this title to sort by group.",
             "Checks": "How many of the checklist's main checks it passes (Check L1/L2). Hover over a "
                       "number for each check. N/A: no Level 1 / Level II for it.",
-            "ATM": "The ticker's ATM trade in the chosen account, in the colors of the Monitor tab's ATM "
-                   "Trades table: the open one, else the last one there. Hover for its details.",
+            "ATM": "The ticker's ATM trade in the chosen account, as its 4 steps (the Monitor tab's): buy placed, "
+                   "got the stocks, sell placed, sold; a yellow half: partly. The open one, else the last one "
+                   "there. Hover for its details.",
             "Last day": "The ticker's latest day with trades in the database.",
             "Close": "Close on the last day.",
             "Change %": "From the close of the day before.",
@@ -4105,21 +4130,18 @@ class MainWindow(QMainWindow):
         if e is None:
             item.setText("")
             item.value = -1
-            item.setBackground(QBrush())
-            item.setForeground(QBrush())
+            item.setData(STEPS_ROLE, None)
             item.setToolTip("No ATM trade for it in this account")
             return
         state = e.get("state", "buy_open")
-        name, bg, fg = checklist.STATES.get(state, (state, None, "#ffffff"))
-        item.setText(name)
-        steps = list(checklist.STATES)
-        item.value = steps.index(state) if state in steps else len(steps)
-        item.setBackground(QBrush(QColor(bg)) if bg else QBrush())
-        item.setForeground(QBrush(QColor(fg)))
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-        lines = [f"ATM trade: {name}",
+        name = checklist.STATES.get(state, (state,))[0]
+        item.setText("")
+        steps = trade_steps(e)
+        item.setData(STEPS_ROLE, steps)          # drawn as 4 circles (StepsCellDelegate)
+        # sorted by the steps done (a half: half a step), a canceled one first
+        item.value = -0.5 if state == "canceled" else sum({"done": 1.0, "half": 0.5}.get(st, 0.0) for st in steps)
+        words = {"done": "✔", "half": "partly", "todo": "not yet"}
+        lines = [f"ATM trade: {name}"] + [f"{i + 1}. {n}: {words[st]}" for i, (n, st) in enumerate(zip(STEP_NAMES, steps))] + [
                  f"{e.get('shares', 0):,} shares, entry {fmt_price(e.get('entry'))}, exit {fmt_price(e.get('exit'))}"]
         for key, what in (("time", "Sent"), ("bought_time", "Bought"), ("sell_time", "Sell sent"),
                           ("sold_time", "Sold"), ("canceled_time", "Canceled")):
