@@ -4,7 +4,8 @@ and the login of the user's own Telegram account (otc_news.py), with a test that
 posts. The keys and the session are kept in this computer's settings.json (never in git).
 """
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -35,6 +36,31 @@ def wait_for(future, done, ms=150):
 
 
 wait_for.timers = []
+
+
+def qr_pixmap(text, size=240):
+    """A QR code of text, drawn (black on white, a quiet border), or None without the qrcode package."""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    q = qrcode.QRCode(border=3, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    q.add_data(text)
+    q.make(fit=True)
+    m = q.get_matrix()
+    n = len(m)
+    pix = QPixmap(size, size)
+    pix.fill(QColor("#ffffff"))
+    p = QPainter(pix)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#000000"))
+    cell = size / n
+    for y, row in enumerate(m):
+        for x, on in enumerate(row):
+            if on:
+                p.drawRect(QRectF(x * cell, y * cell, cell + 0.5, cell + 0.5))
+    p.end()
+    return pix
 
 
 class LoginDialog(QDialog):
@@ -72,6 +98,14 @@ class LoginDialog(QDialog):
         self.password.hide()
         self.password_label.hide()
         root.addLayout(form)
+        # or a QR code, scanned with Telegram on the phone (no code to type: when the code doesn't come)
+        self.qr_btn = QPushButton("Log in with a QR code instead (scan it with Telegram on your phone)")
+        self.qr_btn.clicked.connect(self.qr_start)
+        root.addWidget(self.qr_btn)
+        self.qr = QLabel()
+        self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr.hide()
+        root.addWidget(self.qr)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
@@ -114,6 +148,62 @@ class LoginDialog(QDialog):
             self.code.setFocus()
             self.wait_resend(self.RESEND_S)
         wait_for(self.user.send_code(phone), done)
+
+    # ---- the QR code ----
+    def qr_start(self):
+        self.qr_btn.setEnabled(False)
+        self.say("Asking Telegram for a login QR code...")
+
+        def done(url, error):
+            if error:
+                self.qr_btn.setEnabled(True)
+                self.say(otc_news.error_text(error), "#e04040")
+                return
+            self.show_qr(url)
+            self.qr_wait()
+        wait_for(self.user.qr_start(), done)
+
+    def show_qr(self, url):
+        pix = qr_pixmap(url)
+        if pix is None:
+            self.say("The qrcode package isn't installed: python -m pip install qrcode (or Check for update).",
+                     "#e04040")
+            self.qr_btn.setEnabled(True)
+            return False
+        self.qr.setPixmap(pix)
+        self.qr.show()
+        self.say("On your phone: Telegram → Settings → Devices → Link Desktop Device, and scan this code. "
+                 "(It changes every 30 seconds: scan the one shown.)", GOLD)
+        self.adjustSize()
+        return True
+
+    def qr_wait(self):
+        """Waits for the scan; a new QR when it runs out; the password when two-step verification asks."""
+        if not self.isVisible():
+            return
+
+        def done(name, error):
+            if not self.isVisible():
+                return
+            if isinstance(error, otc_news.PasswordNeeded):
+                self.qr.hide()
+                self.password.show()
+                self.password_label.show()
+                self.password.setFocus()
+                self.ok.setEnabled(True)
+                self.say("Scanned. Your account has two-step verification: type its password.", GOLD)
+                return
+            if error:
+                self.qr_btn.setEnabled(True)
+                self.say(otc_news.error_text(error), "#e04040")
+                return
+            if name is None:                    # ran out: the new one, and wait again
+                if self.show_qr(self.user.qr.url):
+                    self.qr_wait()
+                return
+            self.session, self.name = self.user.session_string(), name
+            self.accept()
+        wait_for(self.user.qr_wait(), done)
 
     def wait_resend(self, left):
         """Send code off for a while (a countdown on it)."""

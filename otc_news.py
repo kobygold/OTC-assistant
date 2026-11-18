@@ -148,6 +148,32 @@ class UserClient:
             name += f" (@{me.username})"
         return name
 
+    # ---- the login with a QR code (no code to type: scanned with Telegram on the phone) ----
+    def qr_start(self):
+        """A login QR: its tg://login URL (shown as a QR code; it runs out in about 30 seconds)."""
+        async def go():
+            if not self.client.is_connected():
+                await self.client.connect()
+            self.qr = await self.client.qr_login()
+            return self.qr.url
+        return self.run(go())
+
+    def qr_wait(self, seconds=25):
+        """Waits for the scan: the account's name; None when the QR ran out (a new URL in self.qr.url
+        then); PasswordNeeded with two-step verification."""
+        async def go():
+            try:
+                await self.qr.wait(timeout=seconds)
+            except asyncio.TimeoutError:
+                await self.qr.recreate()
+                return None
+            except Exception as e:
+                if type(e).__name__ == "SessionPasswordNeededError":
+                    raise PasswordNeeded() from e
+                raise
+            return await self._me()
+        return self.run(go())
+
     def session_string(self):
         return self._sync(self._save())
 
