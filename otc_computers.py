@@ -194,8 +194,10 @@ class ComputersPanel(QWidget):
             self.show_cluster(msg)
         elif kind == "streamed":
             most, count, wanted = msg["max"], msg["count"], msg["wanted"]
-            color = RED if wanted > most else YELLOW if count >= most * 0.9 else GRAY
-            self.count.setText(f"Streaming {count} tickers (of {wanted} wanted; Schwab streams up to {most}).")
+            books, book_max = msg.get("books"), msg.get("book_max")
+            color = RED if wanted > most else YELLOW if count >= most * 0.9 or (book_max and wanted > book_max) else GRAY
+            self.count.setText(f"Streaming {count} tickers (of {wanted} wanted; Schwab streams up to {most})"
+                               + (f", Level II for {books} (up to {book_max})." if book_max else "."))
             self.count.setStyleSheet(f"color: {color};")
 
     def add_event(self, e):

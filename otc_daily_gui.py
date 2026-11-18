@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.13"
+APP_VERSION = "2.6.14"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -450,6 +450,51 @@ def star_icon(color=None) -> QIcon:
 
 def fmt_amount(v) -> str:
     return "" if v is None else f"{v:,.0f}" if v == int(v) else f"{v:,}"
+
+
+class ProgressButton(QPushButton):
+    """A button that shows a job's progress on itself: a green fill from the left as it goes, and the %
+    in its text ("Stop · 37%"); set_progress(None) makes it a plain button again."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.idle_text = text
+        self.fraction = None
+        fm = self.fontMetrics()         # as wide as its widest text: the row doesn't move as the % changes
+        self.setMinimumWidth(max(fm.horizontalAdvance(t) for t in (text, "Stop · 100%", "Stop · ...")) + 28)
+
+    def set_progress(self, done, total, busy_text="Stop"):
+        if total <= 0:
+            self.fraction = 0.0
+            self.setText(f"{busy_text} · ...")
+            self.setToolTip(self.toolTip())
+        else:
+            self.fraction = max(0.0, min(1.0, done / total))
+            self.setText(f"{busy_text} · {round(self.fraction * 100)}%")
+        self.update()
+
+    def clear_progress(self):
+        self.fraction = None
+        self.setText(self.idle_text)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.fraction is None:
+            return
+        from PyQt6.QtGui import QPainter
+        p = QPainter(self)
+        r = self.rect().adjusted(2, 2, -2, -2)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        fill = QColor("#1db31d")
+        fill.setAlpha(120)              # (the text shows through)
+        done = r.adjusted(0, 0, -int(r.width() * (1 - self.fraction)), 0)
+        p.setBrush(fill)
+        p.drawRoundedRect(done.toRectF() if hasattr(done, "toRectF") else done, 3, 3)
+        p.setBrush(QColor("#1db31d"))   # and a solid line along the bottom
+        p.drawRect(r.left(), r.bottom() - 2, int(r.width() * self.fraction), 3)
+        p.end()
 
 
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1     # an ATM cell's 4 steps ([DONE / HALF / TODO] x 4)
@@ -3164,7 +3209,7 @@ class MainWindow(QMainWindow):
         reset.clicked.connect(self.reset_atm_filters)
         brow.addWidget(reset)
         brow.addSpacing(16)
-        self.atm_check_btn = QPushButton("Check L1/L2")
+        self.atm_check_btn = ProgressButton("Check L1/L2")
         self.atm_check_btn.setToolTip(self.check_tip("the tickers shown"))
         self.atm_check_btn.clicked.connect(lambda: self.check_market("atm"))
         brow.addWidget(self.atm_check_btn)
@@ -3232,7 +3277,7 @@ class MainWindow(QMainWindow):
         self.atm_check_job = None
         self.probe = ProbeRunner(self.server, self)
         self.probe.result.connect(self.on_probe_result)
-        self.probe.progress.connect(lambda done, total, text: self.check_ui()[1].setText(text))
+        self.probe.progress.connect(self.on_probe_progress)
         self.probe.finished.connect(self.on_probe_finished)
         self.atm_results = []
         self.atm_summary = ""
@@ -3462,8 +3507,8 @@ class MainWindow(QMainWindow):
         if self.probe.running or self.atm_check_job is not None:
             self.atm_check_prep = None
             self.probe.stop()
-            self.atm_check_btn.setText("Check L1/L2")
-            self.fav_check_btn.setText("Check L1/L2")
+            self.atm_check_btn.clear_progress()
+            self.fav_check_btn.clear_progress()
             return
         if source == "fav":
             tbl, col = self.fav_table, FAV_COLUMNS.index("Ticker")
@@ -3514,7 +3559,7 @@ class MainWindow(QMainWindow):
         def finished(message, ok):
             self.atm_check_job = None
             if not ok:
-                btn.setText("Check L1/L2")
+                btn.clear_progress()
                 status.setText(message or "Stopped.")
                 return
             self.atm_check_prep = prep
@@ -3523,8 +3568,10 @@ class MainWindow(QMainWindow):
 
         self.atm_check_job = Job(fn)
         self.atm_check_job.signals.finished.connect(finished)
-        btn.setText("Stop checking")
-        status.setText(f"Checking L1/L2: reading the candles of {len(tickers):,} tickers...")
+        btn.set_progress(0, 0)          # (reading the candles first: no % yet)
+        btn.setToolTip(f"Checking {len(tickers):,} tickers: click to stop")
+        status.setText(f"Checking L1/L2 of {len(tickers):,} tickers" +
+                       (" at the last close..." if held else " live..."))
         self.atm_check_job.start()
 
     def on_probe_result(self, ticker, r):
@@ -3566,9 +3613,16 @@ class MainWindow(QMainWindow):
             except RuntimeError:        # (the table was filled again meanwhile)
                 pass
 
+    def on_probe_progress(self, done, total, _text):
+        """The check's progress: on its button (a fill and the %), the count on hover."""
+        btn = self.check_ui()[0]
+        btn.set_progress(done, total)
+        btn.setToolTip(f"{done:,} of {total:,} checked: click to stop")
+
     def on_probe_finished(self, text):
         btn, status, items = self.check_ui()
-        btn.setText("Check L1/L2")
+        btn.clear_progress()
+        btn.setToolTip(self.check_tip("all the favorites" if self.check_from == "fav" else "the tickers shown"))
         self.atm_check_prep = None
         checked = [c for t, c in self.atm_checks.items() if t in items]
         good = sum(1 for c in checked if c["passed"] == len(checklist.SCAN_CHECKS))
@@ -3870,7 +3924,7 @@ class MainWindow(QMainWindow):
         exp.clicked.connect(lambda: self.export_table(self.fav_table, f"favorites_{date.today().isoformat()}.csv"))
         row.addWidget(exp)
         row.addSpacing(16)
-        self.fav_check_btn = QPushButton("Check L1/L2")
+        self.fav_check_btn = ProgressButton("Check L1/L2")
         self.fav_check_btn.setToolTip(self.check_tip("all the favorites"))
         self.fav_check_btn.clicked.connect(lambda: self.check_market("fav"))
         row.addWidget(self.fav_check_btn)

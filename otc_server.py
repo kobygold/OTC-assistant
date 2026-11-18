@@ -114,7 +114,9 @@ FORCED_RENEW_GAP_S = 30         # a refused token renews at most this often
 IDLE_EXIT_S = 10                # no app connected for this long (after one was): the server ends
 START_GRACE_S = 30              # ... or, at the start, no app came at all
 LOG_MAX_BYTES = 1_000_000
-MAX_TICKERS = 500               # Schwab streams up to this many tickers per service
+MAX_TICKERS = 500               # Schwab streams up to this many tickers for Level 1
+BOOK_MAX = 100                  # ...and this many for each Level II book (NASDAQ_BOOK, NYSE_BOOK): more, and
+                                # Schwab refuses ("maximum number of symbols", code 19) and drops the stream
 TIDY_S = 3600                   # the recording's old days: compressed / deleted this often
 HEARTBEAT_S = 1                 # the main server's heartbeat to its clients
 HEARTBEAT_TIMEOUT_S = 5         # a client that hears nothing for this long: the main server is gone
@@ -319,6 +321,8 @@ class Server:
         self.raw_books = {}                     # ticker -> {service -> the book as Schwab sent it}
         self.l1 = {}                            # ticker -> its Level 1 fields so far
         self.symbols = set()                    # the tickers subscribed now (a client: received)
+        self.book_symbols = set()               # (main server) those of them with Level II too: the first BOOK_MAX
+        self.streamed_msg = None                # the last "streamed" counts sent to the apps
         self.counted = None                     # (streamed, wanted) as last sent to the apps
         self.sent_want = None                   # (client) the last want sent to the main server
         self.recorder = Recorder(market_log, log)
@@ -456,8 +460,8 @@ class Server:
         if self.store_ready:
             welcome["store"] = self.store.snapshot()
         conn.put(welcome)
-        if self.counted:
-            conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
+        if self.streamed_msg:
+            conn.put(dict(self.streamed_msg))
         for m in list(self.last_reads.values()):        # the latest orders and positions
             conn.put(m)
         if self.history_msg:
@@ -539,8 +543,8 @@ class Server:
         conn.put({"type": "welcome", "leader": self.name, "term": self.term, "token": self.wrapped or self.read_token(),
                   "store": self.store.snapshot(), "activity": self.activity_on, "login_needed": self.login_why,
                   "keys": self.keys()})
-        if self.counted:
-            conn.put({"type": "streamed", "count": self.counted[0], "wanted": self.counted[1], "max": MAX_TICKERS})
+        if self.streamed_msg:
+            conn.put(dict(self.streamed_msg))
         for m in list(self.last_reads.values()):        # the latest orders and positions
             conn.put(m)
         self.event(f"{name} connected (client, version {conn.version})")
@@ -644,8 +648,15 @@ class Server:
 
     def wanted(self):
         """The tickers to stream: the chart tickers first, then the extra ones, then the tracked
-        ones (of every computer), then the probe ones, up to MAX_TICKERS. The count goes to all when
-        it changes."""
+        ones (of every computer), then the probe ones, up to MAX_TICKERS (Level 1; Level II for the
+        first BOOK_MAX: wanted_books). The counts go to all when they change."""
+        return self.wanted_order()[0]
+
+    def wanted_books(self):
+        """The tickers with Level II too: the first BOOK_MAX of the same order."""
+        return self.wanted_order()[1]
+
+    def wanted_order(self):
         order = []
         on = [c for c in self.everyone() if c.on]
         for c in on:
@@ -658,16 +669,19 @@ class Server:
             order += c.probe
         order = list(dict.fromkeys(order))
         streamed = order[:MAX_TICKERS]
-        counted = (len(streamed), len(order))
+        books = order[:BOOK_MAX]
+        counted = (len(streamed), len(order), len(books))
         if counted != self.counted and self.leader:
-            self.counted = counted
-            if counted[1] > MAX_TICKERS:
+            if counted[1] > MAX_TICKERS and (self.counted or (0, 0))[1] <= MAX_TICKERS:
                 self.event(f"More tickers wanted than Schwab streams: {counted[1]} (the last "
                            f"{counted[1] - MAX_TICKERS} aren't streamed)")
-            msg = {"type": "streamed", "count": counted[0], "wanted": counted[1], "max": MAX_TICKERS}
+            self.counted = counted
+            msg = {"type": "streamed", "count": counted[0], "wanted": counted[1], "max": MAX_TICKERS,
+                   "books": counted[2], "book_max": BOOK_MAX}
+            self.streamed_msg = msg
             self.broadcast(msg)
             self.to_peers(msg)
-        return set(streamed)
+        return set(streamed), set(books)
 
     def stream_wanted(self):
         return any((c.on and (c.charts() or c.extra or c.track)) or c.probe for c in self.everyone())
@@ -1250,7 +1264,8 @@ class Server:
             if conn is not None:
                 conn.put(m)
         elif kind == "streamed":
-            self.counted = (m["count"], m["wanted"])
+            self.counted = (m["count"], m["wanted"], m.get("books", 0))
+            self.streamed_msg = dict(m)
             self.broadcast(m)
         elif kind == "cluster":
             self.remote_cluster = m
@@ -1744,6 +1759,7 @@ class Server:
         stream.add_level_one_equity_handler(self.on_level1)
         stream.add_account_activity_handler(self.on_activity)
         self.symbols = set()
+        self.book_symbols = set()
         self.streaming = True
         try:
             # the account's order events (placed, changed, canceled, filled) as they happen
@@ -1757,7 +1773,7 @@ class Server:
             self.schedule_read("positions", None, 0)
             self.set_status("Live")
             while self.stream_wanted() and not self.restart_stream:
-                if self.wanted() != self.symbols:
+                if self.wanted_order() != (self.symbols, self.book_symbols):
                     await self.sync(client, stream)
                 # Subscribing and reading share the socket, so the ticker check waits for a pause
                 try:
@@ -1769,6 +1785,7 @@ class Server:
             self.streaming = False
             self.set_activity(False)
             self.symbols = set()
+            self.book_symbols = set()
             try:
                 await asyncio.wait_for(stream.logout(), timeout=3)
             except BaseException:
@@ -1796,12 +1813,19 @@ class Server:
         return out
 
     async def sync(self, client, stream):
-        """Subscribes to the tickers wanted now, and leaves the others."""
-        wanted = self.wanted()
+        """Subscribes to the tickers wanted now (Level 1; Level II for the first BOOK_MAX), and leaves
+        the others."""
+        wanted, books_wanted = self.wanted_order()
+        # the books first: those leaving go before new ones come (never more than BOOK_MAX at Schwab)
+        bgone, bnew = sorted(self.book_symbols - books_wanted), sorted(books_wanted - self.book_symbols)
+        if bgone:
+            await stream.nasdaq_book_unsubs(bgone)
+            await stream.nyse_book_unsubs(bgone)
+            for s in bgone:
+                self.books[s] = {}
+                self.raw_books.pop(s, None)
         gone, new = sorted(self.symbols - wanted), sorted(wanted - self.symbols)
         if gone:
-            await stream.nasdaq_book_unsubs(gone)
-            await stream.nyse_book_unsubs(gone)
             await stream.level_one_equity_unsubs(gone)
             for s in gone:
                 self.books.pop(s, None)
@@ -1825,18 +1849,25 @@ class Server:
                 self.broadcast({"type": "quote", "ticker": s, "q": dict(self.l1[s])}, to)
                 self.to_peers({"type": "q", "ticker": s, "q": dict(self.l1[s])}, [p for p in self.peers if p.sees(s)])
             self.broadcast({"type": "book", "ticker": s, "bids": [], "asks": []}, to)
-            self.set_status(f"Live: waiting for {s}'s book...", [c for c in to if c.symbol == s])
+            if s in books_wanted:
+                self.set_status(f"Live: waiting for {s}'s book...", [c for c in to if c.symbol == s])
         if new:
             # SUBS replaces a service's whole list, ADD adds to it
             if kept:
-                await stream.nasdaq_book_add(new)
-                await stream.nyse_book_add(new)
                 await stream.level_one_equity_add(new)
             else:
-                await stream.nasdaq_book_subs(new)
-                await stream.nyse_book_subs(new)
                 await stream.level_one_equity_subs(new)
+        if bnew:
+            for s in bnew:
+                self.books.setdefault(s, {})
+            if self.book_symbols - set(bgone):
+                await stream.nasdaq_book_add(bnew)
+                await stream.nyse_book_add(bnew)
+            else:
+                await stream.nasdaq_book_subs(bnew)
+                await stream.nyse_book_subs(bnew)
         self.symbols = wanted
+        self.book_symbols = books_wanted
 
     def on_activity(self, msg):
         for c in msg.get("content", []):
