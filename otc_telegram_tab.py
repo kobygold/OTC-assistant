@@ -1,7 +1,9 @@
 """
-otc_telegram_tab.py - The Telegram tab (docs/telegram-plan.md): the bot's token, and each account's
-phones: Add phone (a code to send the bot, 10 minutes), Remove. The bot itself runs on the main
-server (otc_telegram.py); all of this is in the shared data, so every computer shows the same.
+otc_telegram_tab.py - Telegram, on the Settings tab (docs/telegram-plan.md): the bot's token, and the
+phones of the account chosen at the top (Account:): Add phone (a code to send the bot, 10 minutes),
+Test, Remove, what each gets, Allow selling from Telegram, and the sell buttons' demo. The bot itself
+runs on the main server (otc_telegram.py); all of this is in the shared data, so every computer shows
+the same.
 """
 
 import json
@@ -19,7 +21,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboB
                              QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import otc_telegram
-from otc_telegram import ACCOUNTS, CODES, STATE_KEY
+from otc_telegram import ACCOUNTS, CODES, DEMO, STATE_KEY
 
 TEST_TEXT = "A test message from OTC Assistant."
 
@@ -53,8 +55,11 @@ def bot_links(bot, code):
 class TelegramPanel(QWidget):
     test_done = pyqtSignal(str, object)       # the phone's name, None (sent) or why it wasn't (a thread's)
 
-    def __init__(self, settings, save_settings, link, shared, parent=None):
+    def __init__(self, settings, save_settings, link, shared, parent=None, demo_source=None):
+        """demo_source(): the made-up trade and market of the sell buttons' demo ({"trade", "market"}),
+        or why there's none (a text)."""
         super().__init__(parent)
+        self.demo_source = demo_source
         self.test_done.connect(self.on_test_done)
         self.settings, self.save_settings, self.link, self.shared = settings, save_settings, link, shared
         root = QVBoxLayout(self)
@@ -127,15 +132,12 @@ class TelegramPanel(QWidget):
             self.status.setText("Waiting for the main server to start the bot...")
         body = QWidget()
         lay = QVBoxLayout(body)
-        known = [(str(t), k) for t, k in self.settings.get("schwab_accounts", [])]
-        linked = sorted(self.shared.get(ACCOUNTS))
-        for tail in linked:
-            if tail not in [t for t, _ in known]:
-                known.append((tail, ""))
-        if not known:
-            lay.addWidget(QLabel("No Schwab accounts read yet (Schwab tab)."))
-        for tail, kind in known:
-            lay.addWidget(self.account_box(tail, kind))
+        tail = str(self.settings.get("schwab_account") or "")     # the account chosen at the top
+        kinds = {str(t): k for t, k in self.settings.get("schwab_accounts", [])}
+        if not tail:
+            lay.addWidget(QLabel("Choose an account at the top (Account:): its phones show here."))
+        else:
+            lay.addWidget(self.account_box(tail, kinds.get(tail, "")))
         lay.addStretch()
         self.area.setWidget(body)
 
@@ -200,6 +202,14 @@ class TelegramPanel(QWidget):
                            "never sent below the price approved). The main server sends the order.")
         selling.toggled.connect(lambda on, t=tail, w=selling: self.set_selling(t, on, w))
         row.addWidget(selling)
+        row.addSpacing(16)
+        demo = QPushButton("Try the sell buttons (demo)")
+        demo.setEnabled(bool(self.settings.get("telegram_token")) and bool(phones))
+        demo.setToolTip("Sends this account's phones a made-up \"buy filled\" message (the Chart's ticker, its prices "
+                        "now) with the real sell buttons: the taps, the confirm and the price checks work as in a "
+                        "real trade, but nothing is ever sent to Schwab.")
+        demo.clicked.connect(lambda _c=False, t=tail: self.send_demo(t))
+        row.addWidget(demo)
         row.addStretch()
         lay.addLayout(row)
         return box
@@ -277,6 +287,17 @@ class TelegramPanel(QWidget):
         phones = [p for p in self.account(tail).get("phones") or [] if p.get("chat_id") != chat_id]
         self.shared.put(ACCOUNTS + tail, dict(self.account(tail), phones=phones))
         self.refresh()
+
+    def send_demo(self, tail):
+        """The sell buttons' demo: asked of the main server's bot through the shared data."""
+        src = self.demo_source() if self.demo_source else "No prices for a demo."
+        if isinstance(src, str):
+            QMessageBox.information(self, "Sell buttons demo", src)
+            return
+        self.shared.put(DEMO + secrets.token_hex(4), {"account": tail, "trade": src["trade"], "market": src["market"],
+                                                      "at": time.time()})
+        self.status.setText(f"Demo sent to the phones of account ...{tail} ({src['trade']['ticker']}): tap its "
+                            f"buttons. Nothing is sent to Schwab.")
 
     def account(self, tail):
         return dict(self.shared.get(ACCOUNTS).get(tail) or {})

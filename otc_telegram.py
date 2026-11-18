@@ -10,6 +10,9 @@ In the shared data (otc_shared.py; on every computer, so it moves over with ever
   telegram/accounts/<last 3 digits>   {"phones": [{"chat_id", "name", "mode", "since"}], "selling": bool}
                                       mode "notify" (the news only) or "trade" (the news and the sell
                                       buttons, when the account allows selling from Telegram)
+  telegram/demo/<id>                  an app asks for the sell buttons' demo (Settings → Telegram → Try
+                                      the sell buttons): {"account", "trade", "market"}, made up; its
+                                      taps go the whole way but never send anything
   telegram/actions/<id>               a message's buttons: {"kind": "offer" (Sell as planned / on Ask /
                                       on Bid / Ignore) or "confirm" (Yes / No), "key" (the trade's), "chat",
                                       "message_id", "until", "shares", ...}: a tap is done once
@@ -67,6 +70,7 @@ ACCOUNTS = "telegram/accounts/"
 CODES = "telegram/codes/"
 SENT = "telegram/sent/"
 ACTIONS = "telegram/actions/"
+DEMO = "telegram/demo/"
 
 
 def keyboard(buttons):
@@ -369,7 +373,8 @@ class TelegramBot:
                          f"the bids take only {total:,} (down to {fmt_price(price)})")
         return "Now: " + " · ".join(parts) if parts else ""
 
-    def trade_text(self, ev, e, tail):
+    def trade_text(self, ev, e, tail, market=None):
+        """The news's text. market: the "Now: ..." line to use (a demo's), instead of the stream's."""
         t = e.get("ticker", "?")
         acct = account_text(tail)
         entry = e.get("entry") or 0
@@ -378,7 +383,7 @@ class TelegramBot:
             own = remaining(e) or e.get("filled") or 0
             lines = [f"✅ {t}: ATM buy filled ({acct})",
                      f"{own:,} @ {fmt_price(entry)} = ${own * entry:,.2f}"]
-            m = self.market_line(t, own)
+            m = self.market_line(t, own) if market is None else market
             if m:
                 lines.append(m)
             exit_ = e.get("exit-live") or e.get("exit")
@@ -504,16 +509,19 @@ class TelegramBot:
         await self.send(chat, "Done: no more news here." if tails else "This phone isn't linked to any account.")
 
     # ---- selling from the phone ----
-    def price_now(self, e, choice):
+    def price_now(self, e, choice, demo=None):
         """The price to sell all the stocks at, now: the planned exit, the Ask, or the Bid that takes
-        them all (None when there's none)."""
+        them all (None when there's none). demo: a demo's market ({"ask", "bids"}), instead of the stream."""
         if choice == "p":
             return e.get("exit-live") or e.get("exit") or None
         ticker = e.get("ticker")
         if choice == "a":
-            return (self.server.l1.get(ticker) or {}).get("ASK_PRICE") or None
-        books = self.server.books.get(ticker) or {}
-        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: -r[1])
+            return (demo.get("ask") if demo is not None else (self.server.l1.get(ticker) or {}).get("ASK_PRICE")) or None
+        if demo is not None:
+            bids = sorted((tuple(r) for r in demo.get("bids") or []), key=lambda r: -r[1])
+        else:
+            books = self.server.books.get(ticker) or {}
+            bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: -r[1])
         shares = remaining(e)
         if not bids or not shares:
             return None
@@ -530,15 +538,18 @@ class TelegramBot:
         rows.append([("Ignore", f"{aid}:x")])
         return rows
 
-    async def offer(self, chat, key, e, text):
-        """The "buy filled" message with the sell buttons (to a phone that may sell)."""
-        prices = {c: self.price_now(e, c) for c in ("p", "a", "b")}
+    async def offer(self, chat, key, e, text, demo=None):
+        """The "buy filled" message with the sell buttons (to a phone that may sell). demo: a demo's
+        market (the trade e made up, kept in the action: nothing is ever sent for it)."""
+        prices = {c: self.price_now(e, c, demo) for c in ("p", "a", "b")}
         if not any(prices.values()):
             await self.send(chat, text)
             return
         aid = secrets.token_hex(4)
         action = {"kind": "offer", "key": key, "chat": chat, "until": time.time() + OFFER_S,
                   "shares": remaining(e), "text": text, "prices": prices}
+        if demo is not None:
+            action.update(demo=demo, trade=e)
         self.server.put_shared(ACTIONS + aid, action)
         msg = await self.send(chat, text, self.offer_buttons(aid, prices))
         if msg and msg.get("message_id"):
@@ -548,6 +559,11 @@ class TelegramBot:
         """Why a tap can't be done now (None: it can), and the trade."""
         key = action.get("key", "")
         tail = key[len("atm/"):].split("/")[0]
+        if action.get("demo") is not None:                       # a demo: its own made-up trade
+            if time.time() > (action.get("until") or 0):
+                return ("These buttons ran out (10 minutes)." if action.get("kind") == "offer" else
+                        "The confirm ran out (60 seconds)."), action.get("trade")
+            return None, action.get("trade")
         e = self.item(key)
         if chat not in self.trade_chats(tail):
             return "This phone may not sell from Telegram (the Telegram tab in OTC Assistant).", e
@@ -595,7 +611,7 @@ class TelegramBot:
             if why:
                 await self.edit(chat, mid, text + "\n\n" + why)
                 return
-            await self.ask_confirm(chat, mid, aid, action, e, choice, self.price_now(e, choice))
+            await self.ask_confirm(chat, mid, aid, action, e, choice, self.price_now(e, choice, action.get("demo")))
             return
         offer_id = action.get("offer", "")
         offer = self.item(ACTIONS + offer_id) or {}
@@ -609,9 +625,14 @@ class TelegramBot:
             await self.edit(chat, mid, text + "\n\n" + why)
             return
         approved, c = action["price"], action["choice"]
-        now_price = self.price_now(e, c)
+        now_price = self.price_now(e, c, action.get("demo"))
         if now_price is None or now_price < approved - 1e-9:        # never lower than approved
             await self.ask_confirm(chat, mid, offer_id, offer, e, c, now_price, approved)
+            return
+        if action.get("demo") is not None:          # a demo: never sent
+            await self.edit(chat, mid, action.get("text", "") + f"\n\n✅ Demo: this would send SELL "
+                                       f"{action.get('shares', 0):,} {e.get('ticker')} @ {fmt_price(approved)} "
+                                       f"(GTC). Nothing was sent.")
             return
         await self.sell(chat, mid, action, e, approved, name)
 
@@ -632,10 +653,12 @@ class TelegramBot:
             lines.append(f"⚠️ {name} went down from {fmt_price(before)} to {fmt_price(price)}"
                          + (" (you approved " + fmt_price(approved) + ")." if approved is not None else "."))
         cid = secrets.token_hex(4)
-        self.server.put_shared(ACTIONS + cid, {"kind": "confirm", "offer": offer_id, "key": offer.get("key"),
-                                               "chat": chat, "message_id": mid, "until": time.time() + CONFIRM_S,
-                                               "shares": offer.get("shares"), "choice": choice, "price": price,
-                                               "text": text})
+        confirm = {"kind": "confirm", "offer": offer_id, "key": offer.get("key"), "chat": chat, "message_id": mid,
+                   "until": time.time() + CONFIRM_S, "shares": offer.get("shares"), "choice": choice, "price": price,
+                   "text": text}
+        if offer.get("demo") is not None:
+            confirm.update(demo=offer["demo"], trade=offer.get("trade"))
+        self.server.put_shared(ACTIONS + cid, confirm)
         await self.edit(chat, mid, text + "\n\n" + "\n".join(lines),
                         [[("Yes, send", f"{cid}:y"), ("No", f"{cid}:n")]])
 
@@ -644,7 +667,7 @@ class TelegramBot:
         why, e = self.why_not(offer, chat) if offer else ("", None)
         if why is None:
             aid = secrets.token_hex(4)          # (a new id: the old one was used)
-            prices = {c: self.price_now(e, c) for c in ("p", "a", "b")}
+            prices = {c: self.price_now(e, c, offer.get("demo")) for c in ("p", "a", "b")}
             self.server.put_shared(ACTIONS + aid, dict(offer, prices=prices, message_id=mid, done=False))
             await self.edit(chat, mid, text, self.offer_buttons(aid, prices))
         else:
@@ -653,6 +676,8 @@ class TelegramBot:
     async def sell(self, chat, mid, action, e, price, name):
         """Yes: the trade locked, the sell sent (all the stocks, GTC limit at the price approved), the
         trade made sell_open (or the lock cleared), and the message says how it went."""
+        if action.get("demo") is not None:
+            return                  # (a demo never sends anything)
         key, shares = action["key"], action["shares"]
         tail = key[len("atm/"):].split("/")[0]
         ticker, text = e.get("ticker"), action.get("text", "")
@@ -736,3 +761,32 @@ class TelegramBot:
                 await self.offer(chat, key, e, text)
             else:
                 await self.send(chat, text.replace(" Tap again:", ""))
+
+    def demo(self, key, d):
+        """The sell buttons' demo (an app asked: telegram/demo/<id>): a made-up "buy filled" message with
+        the real buttons to the account's phones; its taps go the whole way, but nothing is ever sent."""
+        self.server.put_shared(key, None)           # (done once)
+        tail = str(d.get("account") or "")
+        e, market = dict(d.get("trade") or {}), dict(d.get("market") or {})
+        if not tail or not e.get("ticker") or not e.get("filled"):
+            return
+        e.update(state="bought", sold=0, account=tail)
+        text = "🧪 DEMO (nothing is sent)\n" + self.trade_text("bought", e, tail,
+                                                              demo_market_line(market, remaining(e)))
+        for chat in [p["chat_id"] for p in self.phones(tail)]:
+            asyncio.create_task(self.offer(chat, f"demo/{tail}/{e.get('id', 'demo')}", e, text, demo=market))
+        self.server.event(f"Telegram: the sell buttons' demo sent ({account_text(tail)}, {e['ticker']})")
+
+
+def demo_market_line(market, shares):
+    parts = []
+    if market.get("bid"):
+        parts.append(f"Bid {fmt_price(market['bid'])}")
+    if market.get("ask"):
+        parts.append(f"Ask {fmt_price(market['ask'])}")
+    bids = sorted((tuple(r) for r in market.get("bids") or []), key=lambda r: -r[1])
+    if bids and shares:
+        price, total = bid_fill(bids, shares)
+        parts.append(f"on the Bid: all at {fmt_price(price)}" if total >= shares else
+                     f"the bids take only {total:,} (down to {fmt_price(price)})")
+    return "Now: " + " · ".join(parts) if parts else ""

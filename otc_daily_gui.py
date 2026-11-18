@@ -63,7 +63,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.5.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -737,8 +737,8 @@ class MainWindow(QMainWindow):
             self.checklist.atm.decides = self.computers.decides
         self.computers_tab_index = self.tabs.addTab(self.computers, "Computers")
         # the phones: the main server's Telegram bot sends them the ATM trades' news
-        self.telegram = TelegramPanel(self.settings, save_settings, self.server, self.shared)
-        self.telegram_tab_index = self.tabs.addTab(self.telegram, "Telegram")
+        self.telegram = TelegramPanel(self.settings, save_settings, self.server, self.shared,
+                                      demo_source=self.telegram_demo)
         self.settings_tab_index = self.tabs.addTab(self._build_settings_tab(), "Settings")
         # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
@@ -2976,6 +2976,8 @@ class MainWindow(QMainWindow):
         for tail, kind in known:
             combo.addItem(f"...{tail}" + (f" ({kind})" if kind else ""), tail)
         combo.setCurrentIndex(max(0, combo.findData(saved)) if saved else 0)
+        if hasattr(self, "telegram"):       # Settings → Telegram: the chosen account's phones
+            self.telegram.refresh()
         if hasattr(self, "trades_table"):   # the trades, orders and stocks of this account only
             self.trades_table.rebuild()
         if hasattr(self, "orders_table"):
@@ -3002,6 +3004,7 @@ class MainWindow(QMainWindow):
             self.reload_drawings()
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
         self.checklist.atm.check()      # and read its orders
+        self.telegram.refresh()         # Settings → Telegram: this account's phones
 
     def _build_atm_tab(self):
         tab = QWidget()
@@ -3511,9 +3514,13 @@ class MainWindow(QMainWindow):
 
     # ================================================== Settings ===
     def _build_settings_tab(self):
-        """Settings kept on this computer (settings.json): the default position $ for now."""
+        """Settings: the default position $ (this computer's settings.json), and Telegram (the phones of
+        the account chosen at the top)."""
         tab = QWidget()
         root = QVBoxLayout(tab)
+        position = QGroupBox("Position")
+        root.addWidget(position)
+        plain = QVBoxLayout(position)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.position_default = QSpinBox()
@@ -3528,13 +3535,34 @@ class MainWindow(QMainWindow):
             "$ / the entry. A $ pinned on the checklist is kept instead (unpin it to come back to this one). "
             "The ATM Scanner's Check L1/L2 counts with it too.")
         self.position_default.valueChanged.connect(self.set_position_default)
-        form.addRow("Default position $:", self.position_default)
-        root.addLayout(form)
         note = QLabel("Raise it as your portfolio grows. Saved on this computer.")
         note.setStyleSheet("color: #8a8a8a;")
-        root.addWidget(note)
-        root.addStretch()
+        row = QHBoxLayout()
+        row.addWidget(self.position_default)
+        row.addSpacing(12)
+        row.addWidget(note)
+        row.addStretch()
+        form.addRow("Default position $:", row)
+        plain.addLayout(form)
+        root.addWidget(self.telegram, 1)
         return tab
+
+    def telegram_demo(self):
+        """The sell buttons' demo (Settings → Telegram): a made-up trade of the Chart's ticker, bought as the
+        checklist plans it now, and its market now. A text when there's none."""
+        cl = self.checklist
+        if not cl.ticker:
+            return "Open a ticker on the Chart first: the demo uses its prices."
+        p, _usd = getattr(cl, "last_plan", (None, None))
+        if not p or not p.get("entry") or not p.get("shares"):
+            return f"No prices for {cl.ticker} now (Level 1 / Level II): open it on the Chart and wait for them."
+        bid = cl.bid or (cl.bids[0][1] if cl.bids else None)
+        ask = cl.ask or (cl.asks[0][1] if cl.asks else None)
+        fee = checklist.FEE_USD
+        return {"trade": {"id": "demo", "ticker": cl.ticker, "entry": p["entry"], "shares": p["shares"],
+                          "filled": p["shares"], "fee": fee, "exit": p.get("exit"),
+                          "bought_time": datetime.now().isoformat(timespec="seconds")},
+                "market": {"bid": bid, "ask": ask, "bids": [list(r[:3]) for r in cl.bids]}}
 
     def set_position_default(self, value):
         self.settings["position_default"] = int(value)

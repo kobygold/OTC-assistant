@@ -703,6 +703,11 @@ class Server:
                     self.bot.trade_changed(answer["key"], old, answer["data"])
                 except Exception as e:
                     log(f"Telegram: the news of {answer['key']} failed: {type(e).__name__}: {e}")
+            if self.bot is not None and answer["key"].startswith("telegram/demo/") and answer["data"]:
+                try:
+                    self.bot.demo(answer["key"], answer["data"])
+                except Exception as e:
+                    log(f"Telegram: the demo failed: {type(e).__name__}: {e}")
         else:
             if answer["type"] == "refused":
                 self.event(f"Change refused: {answer['key']} ({answer.get('why')})")
