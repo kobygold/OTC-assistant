@@ -26,7 +26,8 @@ In the shared data (otc_shared.py; on every computer, so it moves over with ever
 Messages (to the phone): the ATM buy filled (with the Bid / Ask now), partly filled, canceled; the
 sell order ended without selling everything; sold (the profit); the Schwab login runs out soon / is
 needed; the main server moved. From the phone: /start, /link <code> (or the code alone, or the
-start link the app shows), /stop (no more news), /status.
+start link the app shows), /stop (no more news), /status; and what it can ask (otc_telegram_info.py):
+/favs (the favorites, a button each for its details), /trades (the open ATM trades), /alerts.
 
 Selling from the phone (step 2): the "buy filled" message of a phone in trade mode has buttons, for
 10 minutes. A tap works the price out again now and asks to confirm (60 seconds); Yes works it out once
@@ -45,6 +46,7 @@ import time
 from datetime import datetime
 
 import otc_alerts
+import otc_telegram_info as info
 from otc_trade import bid_fill, fmt_price, plan_profit, remaining, sold_profit, usd_signed
 
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
@@ -63,6 +65,8 @@ CONFIRM_S = 60              # ...and a confirm (Yes / No)
 ACTION_KEEP_S = 3600        # an action is deleted this long after it ran out
 RECOVER_TRIES = 3           # reading the orders to settle a lock left by a main server that went off
 RECOVER_WAIT_S = 10
+COMMANDS = [("favs", "The favorites (tap one for its details)"), ("trades", "The open ATM trades"),
+            ("alerts", "The price / volume alerts"), ("status", "What this phone gets"), ("stop", "No more news")]
 CHOICES = {"p": ("Sell as planned", "the planned exit"), "a": ("Sell on Ask", "the Ask now"),
            "b": ("Sell on Bid", "the Bid now: it takes them all")}
 
@@ -205,6 +209,12 @@ class TelegramBot:
                 log(f"Telegram: can't reach it ({type(e).__name__}: {e})")
             await asyncio.sleep(RETRY_S)
         self.update_state(bot=self.username, by=self.server.name)
+        try:                        # the commands' menu in the phone's Telegram
+            await self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in COMMANDS])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"Telegram: setMyCommands: {e}")
         self.server.event(f"Telegram: the bot @{self.username} runs here (phone news)")
         await self.catch_up()
         while True:
@@ -274,10 +284,13 @@ class TelegramBot:
         return list(chats)
 
     # ---- sending ----
-    async def send(self, chat_id, text, buttons=None):
-        """The message sent (Telegram's, with its message_id), or None. buttons: rows of (text, data)."""
+    async def send(self, chat_id, text, buttons=None, html=False):
+        """The message sent (Telegram's, with its message_id), or None. buttons: rows of (text, data).
+        html: the text is Telegram's HTML (<b>, <i>, <pre>)."""
         lock = self.chat_locks.setdefault(chat_id, asyncio.Lock())
         params = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        if html:
+            params["parse_mode"] = "HTML"
         if buttons:
             params["reply_markup"] = keyboard(buttons)
         try:
@@ -295,11 +308,13 @@ class TelegramBot:
             self.server.log(f"Telegram: couldn't send to {chat_id} ({type(e).__name__}: {e})")
             return None
 
-    async def edit(self, chat_id, message_id, text, buttons=None):
+    async def edit(self, chat_id, message_id, text, buttons=None, html=False):
         """A message's text changed (without buttons: they go)."""
         if not message_id:
-            return await self.send(chat_id, text, buttons)
+            return await self.send(chat_id, text, buttons, html)
         params = {"chat_id": chat_id, "message_id": message_id, "text": text, "disable_web_page_preview": True}
+        if html:
+            params["parse_mode"] = "HTML"
         if buttons:
             params["reply_markup"] = keyboard(buttons)
         try:
@@ -490,13 +505,85 @@ class TelegramBot:
                                   "then send me the code it shows (e.g. /link 123456).")
         elif re.fullmatch(r"/stop(@\w+)?", text, re.IGNORECASE):
             await self.unlink(chat)
+        elif m := re.fullmatch(r"/(favs?|favorites|trades|alerts)(@\w+)?", text, re.IGNORECASE):
+            await self.ask_info(chat, m.group(1).lower())
         elif re.fullmatch(r"/status(@\w+)?", text, re.IGNORECASE):
             tails = self.accounts_of(chat)
             await self.send(chat, ("You get the news of " + ", ".join(account_text(t) for t in tails) + "."
                                    if tails else "This phone isn't linked to any account.")
                             + f"\nThe bot runs on {self.server.name}.")
         else:
-            await self.send(chat, "Commands: /link <code> (from OTC Assistant's Telegram tab), /status, /stop.")
+            await self.send(chat, "Commands: /favs (the favorites), /trades (the open ATM trades), /alerts, "
+                                  "/status, /stop, /link <code> (from OTC Assistant: Settings → Add phone).")
+
+    # ---- what a phone asks (otc_telegram_info.py) ----
+    async def quotes(self, tickers):
+        """{ticker: Level 1 fields} and the set of the live ones: the stream's, else a quote from Schwab now."""
+        out = {t: dict(self.server.l1[t]) for t in tickers if self.server.l1.get(t)}
+        live = set(out)
+        missing = [t for t in tickers if t not in out]
+        if missing:
+            try:
+                client = await asyncio.to_thread(self.server._locked_client)
+                rest = await asyncio.to_thread(self.server._quotes, client, missing) if client is not None else {}
+            except Exception:
+                rest = {}
+            for t, q in (rest or {}).items():
+                if isinstance(q, dict):
+                    out[t] = {name: q[k] for k, name in info.REST_L1 if q.get(k) is not None}
+        return out, live
+
+    async def favs_message(self, tail):
+        favs = info.favorites(self.server.store, tail)
+        quotes, _ = await self.quotes(list(favs))
+        avgs = await asyncio.to_thread(lambda: {t: info.daily(t).get("avg_volume") for t in favs})
+        return info.favs_text(tail, favs, quotes, avgs), info.favs_buttons(tail, favs)
+
+    async def ticker_message(self, tail, ticker):
+        favs = info.favorites(self.server.store, tail)
+        quotes, live = await self.quotes([ticker])
+        details = await asyncio.to_thread(info.daily, ticker)
+        books = self.server.books.get(ticker) or {}
+        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
+        asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
+        text = info.ticker_text(tail, ticker, favs.get(ticker), quotes.get(ticker) or {}, ticker in live, details,
+                                bids, asks, info.trades(self.server.store, tail, ticker),
+                                info.alerts(self.server.store, tail, ticker))
+        return text, info.ticker_buttons(tail, ticker)
+
+    async def ask_info(self, chat, what):
+        """/favs, /trades, /alerts: for each account the phone is linked to."""
+        tails = self.accounts_of(chat)
+        if not tails:
+            await self.send(chat, "This phone isn't linked to any account (OTC Assistant: Settings → Add phone).")
+            return
+        for tail in tails:
+            if what.startswith("fav"):
+                text, buttons = await self.favs_message(tail)
+            elif what == "trades":
+                items = [(k, e) for k, e in info.trades(self.server.store, tail)
+                         if e.get("state") not in ("sold", "canceled")]
+                text = info.trades_text(tail, items)
+                names = list(dict.fromkeys(e.get("ticker") for _, e in items if e.get("ticker")))
+                buttons = [[(t, f"i:t:{tail}:{t}") for t in names[i:i + 3]] for i in range(0, len(names), 3)]
+            else:
+                text, buttons = info.alerts_text(tail, info.alerts(self.server.store, tail)), None
+            await self.send(chat, text, buttons, html=True)
+
+    async def info_tap(self, chat, mid, data):
+        """A favorites / details button: the message becomes what was asked (an account of the phone only)."""
+        parts = data.split(":")
+        tail = parts[2] if len(parts) > 2 else ""
+        if tail not in self.accounts_of(chat):
+            await self.send(chat, "This phone isn't linked to that account any more.")
+            return
+        if parts[1] == "f":
+            text, buttons = await self.favs_message(tail)
+        elif parts[1] == "t" and len(parts) == 4 and re.fullmatch(r"[A-Za-z0-9.\-]{1,12}", parts[3]):
+            text, buttons = await self.ticker_message(tail, parts[3])
+        else:
+            return
+        await self.edit(chat, mid, text, buttons, html=True)
 
     def accounts_of(self, chat):
         return sorted(key[len(ACCOUNTS):] for key, it in self.server.store.items.items()
@@ -620,6 +707,9 @@ class TelegramBot:
             pass
         chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
         mid = (cq.get("message") or {}).get("message_id")
+        if str(cq.get("data") or "").startswith("i:"):
+            await self.info_tap(chat, mid, str(cq["data"]))
+            return
         aid, _, choice = str(cq.get("data") or "").partition(":")
         action = self.item(ACTIONS + aid) if re.fullmatch(r"[0-9a-f]{8}", aid) else None
         if not isinstance(action, dict) or action.get("chat") != chat:
