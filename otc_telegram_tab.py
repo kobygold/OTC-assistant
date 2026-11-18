@@ -65,7 +65,7 @@ class TelegramPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)         # (in line with the Settings tab's own)
         title = QLabel("Telegram: the ATM trades' news on the phones")
-        title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #4fc3f7;")
+        title.setStyleSheet("font-size: 13pt; font-weight: bold; color: #e3b23c;")     # (the Settings tab's gold)
         root.addWidget(title)
         intro = QLabel("The main server's bot sends each account's phones: an ATM buy filled (with the Bid / Ask "
                        "then), partly filled or canceled, a sell order that ended, sold (the profit), and when "

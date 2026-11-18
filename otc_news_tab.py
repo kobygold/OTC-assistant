@@ -247,7 +247,7 @@ class LoginDialog(QDialog):
         super().done(result)
 
 
-NEWS_COLOR = "#c792ea"      # the section's title (the Telegram bot's is blue, the Settings' gold)
+NEWS_COLOR = "#e3b23c"      # the section's title: the Settings tab's gold, as its other titles
 
 
 class NewsSettings(QWidget):

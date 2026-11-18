@@ -41,7 +41,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.7.1"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -3821,11 +3821,19 @@ class MainWindow(QMainWindow):
         sounds.addStretch()
         form.addRow("Sounds:", sounds)
         root.addLayout(form)
-        root.addSpacing(10)
+        def separator():            # a line between the tab's three parts
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet("color: #3a4046; background: #3a4046;")
+            line.setFixedHeight(1)
+            root.addSpacing(10)
+            root.addWidget(line)
+            root.addSpacing(8)
+        separator()
         from otc_news_tab import NewsSettings
         self.news_settings = NewsSettings(self.settings, save_settings, send=self.server.send)  # the news reader
         root.addWidget(self.news_settings)
-        root.addSpacing(6)
+        separator()
         root.addWidget(self.telegram, 1)
         return tab
 
