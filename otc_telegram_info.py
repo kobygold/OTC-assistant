@@ -144,50 +144,48 @@ def book_table(bids, asks):
 
 def ticker_text(tail, ticker, fav, q, live, info, bids, asks, trade_list, alert_list):
     """A ticker's details, for the phone."""
+    def field(name, value):
+        return f"<b>{name}:</b> {value}"
     head = f"{STARS[fav['group']][1]} " if fav else ""
-    lines = [f"{head}<b>{esc(ticker)}</b>" + (f" · {esc(info['name'])}" if info.get("name") else ""),
-             f"Account ...{esc(tail)}" + (f" · favorites {STARS[fav['group']][0]}" if fav else "")]
+    lines = [f"{head}<b>{esc(ticker)}</b>"]
     if q:
         last = q.get("LAST_PRICE")
-        lines.append(f"<b>Last {fmt_price(last) if last else '-'}</b> {pct_text(change_pct(q, info.get('close')))}")
-        ba = []
-        if q.get("BID_PRICE"):
-            ba.append(f"Bid {fmt_price(q['BID_PRICE'])}" + (f" × {compact(q['BID_SIZE'])}" if q.get("BID_SIZE") else ""))
-        if q.get("ASK_PRICE"):
-            ba.append(f"Ask {fmt_price(q['ASK_PRICE'])}" + (f" × {compact(q['ASK_SIZE'])}" if q.get("ASK_SIZE") else ""))
-        if ba:
-            lines.append(" · ".join(ba))
-        day = [f"{n} {fmt_price(q[k])}" for k, n in (("OPEN_PRICE", "Open"), ("HIGH_PRICE", "High"),
-                                                       ("LOW_PRICE", "Low")) if q.get(k)]
+        lines.append(field("Last", f"{fmt_price(last) if last else '-'} {pct_text(change_pct(q, info.get('close')))}"))
+        for k, name in (("BID", "Bid"), ("ASK", "Ask")):
+            if q.get(f"{k}_PRICE"):
+                size = q.get(f"{k}_SIZE")
+                lines.append(field(name, fmt_price(q[f"{k}_PRICE"]) + (f" x {int(size):,}" if size else "")))
+        day = [field(n, fmt_price(q[k])) for k, n in (("OPEN_PRICE", "Open"), ("HIGH_PRICE", "High"),
+                                                      ("LOW_PRICE", "Low")) if q.get(k)]
         if day:
             lines.append(" · ".join(day))
         vol, avg = q.get("TOTAL_VOLUME"), info.get("avg_volume")
         if vol is not None:
-            lines.append(f"Volume {int(vol):,}" + (f" = {vol / avg:.1f}x the {otc_alerts.VOLUME_DAYS}-day average "
-                                                   f"({int(avg):,})" if avg else ""))
+            lines.append(field("Volume", f"{int(vol):,}" + (f" ({vol / avg:.1f}x the {otc_alerts.VOLUME_DAYS}-day "
+                                                            f"avg {compact(avg)})" if avg else "")))
     else:
         lines.append("No quote now (no Schwab login on the main server?)")
     if bids or asks:
-        lines.append("<b>Level II</b> (bids | asks)\n<pre>" + esc("\n".join(book_table(bids, asks))) + "</pre>")
+        lines.append("<b>Level II:</b> (bids | asks)\n<pre>" + esc("\n".join(book_table(bids, asks))) + "</pre>")
     for _, e in trade_list[:2]:
         own = remaining(e) if e.get("state") not in ("buy_open", "canceled") else 0
         what = f"{e.get('shares', 0):,} @ {fmt_price(e.get('entry') or 0)}"
         if own:
             what = f"own {own:,} @ {fmt_price(e.get('entry') or 0)}"
         exit_ = e.get("sell_price") if e.get("state") == "sell_open" else e.get("exit-live") or e.get("exit")
-        lines.append(f"ATM: {STEPS.get(e.get('state'), e.get('state'))}\n   {what}"
-                     + (f", exit {fmt_price(exit_)}" if exit_ and e.get("state") not in ("sold", "canceled") else ""))
+        lines.append(field("ATM", f"{STEPS.get(e.get('state'), e.get('state'))}\n   {what}"
+                           + (f", exit {fmt_price(exit_)}" if exit_ and e.get("state") not in ("sold", "canceled") else "")))
     for a in alert_list:
-        lines.append(f"🔔 {esc(otc_alerts.describe(a))}" + (" (fired)" if a.get("state") == "triggered" else ""))
+        lines.append(field("🔔 Alert", esc(otc_alerts.describe(a)) + (" (fired)" if a.get("state") == "triggered" else "")))
     if fav:
-        own = [f"{n} {fav[k]:,}" if isinstance(fav[k], int) else f"{n} {fav[k]}"
+        own = [field(n, f"{fav[k]:,}" if isinstance(fav[k], int) else esc(fav[k]))
                for k, n in (("own", "Own"), ("want", "Want to buy")) if fav.get(k)]
-        own += [f"{n} {fmt_price(fav[k])}" for k, n in (("bid", "My bid"), ("ask", "My ask"))
+        own += [field(n, fmt_price(fav[k])) for k, n in (("bid", "My bid"), ("ask", "My ask"))
                 if isinstance(fav.get(k), (int, float)) and fav.get(k)]
         if own:
             lines.append(" · ".join(own))
         if fav.get("notes"):
-            lines.append(f"📝 {esc(fav['notes'])}")
+            lines.append(field("📝 Notes", esc(fav["notes"])))
     lines.append(f"<i>{'Live' if live else 'Quote'} at {datetime.now():%H:%M:%S}</i>")
     return "\n".join(lines)
 
