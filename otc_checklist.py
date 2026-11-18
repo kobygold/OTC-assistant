@@ -2412,10 +2412,15 @@ class AtmTrades(QObject):
         p = plan((m.get("bid") or [None])[0], (m.get("ask") or [None])[0],
                  [(mm, price, size, 0) for mm, price, size in m.get("bids", [])],
                  None, e["entry"], number("exit"), number("stop"), fee, shares)
+        # The exit: only one typed here (or the sell order's price) is written. The typed prices are
+        # this computer's own (settings.json): another computer without them would put its automatic
+        # exit from the market now (Ask - 1 tick) over the plan, and the Telegram "Sell as planned"
+        # and the other apps' Sell at would follow it. Not typed: the trade's own exit stays.
+        exit_live = p["exit"] if number("exit") is not None else None
         if e.get("state") == "sell_open" and e.get("sell_price"):
-            p["exit"] = e["sell_price"]         # the sell order's price
+            exit_live = e["sell_price"]         # the sell order's price
         changed = False
-        for key, value in (("exit-live", p["exit"]), ("safety-net-live", p["stop"])):
+        for key, value in (("exit-live", exit_live), ("safety-net-live", p["stop"])):
             if value is not None and e.get(key) != value:     # kept while not known (Level II off)
                 e[key] = value
                 changed = True
@@ -2998,8 +3003,26 @@ class ChecklistPanel(QWidget):
                           "Not pinned: the automatic value.\nClick to pin it as it is now (typing a price "
                           "or + / - pins it too).")
 
+    def selling(self, key):
+        """The ticker's trade when `key` is the exit of its open sell order (a new exit changes the order)."""
+        e = self.order()
+        return e if key == "exit" and e and e.get("state") == "sell_open" and e.get("sell_price") else None
+
+    def change_sell(self, e, price):
+        """A new exit for the open sell order: Schwab replaces it, after the usual dialog (as dragging
+        its tag on the chart); sent, the new price is the pinned exit (shared with the other computers)."""
+        if not price or price <= 0 or abs(price - (e.get("sell_price") or 0)) < 1e-9:
+            self.refresh()
+            return
+        self.atm.ask_move(self, f"atm:{e['id']}:SELL", price)
+        if e["id"] in self.atm.sending:         # sent (not canceled in the dialog)
+            prices = self.settings.setdefault("checklist_prices", {})
+            prices.setdefault(e["ticker"], {})["exit"] = limit_text(price)
+            self.save_settings(self.settings)
+        self.refresh()
+
     def toggle_pin(self, key, edit):
-        if not edit.isEnabled() or edit.isReadOnly():
+        if not edit.isEnabled() or edit.isReadOnly() or self.selling(key):
             return
         if self.override_text(key):         # pinned: unpin, the automatic value again
             edit.clear()
@@ -3016,15 +3039,20 @@ class ChecklistPanel(QWidget):
         self.save_settings(self.settings)
 
     def step(self, key, edit, direction):
-        """Moves the price shown (typed, or else the automatic one) one 0.0001 step."""
+        """Moves the price shown (typed, or else the automatic one) one 0.0001 step. The exit of an open
+        sell order: asks to change the order to it."""
         if not edit.isEnabled():
             return
+        e = self.selling(key)
         try:
-            base = Decimal(edit.shown().replace(",", "").replace("$", "").strip())
+            base = Decimal(str(e["sell_price"])) if e else Decimal(edit.shown().replace(",", "").replace("$", "").strip())
         except InvalidOperation:
             return
         new = base + direction * PRICE_STEP
         if new <= 0:
+            return
+        if e:
+            self.change_sell(e, float(new))
             return
         text = format(new, "f")
         edit.setText(text)
@@ -3053,6 +3081,8 @@ class ChecklistPanel(QWidget):
         return self.settings.get("checklist_prices", {}).get(self.ticker, {}).get(key, "")
 
     def typed(self, key, text):
+        if self.selling(key):
+            return                              # (the open sell's new exit: on Enter, it asks)
         if key in ("size", "entry") and self.drafting() is not None:
             self.draft_typed(key, text)         # a new value for the open buy, not the plan's
             return
@@ -3092,6 +3122,18 @@ class ChecklistPanel(QWidget):
         12 -> 0.0012, 1 -> 0.0001 (these stocks trade under $1)."""
         if key in ("size", "entry") and edit is not None and self.drafting() is not None:
             self.draft_done(key, edit)
+            return
+        e = self.selling(key) if edit is not None else None
+        if e:                                   # the open sell's exit: a new one changes the order
+            try:
+                v = Decimal(edit.text().strip())
+            except InvalidOperation:
+                v = None
+            edit.clear()
+            if v is not None and v > 0:
+                self.change_sell(e, float(v * PRICE_STEP if v >= 1 else v))
+            else:
+                self.refresh()
             return
         if edit is not None and key != "size":
             try:
@@ -3597,20 +3639,28 @@ class ChecklistPanel(QWidget):
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
                 state = order.get("state") if order else None
-                # the exit while the sell order works (Cancel Sell to change it) or once sold
-                locked = item.key == "exit" and state in ("sell_open", "sold")
+                # the exit once sold; while the sell order works, a new one changes the order
+                locked = item.key == "exit" and state == "sold"
+                selling = item.key == "exit" and state == "sell_open" and order.get("sell_price")
                 if locked:
-                    tip = "The sell order's price: Cancel Sell to change it."
+                    tip = "Sold at the sell order's price."
+                elif selling:
+                    tip = (f"The sell order's price: {fmt_price(order['sell_price'])}. Type a new price and Enter "
+                           f"(or + / -) to change the order (it asks first). 12 = 0.0012")
+                    val = fmt_price(order["sell_price"])
+                    value.setPlaceholderText(val)
                 elif order and item.key == "exit":
-                    tip += " Sell ATM sells at it."
+                    tip += " Sell ATM sells at it. Pinned, it's kept on every computer (and the Telegram Sell as planned)."
                 value.setToolTip(tip)
                 value.setReadOnly(locked)
                 tools = self.price_tools.get(item.key)
                 own = self.override_text(item.key)
                 if tools:
                     tools[0].setEnabled(not locked)
-                    tools[1].setEnabled(not locked)
+                    tools[1].setEnabled(not locked and not selling)
                     self.show_pin(tools[1], bool(own))
+                if selling:
+                    own = ""                    # the order's price shows (white); typed: orange, until Enter
                 value.setEnabled(bool(self.ticker) or item.key == "size")
                 if item.key == "size":
                     own = f"${own}" if own and not self.override_text("shares") else ""   # with its sign

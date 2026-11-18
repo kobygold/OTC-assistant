@@ -29,7 +29,6 @@ def limit_text(v) -> str:
     return f"{v:.4f}"
 
 
-L2_ROWS = 5             # market makers shown per side in a row; the tooltip has them all
 GREEN, RED, YELLOW, DIM = "#1db31d", "#e0404f", "#e3b23c", "#8a8a8a"
 CHANGED = "#f0a020"     # a Sell at price changed from the exit plan
 
@@ -47,10 +46,8 @@ COLUMNS = [
     ("Fee", "Schwab's fee for each buy and each sell, read at the buy"),
     ("Bid then", "The bid when the buy was sent (price x size). Tooltip: the Level II then."),
     ("Ask then", "The ask when the buy was sent (price x size). Tooltip: the Level II then."),
-    ("Bid now", "Green: higher than then. Red: lower."),
-    ("Ask now", "Green: higher than then. Red: lower."),
-    ("Bids now (L2)", "Level II now, while it is on: the first market makers. Tooltip: all of them."),
-    ("Asks now (L2)", "Level II now, while it is on: the first market makers. Tooltip: all of them."),
+    ("Bid now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
+    ("Ask now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
     ("P/L", "After both fees. Sold: of the sale. Owned: if the rest sold at the bid now."),
     ("Sell at", "The price Sell ATM sells all the stocks at, GTC. Starts as the exit plan; the checklist's "
                 "exit follows it. A whole number is a count of 0.0001 steps (12 -> 0.0012). "
@@ -99,13 +96,6 @@ def quote_text(pair):
     if not price:
         return "-"
     return fmt_price(price) + (f" x {size:,}" if size else "")
-
-
-def book_lines(rows):
-    lines = [f"{mm:<5} {fmt_price(price):>10} {size:>9,}" for mm, price, size in rows[:L2_ROWS]]
-    if len(rows) > L2_ROWS:
-        lines.append(f"+{len(rows) - L2_ROWS} more")
-    return "\n".join(lines) or "-"
 
 
 def book_html(title, bids, asks):
@@ -193,7 +183,7 @@ class AtmTable(SortMixin, QTableWidget):
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
         self.init_sorting([i for i, (t, _) in enumerate(COLUMNS)
-                           if t not in ("Bids now (L2)", "Asks now (L2)", "Order", "")])
+                           if t not in ("Order", "")])
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now", "P/L")
@@ -361,19 +351,16 @@ class AtmTable(SortMixin, QTableWidget):
 
     def fill_market(self, row, e):
         m = self.atm.market.get(e["ticker"], {})
+        # Level II now: on hover only (the Bid now / Ask now cells' tooltip), the rows stay one line high
+        bids, asks = m.get("bids", []), m.get("asks", [])
+        tip = book_html(f"{e['ticker']} Level II now", bids, asks) if (bids or asks) else \
+            "Level II now: while Level II is on (the checkbox over the chart)"
         for key, col, then in (("bid", COL["Bid now"], e.get("bid")), ("ask", COL["Ask now"], e.get("ask"))):
             now = m.get(key)
             color = None
             if now and now[0] and then and then[0]:
                 color = GREEN if now[0] > then[0] else RED if now[0] < then[0] else None
-            self.cell(row, col, quote_text(now), color, bold=True)
-        bids, asks = m.get("bids", []), m.get("asks", [])
-        tip = book_html(f"{e['ticker']} Level II now", bids, asks) if (bids or asks) else \
-            "Level II now: while Level II is on (the checkbox over the chart)"
-        for col, rows in ((COL["Bids now (L2)"], bids), (COL["Asks now (L2)"], asks)):
-            item = self.cell(row, col, book_lines(rows) if (bids or asks) else "-", "#c8c8c8", tip=tip,
-                             align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            item.setFont(self.mono)
+            self.cell(row, col, quote_text(now), color, bold=True, tip=tip)
         bid = (m.get("bid") or [None])[0]
         pl = AtmTrades.profit(e, bid)
         self.cell(row, COL["P/L"], "-" if pl is None else usd_signed(pl),

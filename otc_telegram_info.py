@@ -118,18 +118,19 @@ def favs_text(tail, favs, quotes, avgs, when=""):
     """The favorites' table: star, ticker, last, change, volume (x its average)."""
     if not favs:
         return f"⭐ <b>Favorites, account ...{esc(tail)}</b>\nNone yet (the ☆ on a chart in OTC Assistant)."
-    lines = []
+    # the title row starts with an emoji too, so it lines up with the stars (an emoji is wider on phones)
+    lines = [f"⭐ {'Ticker':<6} {'Last':>7} {'Chg%':>7} {'xVol':>5}"]
     for t, f in favs.items():
         q = quotes.get(t) or {}
         last = q.get("LAST_PRICE")
         vol = q.get("TOTAL_VOLUME")
         avg = avgs.get(t)
-        x = f" {vol / avg:.1f}x" if vol and avg else ""
-        lines.append(f"{STARS[f['group']][1]} {t:<5} {fmt_price(last) if last else '-':>8} "
-                     f"{pct_text(change_pct(q)):>7}{x}")
+        x = f"{vol / avg:.1f}x" if vol and avg else ""
+        lines.append(f"{STARS[f['group']][1]} {t:<6} {fmt_price(last) if last else '-':>7} "
+                     f"{pct_text(change_pct(q)):>7} {x:>5}".rstrip())
     return (f"⭐ <b>Favorites, account ...{esc(tail)}</b>" + (f"\n<i>{esc(when)}</i>" if when else "")
             + "\n<pre>" + esc("\n".join(lines)) + "</pre>\n"
-            "Tap one for its details. (x: today's volume against its 30-day average)")
+            f"Tap one for its details. (xVol: the day's volume against its {otc_alerts.VOLUME_DAYS}-day average)")
 
 
 def favs_buttons(tail, favs):

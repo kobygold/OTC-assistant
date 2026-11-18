@@ -66,7 +66,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.3"
+APP_VERSION = "2.6.4"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1140,6 +1140,8 @@ class MainWindow(QMainWindow):
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
                                         APP_DIR / "schwab_token.json")
         self.checklist.default_usd = self.position_default_now      # the chosen account's (shared)
+        # the pinned prices (checklist_prices): kept in the shared data too, for every computer
+        self.checklist.save_settings = self.checklist.atm.save_settings = self.save_checklist_settings
         self.show_position_default()
         self.checklist.setVisible(self.checklist_btn.isChecked())
         # The ATM trades: a Buy ATM makes the ticker a yellow favorite; their tickers are streamed
@@ -2691,10 +2693,45 @@ class MainWindow(QMainWindow):
         self.checklist.atm.use_shared(self.shared)
         self.on_shared_changed("")
 
+    # ---- the checklist's pinned prices: per account in the shared data (checklist/<account>/<ticker>) ----
+    def checklist_prefix(self):
+        return f"checklist/{self.shared_account()}/"
+
+    def save_checklist_settings(self, settings):
+        """The checklist saves its settings: this computer's file, and its pinned prices (entry, exit,
+        stop, amount) to the shared data, so every computer (and the Telegram Sell as planned) has
+        the last ones."""
+        save_settings(settings)
+        if self.shared_imported:
+            prices = {t: v for t, v in (settings.get("checklist_prices") or {}).items() if isinstance(v, dict) and v}
+            self.shared.sync(self.checklist_prefix(), prices)
+
+    def load_checklist_prices(self):
+        """The chosen account's pinned prices from the shared data. The first time (once a computer),
+        this computer's own are added to the chosen account's, for the tickers it has none of (not lost)."""
+        if not self.shared_imported:
+            return
+        shared = {t: v for t, v in self.shared.get(self.checklist_prefix()).items() if isinstance(v, dict)}
+        if not self.settings.get("checklist_shared"):
+            mine = {t: v for t, v in (self.settings.get("checklist_prices") or {}).items()
+                    if isinstance(v, dict) and v and t not in shared}
+            if mine:
+                shared.update(mine)
+                self.shared.sync_items({self.checklist_prefix() + t: v for t, v in mine.items()}, [])
+            self.settings["checklist_shared"] = True
+        if self.settings.get("checklist_prices") != shared:
+            self.settings["checklist_prices"] = shared
+            save_settings(self.settings)
+            self.checklist.refresh()
+            for t in {e.get("ticker") for e in self.checklist.atm.entries if e.get("ticker") in shared}:
+                self.checklist.atm.update_live(t)
+
     def on_shared_changed(self, key):
         """Shared data changed elsewhere (or a change of ours refused): shown again."""
         if not self.shared_imported:
             return
+        if key == "" or key.startswith(self.checklist_prefix()):
+            self.load_checklist_prices()
         if key == "" or key.startswith(f"favorites/{self.shared_account()}/"):
             self.reload_favs()
         elif key.startswith("favorites/"):
@@ -3017,9 +3054,10 @@ class MainWindow(QMainWindow):
         self.settings["schwab_account"] = tail
         save_settings(self.settings)
         self.show_schwab_accounts()
-        if self.shared_imported:            # this account's favorites and drawings
+        if self.shared_imported:            # this account's favorites, drawings and pinned prices
             self.reload_favs()
             self.reload_drawings()
+            self.load_checklist_prices()
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
         self.checklist.atm.check()      # and read its orders
         self.telegram.refresh()         # Settings → Telegram: this account's phones

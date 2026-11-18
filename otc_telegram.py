@@ -30,9 +30,10 @@ start link the app shows), /stop (no more news), /status; and what it can ask (o
 /favs (the favorites, a button each for its details), /trades (the open ATM trades), /alerts.
 
 Selling from the phone (step 2): the "buy filled" message of a phone in trade mode has buttons, for
-10 minutes. A tap works the price out again now and asks to confirm (60 seconds); Yes works it out once
-more: the same or higher, the sell goes out as a GTC limit at the price approved; lower, not sent, a new
-confirm instead. Before sending, the trade is locked ("sending" in it: the apps' Sell buttons wait); then
+10 minutes: as planned, one tick under the Ask, on the Bid (all of them), or a price typed (the phone
+sends it as a message, within TYPE_S). A tap works the price out again now and asks to confirm (60
+seconds); Yes works it out once more: the same or higher, the sell goes out as a GTC limit at the price
+approved; lower, not sent, a new confirm instead (a typed price is the phone's own: sent as typed). Before sending, the trade is locked ("sending" in it: the apps' Sell buttons wait); then
 it becomes sell_open with the order's number, as the app's Sell ATM makes it. A main server that takes
 over finds a lock left: the order at Schwab is taken as the trade's, or the lock is cleared and the phone
 asked to tap again.
@@ -68,8 +69,32 @@ RECOVER_TRIES = 3           # reading the orders to settle a lock left by a main
 RECOVER_WAIT_S = 10
 COMMANDS = [("favs", "The favorites (tap one for its details)"), ("trades", "The open ATM trades"),
             ("alerts", "The price / volume alerts"), ("status", "What this phone gets"), ("stop", "No more news")]
-CHOICES = {"p": ("Sell as planned", "the planned exit"), "a": ("Sell on Ask", "the Ask now"),
-           "b": ("Sell on Bid", "the Bid now: it takes them all")}
+TYPE_S = 120                # a "Type a price" waits this long for the price
+CHOICES = {"p": ("Sell as planned", "the planned exit"), "a": ("Sell on Ask", "one tick under the Ask now"),
+           "b": ("Sell on Bid", "the Bid now: it takes them all"), "m": ("Type a price", "the price you typed")}
+
+
+def tick(price):
+    """The price step: 0.0001 under $1, else 0.01."""
+    return 0.0001 if price < 1 else 0.01
+
+
+def on_tick(price):
+    return round(round(price / tick(price)) * tick(price), 4 if price < 1 else 2)
+
+
+def ask_label(ask):
+    return f"Sell on Ask-{fmt_price(tick(ask)) if ask < 1 else '0.01'}"
+
+
+def parse_price(text):
+    """A typed price ("0.0012", ".0012", "$0.0012"), or None."""
+    m = re.fullmatch(r"\$?\s*(\d*\.?\d+)\s*", text or "")
+    try:
+        v = float(m.group(1)) if m else 0.0
+    except ValueError:
+        return None
+    return v if 0 < v < 100000 else None
 
 STATE_KEY = "telegram/state"
 ACCOUNTS = "telegram/accounts/"
@@ -497,6 +522,14 @@ class TelegramBot:
             return
         chat = msg["chat"]["id"]
         text = msg["text"].strip()
+        tid, typing = self.typing_of(chat)
+        if typing is not None and not text.startswith("/"):
+            price = parse_price(text)
+            if price is None:
+                await self.send(chat, "That's not a price: send it like 0.0012 (or tap Cancel).")
+            else:
+                await self.price_typed(chat, tid, typing, price)
+            return
         m = re.fullmatch(r"/?(?:start|link)?\s*(\d{6})", text, re.IGNORECASE)
         if m:
             await self.link(chat, msg, m.group(1))
@@ -660,8 +693,10 @@ class TelegramBot:
         if choice == "p":
             return e.get("exit-live") or e.get("exit") or None
         ticker = e.get("ticker")
-        if choice == "a":
-            return (demo.get("ask") if demo is not None else (self.server.l1.get(ticker) or {}).get("ASK_PRICE")) or None
+        if choice == "a":           # one tick under the Ask (first in line to sell)
+            ask = (demo.get("ask") if demo is not None else (self.server.l1.get(ticker) or {}).get("ASK_PRICE")) or 0
+            under = on_tick(ask - tick(ask)) if ask else 0
+            return under if under > 0 else None
         if demo is not None:
             bids = sorted((tuple(r) for r in demo.get("bids") or []), key=lambda r: -r[1])
         else:
@@ -679,7 +714,9 @@ class TelegramBot:
             rows.append([(f"Sell as planned @ {fmt_price(prices['p'])}", f"{aid}:p", STYLES["p"])])
         for c in ("a", "b"):            # (each on its own row: side by side, a phone cuts the price off)
             if prices.get(c):
-                rows.append([(f"{CHOICES[c][0]} @ {fmt_price(prices[c])}", f"{aid}:{c}", STYLES[c])])
+                name = ask_label(prices[c]) if c == "a" else CHOICES[c][0]
+                rows.append([(f"{name} @ {fmt_price(prices[c])}", f"{aid}:{c}", STYLES[c])])
+        rows.append([("✏️ Type a price", f"{aid}:m")])
         rows.append([("Ignore", f"{aid}:x")])
         return rows
 
@@ -687,10 +724,7 @@ class TelegramBot:
         """The "buy filled" message with the sell buttons (to a phone that may sell). demo: a demo's
         market (the trade e made up, kept in the action: nothing is ever sent for it)."""
         prices = {c: self.price_now(e, c, demo) for c in ("p", "a", "b")}
-        if not any(prices.values()):
-            await self.send(chat, text)
-            return
-        aid = secrets.token_hex(4)
+        aid = secrets.token_hex(4)          # (always: a price can be typed)
         action = {"kind": "offer", "key": key, "chat": chat, "until": time.time() + OFFER_S,
                   "shares": remaining(e), "text": text, "prices": prices}
         if demo is not None:
@@ -706,15 +740,15 @@ class TelegramBot:
         tail = key[len("atm/"):].split("/")[0]
         if action.get("demo") is not None:                       # a demo: its own made-up trade
             if time.time() > (action.get("until") or 0):
-                return ("These buttons ran out (10 minutes)." if action.get("kind") == "offer" else
-                        "The confirm ran out (60 seconds)."), action.get("trade")
+                return {"offer": "These buttons ran out (10 minutes).", "typing": "No price came in time (2 minutes)."}.get(
+                    action.get("kind"), "The confirm ran out (60 seconds)."), action.get("trade")
             return None, action.get("trade")
         e = self.item(key)
         if chat not in self.trade_chats(tail):
             return "This phone may not sell from Telegram (the Telegram tab in OTC Assistant).", e
         if time.time() > (action.get("until") or 0):
-            return ("These buttons ran out (10 minutes)." if action.get("kind") == "offer" else
-                    "The confirm ran out (60 seconds)."), e
+            return {"offer": "These buttons ran out (10 minutes).", "typing": "No price came in time (2 minutes)."}.get(
+                action.get("kind"), "The confirm ran out (60 seconds)."), e
         if not isinstance(e, dict):
             return "The trade isn't there any more.", e
         if e.get("sending"):
@@ -759,12 +793,17 @@ class TelegramBot:
             if why:
                 await self.edit(chat, mid, text + "\n\n" + why)
                 return
+            if choice == "m":
+                await self.ask_typed(chat, mid, aid, action, e)
+                return
             await self.ask_confirm(chat, mid, aid, action, e, choice, self.price_now(e, choice, action.get("demo")))
             return
         offer_id = action.get("offer", "")
         offer = self.item(ACTIONS + offer_id) or {}
         if choice == "n":
             await self.back_to_offer(chat, mid, offer_id, offer, text + "\n\nNot sold.")
+            return
+        if action.get("kind") == "typing":
             return
         if choice != "y":
             return
@@ -773,7 +812,7 @@ class TelegramBot:
             await self.edit(chat, mid, text + "\n\n" + why)
             return
         approved, c = action["price"], action["choice"]
-        now_price = self.price_now(e, c, action.get("demo"))
+        now_price = approved if c == "m" else self.price_now(e, c, action.get("demo"))     # (typed: as typed)
         if now_price is None or now_price < approved - 1e-9:        # never lower than approved
             await self.ask_confirm(chat, mid, offer_id, offer, e, c, now_price, approved)
             return
@@ -790,13 +829,26 @@ class TelegramBot:
         text = offer.get("text", "")
         what = CHOICES[choice][1]
         if price is None:
-            missing = {"p": "There's no exit price", "a": "There's no Ask now", "b": "The bids don't take them all now"}
+            missing = {"p": "There's no exit price", "a": "There's no Ask now", "b": "The bids don't take them all now",
+                       "m": "No price"}
             await self.back_to_offer(chat, mid, offer_id, offer, text + f"\n\n{missing[choice]}: not sent.")
             return
         shown = (offer.get("prices") or {}).get(choice)
         before = approved if approved is not None else shown
         lines = [f"Sell {offer.get('shares', remaining(e)):,} {e.get('ticker')} @ {fmt_price(price)} ({what})?"]
-        if before and price < before - 1e-9:
+        if choice == "m":           # a typed price: where it stands against the market now
+            ask = (offer.get("demo") or {}).get("ask") if offer.get("demo") is not None else \
+                (self.server.l1.get(e.get("ticker")) or {}).get("ASK_PRICE")
+            bid = (self.price_now(e, "b", offer.get("demo")) if offer.get("demo") is not None else
+                   (self.server.l1.get(e.get("ticker")) or {}).get("BID_PRICE"))
+            entry = e.get("entry") or 0
+            if bid and price <= bid + 1e-9:
+                lines.append(f"⚠️ At or under the Bid now ({fmt_price(bid)}): it sells at once.")
+            elif ask and price > ask + 1e-9:
+                lines.append(f"Above the Ask now ({fmt_price(ask)}): it waits for a buyer.")
+            if entry and price < entry - 1e-9:
+                lines.append(f"⚠️ Under your buy price ({fmt_price(entry)}): a loss.")
+        elif before and price < before - 1e-9:
             name = {"p": "The exit", "a": "The Ask", "b": "The Bid"}[choice]
             lines.append(f"⚠️ {name} went down from {fmt_price(before)} to {fmt_price(price)}"
                          + (" (you approved " + fmt_price(approved) + ")." if approved is not None else "."))
@@ -809,6 +861,46 @@ class TelegramBot:
         self.server.put_shared(ACTIONS + cid, confirm)
         await self.edit(chat, mid, text + "\n\n" + "\n".join(lines),
                         [[("Yes, send", f"{cid}:y", "success"), ("No", f"{cid}:n")]])
+
+    async def ask_typed(self, chat, mid, offer_id, offer, e):
+        """Type a price: the message asks for it (TYPE_S) with Cancel; the price comes as a message."""
+        tid = secrets.token_hex(4)
+        typing = {"kind": "typing", "offer": offer_id, "key": offer.get("key"), "chat": chat, "message_id": mid,
+                  "until": time.time() + TYPE_S, "shares": offer.get("shares"), "text": offer.get("text", "")}
+        if offer.get("demo") is not None:
+            typing.update(demo=offer["demo"], trade=offer.get("trade"))
+        self.server.put_shared(ACTIONS + tid, typing)
+        await self.edit(chat, mid, offer.get("text", "") + f"\n\n✏️ Send me the price to sell "
+                                   f"{offer.get('shares', remaining(e)):,} {e.get('ticker')} at (e.g. "
+                                   f"{fmt_price(e.get('exit-live') or e.get('exit') or e.get('entry') or 0.001)}).",
+                        [[("Cancel", f"{tid}:n")]])
+
+    def typing_of(self, chat):
+        """The chat's "Type a price" waiting for its price: (id, action), or (None, None)."""
+        now = time.time()
+        found = [(k[len(ACTIONS):], it.get("data")) for k, it in self.server.store.items.items()
+                 if k.startswith(ACTIONS) and isinstance(it.get("data"), dict)
+                 and it["data"].get("kind") == "typing" and it["data"].get("chat") == chat
+                 and not it["data"].get("done") and (it["data"].get("until") or 0) > now]
+        return max(found, key=lambda f: f[1].get("until") or 0) if found else (None, None)
+
+    async def price_typed(self, chat, tid, typing, price):
+        """The price came: a confirm for it, in a new message (at the bottom, where the phone is)."""
+        self.server.put_shared(ACTIONS + tid, dict(typing, done=True))
+        offer_id = typing.get("offer", "")
+        offer = self.item(ACTIONS + offer_id) or {}
+        text = typing.get("text", "")
+        why, e = self.why_not(typing, chat)
+        if why:
+            await self.edit(chat, typing.get("message_id"), text + "\n\n" + why)
+            await self.send(chat, why)
+            return
+        price = on_tick(price)
+        await self.edit(chat, typing.get("message_id"), text + f"\n\n✏️ Typed {fmt_price(price)}: see below.")
+        msg = await self.send(chat, text)
+        if not msg or not msg.get("message_id"):
+            return
+        await self.ask_confirm(chat, msg["message_id"], offer_id, offer, e, "m", price)
 
     async def back_to_offer(self, chat, mid, offer_id, offer, text):
         """The offer's buttons again (as long as they work), under `text`."""
