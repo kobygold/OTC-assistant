@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.16"
+APP_VERSION = "2.6.17"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1028,9 +1028,11 @@ class MainWindow(QMainWindow):
         self.chart_fav_ticker = ""
         self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
-        show_btn = QPushButton("Show")
-        show_btn.clicked.connect(lambda: self.chart_from_box(self.chart_ticker.text()))
-        row.addWidget(show_btn)
+        # (Enter in the box shows the chart) News: the ticker's news on OTC Markets, in the browser
+        news_btn = QPushButton("News")
+        news_btn.setToolTip("Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser")
+        news_btn.clicked.connect(self.open_news)
+        row.addWidget(news_btn)
         row.addSpacing(16)
 
         self.range_group = QButtonGroup(self)
@@ -2088,6 +2090,14 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(1)
         self.chart_ticker.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.chart_ticker.selectAll()
+
+    def open_news(self):
+        """The chart's ticker (else the one typed) on OTC Markets' News tab, in the default browser."""
+        ticker = (self.chart.ticker or self.chart_ticker.text()).strip().upper()
+        if not ticker:
+            self.notify("Type a ticker first.", 4000)
+            return
+        QDesktopServices.openUrl(QUrl(f"https://www.otcmarkets.com/stock/{ticker}/news"))
 
     def chart_from_box(self, ticker: str):
         """A ticker typed or picked in the Chart tab's box: shown, and added to the history if it has data."""
