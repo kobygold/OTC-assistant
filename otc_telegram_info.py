@@ -62,9 +62,9 @@ def alerts(store, tail, ticker=None):
                   key=lambda a: (a.get("state") != "active", a.get("ticker", ""), str(a.get("created", ""))))
 
 
-def daily(ticker, path=None):
-    """{"name", "avg_volume" (the last VOLUME_DAYS days before today), "close" (the last day's)} from the
-    database; {} without it."""
+def daily(ticker, path=None, before=None):
+    """{"name", "avg_volume" (the last VOLUME_DAYS days before today, or before `before` "YYYY-MM-DD"),
+    "close" (the last day's)} from the database; {} without it."""
     try:
         con = sqlite3.connect(f"file:{path or DB_PATH}?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
@@ -75,7 +75,7 @@ def daily(ticker, path=None):
         if row and row[0]:
             out["name"] = row[0]
         rows = con.execute("SELECT volume, close, date FROM candles WHERE ticker = ? AND date < ? ORDER BY date DESC "
-                           "LIMIT ?", (ticker, date.today().isoformat(), otc_alerts.VOLUME_DAYS)).fetchall()
+                           "LIMIT ?", (ticker, before or date.today().isoformat(), otc_alerts.VOLUME_DAYS)).fetchall()
         if rows:
             out["avg_volume"] = sum(r[0] or 0 for r in rows) / len(rows)
             out["close"], out["close_date"] = rows[0][1], rows[0][2]
@@ -106,7 +106,15 @@ def compact(n):
     return f"{n:.0f}"
 
 
-def favs_text(tail, favs, quotes, avgs):
+def close_when(day):
+    """'At the close of Tue 11-17' (day: 'YYYY-MM-DD')."""
+    try:
+        return f"At the close of {datetime.strptime(day, '%Y-%m-%d'):%a %m-%d}"
+    except (TypeError, ValueError):
+        return "At the last close"
+
+
+def favs_text(tail, favs, quotes, avgs, when=""):
     """The favorites' table: star, ticker, last, change, volume (x its average)."""
     if not favs:
         return f"⭐ <b>Favorites, account ...{esc(tail)}</b>\nNone yet (the ☆ on a chart in OTC Assistant)."
@@ -119,7 +127,8 @@ def favs_text(tail, favs, quotes, avgs):
         x = f" {vol / avg:.1f}x" if vol and avg else ""
         lines.append(f"{STARS[f['group']][1]} {t:<5} {fmt_price(last) if last else '-':>8} "
                      f"{pct_text(change_pct(q)):>7}{x}")
-    return (f"⭐ <b>Favorites, account ...{esc(tail)}</b>\n<pre>" + esc("\n".join(lines)) + "</pre>\n"
+    return (f"⭐ <b>Favorites, account ...{esc(tail)}</b>" + (f"\n<i>{esc(when)}</i>" if when else "")
+            + "\n<pre>" + esc("\n".join(lines)) + "</pre>\n"
             "Tap one for its details. (x: today's volume against its 30-day average)")
 
 
@@ -142,7 +151,7 @@ def book_table(bids, asks):
     return out
 
 
-def ticker_text(tail, ticker, fav, q, live, info, bids, asks, trade_list, alert_list):
+def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_list):
     """A ticker's details, for the phone."""
     def field(name, value):
         return f"<b>{name}:</b> {value}"
@@ -152,9 +161,12 @@ def ticker_text(tail, ticker, fav, q, live, info, bids, asks, trade_list, alert_
         last = q.get("LAST_PRICE")
         lines.append(field("Last", f"{fmt_price(last) if last else '-'} {pct_text(change_pct(q, info.get('close')))}"))
         for k, name in (("BID", "Bid"), ("ASK", "Ask")):
-            if q.get(f"{k}_PRICE"):
-                size = q.get(f"{k}_SIZE")
-                lines.append(field(name, fmt_price(q[f"{k}_PRICE"]) + (f" x {int(size):,}" if size else "")))
+            price = q.get(f"{k}_PRICE")
+            if price:
+                # Schwab's Level 1 size is 0 outside the session: then the book's shares at that price
+                size = q.get(f"{k}_SIZE") or sum(r[2] or 0 for r in (bids if k == "BID" else asks)
+                                                  if abs(r[1] - price) < 1e-9)
+                lines.append(field(name, fmt_price(price) + (f" x {int(size):,}" if size else " x ?")))
         day = [field(n, fmt_price(q[k])) for k, n in (("OPEN_PRICE", "Open"), ("HIGH_PRICE", "High"),
                                                       ("LOW_PRICE", "Low")) if q.get(k)]
         if day:
@@ -186,7 +198,8 @@ def ticker_text(tail, ticker, fav, q, live, info, bids, asks, trade_list, alert_
             lines.append(" · ".join(own))
         if fav.get("notes"):
             lines.append(field("📝 Notes", esc(fav["notes"])))
-    lines.append(f"<i>{'Live' if live else 'Quote'} at {datetime.now():%H:%M:%S}</i>")
+    if when:
+        lines.append(f"<i>{esc(when)}</i>")
     return "\n".join(lines)
 
 

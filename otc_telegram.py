@@ -47,6 +47,7 @@ from datetime import datetime
 
 import otc_alerts
 import otc_telegram_info as info
+from otc_recorder import in_session
 from otc_trade import bid_fill, fmt_price, plan_profit, remaining, sold_profit, usd_signed
 
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
@@ -517,6 +518,32 @@ class TelegramBot:
                                   "/status, /stop, /link <code> (from OTC Assistant: Settings → Add phone).")
 
     # ---- what a phone asks (otc_telegram_info.py) ----
+    def book(self, ticker):
+        books = self.server.books.get(ticker) or {}
+        return (sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0])),
+                sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0])))
+
+    async def market(self, tickers):
+        """{ticker: {"q": Level 1 fields, "bids", "asks", "when"}}: in the session the stream's (else a quote
+        from Schwab now); outside it the last session's close from the record, as the app shows it."""
+        out = {}
+        if not in_session():
+            for t in tickers:
+                day, _, snap = await self.server.close_snapshot(t)
+                if snap is not None and snap.get("q"):
+                    bids, asks = [], []
+                    for b, a in snap["books"].values():
+                        bids += b
+                        asks += a
+                    out[t] = {"q": dict(snap["q"]), "bids": sorted(bids, key=lambda r: (-r[1], -r[2], r[0])),
+                              "asks": sorted(asks, key=lambda r: (r[1], -r[2], r[0])), "when": info.close_when(day), "day": day}
+        quotes, live = await self.quotes([t for t in tickers if t not in out])
+        now = datetime.now().strftime("%H:%M:%S")
+        for t, q in quotes.items():
+            bids, asks = self.book(t) if t in live else ([], [])
+            out[t] = {"q": q, "bids": bids, "asks": asks, "when": f"{'Live' if t in live else 'Quote'} at {now}"}
+        return out
+
     async def quotes(self, tickers):
         """{ticker: Level 1 fields} and the set of the live ones: the stream's, else a quote from Schwab now."""
         out = {t: dict(self.server.l1[t]) for t in tickers if self.server.l1.get(t)}
@@ -535,19 +562,20 @@ class TelegramBot:
 
     async def favs_message(self, tail):
         favs = info.favorites(self.server.store, tail)
-        quotes, _ = await self.quotes(list(favs))
-        avgs = await asyncio.to_thread(lambda: {t: info.daily(t).get("avg_volume") for t in favs})
-        return info.favs_text(tail, favs, quotes, avgs), info.favs_buttons(tail, favs)
+        m = await self.market(list(favs))
+        # (the volume at a close: against the days before that one)
+        avgs = await asyncio.to_thread(lambda: {t: info.daily(t, before=(m.get(t) or {}).get("day")).get("avg_volume")
+                                                for t in favs})
+        closes = {v["when"] for v in m.values() if v["when"].startswith("At the close")}
+        return (info.favs_text(tail, favs, {t: v["q"] for t, v in m.items()}, avgs, " · ".join(sorted(closes))),
+                info.favs_buttons(tail, favs))
 
     async def ticker_message(self, tail, ticker):
         favs = info.favorites(self.server.store, tail)
-        quotes, live = await self.quotes([ticker])
-        details = await asyncio.to_thread(info.daily, ticker)
-        books = self.server.books.get(ticker) or {}
-        bids = sorted((r for b, _ in books.values() for r in b), key=lambda r: (-r[1], -r[2], r[0]))
-        asks = sorted((r for _, a in books.values() for r in a), key=lambda r: (r[1], -r[2], r[0]))
-        text = info.ticker_text(tail, ticker, favs.get(ticker), quotes.get(ticker) or {}, ticker in live, details,
-                                bids, asks, info.trades(self.server.store, tail, ticker),
+        m = (await self.market([ticker])).get(ticker) or {"q": {}, "bids": [], "asks": [], "when": ""}
+        details = await asyncio.to_thread(info.daily, ticker, None, m.get("day"))
+        text = info.ticker_text(tail, ticker, favs.get(ticker), m["q"], m["when"], details,
+                                m["bids"], m["asks"], info.trades(self.server.store, tail, ticker),
                                 info.alerts(self.server.store, tail, ticker))
         return text, info.ticker_buttons(tail, ticker)
 

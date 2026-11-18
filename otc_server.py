@@ -1463,24 +1463,31 @@ class Server:
         """(an app) The ticker's Level 1 and Level II at the last session's close, from this computer's
         record (the app's "hold at the close", outside the market's hours): {"type": "at_close",
         "ticker", "day", "close" (ms), "q", "bids", "asks", "at"} - no "q" when it wasn't recorded."""
-        day, close = last_close()
-        answer = {"type": "at_close", "ticker": ticker, "day": day.isoformat() if day else None, "close": close}
-        if day is not None and ticker:
-            key = (ticker, answer["day"])
-            if key not in self.closes:
-                try:
-                    await asyncio.to_thread(self.recorder.flush)
-                    self.closes[key] = await asyncio.to_thread(at_close, self.market_log, ticker, answer["day"], close)
-                except Exception as e:
-                    log(f"Can't read {ticker}'s close from the record: {type(e).__name__}: {e}")
-                    self.closes[key] = None
-                while len(self.closes) > 300:
-                    self.closes.pop(next(iter(self.closes)))
-            snap = self.closes[key]
-            if snap is not None:
-                bids, asks = merge_books(snap["books"].values())
-                answer.update(q=snap["q"], bids=with_levels(bids), asks=with_levels(asks), at=snap["at"])
+        day, close, snap = await self.close_snapshot(ticker)
+        answer = {"type": "at_close", "ticker": ticker, "day": day, "close": close}
+        if snap is not None:
+            bids, asks = merge_books(snap["books"].values())
+            answer.update(q=snap["q"], bids=with_levels(bids), asks=with_levels(asks), at=snap["at"])
         conn.put(answer)
+
+    async def close_snapshot(self, ticker):
+        """(the day "YYYY-MM-DD", its close in ms, the ticker's market then (at_close) or None) of the last
+        session, from this computer's record; kept for the next ask."""
+        day, close = last_close()
+        if day is None or not ticker:
+            return None, close, None
+        day = day.isoformat()
+        key = (ticker, day)
+        if key not in self.closes:
+            try:
+                await asyncio.to_thread(self.recorder.flush)
+                self.closes[key] = await asyncio.to_thread(at_close, self.market_log, ticker, day, close)
+            except Exception as e:
+                log(f"Can't read {ticker}'s close from the record: {type(e).__name__}: {e}")
+                self.closes[key] = None
+            while len(self.closes) > 300:
+                self.closes.pop(next(iter(self.closes)))
+        return day, close, self.closes[key]
 
     async def take_history_part(self, m):
         self.closes.clear()         # (a close read before may be missing these lines)
