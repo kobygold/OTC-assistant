@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridL
 from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
-from otc_trade import FEE_USD, bid_fill, current_exit
+from otc_trade import DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, trade_steps
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
@@ -1446,6 +1446,78 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
             "duration": "DAY" if market else duration.currentData(), "aon": not market and aon.isChecked()}
 
 
+STEP_GREEN, STEP_YELLOW, STEP_GRAY = "#1db31d", "#e3b23c", "#5a6068"
+STEP_R, STEP_GAP = 8, 26        # the circles' radius, the distance between their centres
+
+
+def paint_steps(p, rect, steps, r=STEP_R, gap=STEP_GAP):
+    """An ATM trade's 4 steps in rect: circles joined by a line, a green ✔ in each step done, a yellow
+    half for one partly done, empty gray for the rest (steps: [DONE / HALF / TODO] x 4)."""
+    from PyQt6.QtCore import QPointF, QRectF
+    from PyQt6.QtGui import QPainter, QPainterPath, QPen
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    x0 = rect.left() + (rect.width() - (2 * r + 3 * gap)) / 2 + r
+    y = rect.center().y() + 0.5
+    centres = [QPointF(x0 + i * gap, y) for i in range(4)]
+    for i in range(3):          # the joining lines: green between steps done
+        color = STEP_GREEN if steps[i + 1] in (DONE, HALF) and steps[i] == DONE else STEP_GRAY
+        p.setPen(QPen(QColor(color), 2))
+        p.drawLine(QPointF(centres[i].x() + r, y), QPointF(centres[i + 1].x() - r, y))
+    for c, st in zip(centres, steps):
+        circle = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+        if st == DONE:
+            p.setPen(QPen(QColor(STEP_GREEN), 1.5))
+            p.setBrush(QColor(STEP_GREEN))
+            p.drawEllipse(circle)
+            tick = QPainterPath(QPointF(c.x() - r * 0.45, c.y()))
+            tick.lineTo(QPointF(c.x() - r * 0.1, c.y() + r * 0.38))
+            tick.lineTo(QPointF(c.x() + r * 0.5, c.y() - r * 0.4))
+            p.setPen(QPen(QColor("#ffffff"), 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(tick)
+        elif st == HALF:            # the left half filled, yellow
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(STEP_YELLOW))
+            p.drawPie(circle, 90 * 16, 180 * 16)
+            p.setPen(QPen(QColor(STEP_YELLOW), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(circle)
+        else:
+            p.setPen(QPen(QColor(STEP_GRAY), 1.5))
+            p.setBrush(QColor("#1b1e22"))
+            p.drawEllipse(circle)
+    p.restore()
+
+
+class StepsView(QWidget):
+    """The 4 steps of the checklist's ATM trade, beside its title (hidden without a trade)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.steps = None
+        self.setFixedSize(2 * STEP_R + 3 * STEP_GAP + 8, 2 * STEP_R + 6)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.hide()
+
+    def set_trade(self, e):
+        steps = trade_steps(e) if e else None
+        if steps != self.steps:
+            self.steps = steps
+            words = {DONE: "✔", HALF: "partly", "todo": "not yet"}
+            self.setToolTip("\n".join(f"{i + 1}. {n}: {words[st]}" for i, (n, st) in enumerate(zip(STEP_NAMES, steps)))
+                            if steps else "")
+            self.update()
+        self.setVisible(steps is not None)
+
+    def paintEvent(self, _event):
+        if self.steps:
+            from PyQt6.QtGui import QPainter
+            p = QPainter(self)
+            paint_steps(p, self.rect(), self.steps)
+            p.end()
+
+
 def aon_box():
     """The order dialogs' "All or none" checkbox: unchecked each time (a choice for this order only)."""
     box = QCheckBox("All or none")
@@ -2544,12 +2616,11 @@ class ChecklistPanel(QWidget):
         head = QHBoxLayout()
         self.title = QLabel()
         self.title.setObjectName("cl_title")
-        head.addWidget(self.title, 1)
-        reload_btn = QToolButton()
-        reload_btn.setText("⟳")
-        reload_btn.setToolTip("Reload checklist.txt after editing it, read the fee from Schwab again and check the open orders")
-        reload_btn.clicked.connect(self.reload)
-        head.addWidget(reload_btn)
+        head.addWidget(self.title)
+        head.addStretch(1)
+        # (no reload button: checklist.txt is read again at the app's start; self.reload() still does it)
+        self.steps_view = StepsView()           # the ATM trade's 4 steps, at the panel's left edge (right to left)
+        head.addWidget(self.steps_view, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(head)
         trade = QHBoxLayout()
         trade.setSpacing(6)
@@ -3613,6 +3684,7 @@ class ChecklistPanel(QWidget):
                 "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
 
     def refresh(self):
+        self.steps_view.set_trade(self.order() if self.ticker else None)
         if not self.widgets:
             return
         results = self.evaluate()

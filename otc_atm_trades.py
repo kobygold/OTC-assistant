@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
                              QStyledItemDelegate, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
-                           AtmTrades, red_x_icon, reset_icon, usd_signed)
+                           STEP_GAP, STEP_R, AtmTrades, paint_steps, red_x_icon, reset_icon, usd_signed)
 from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, trade_steps
 
 
@@ -115,7 +115,6 @@ def book_html(title, bids, asks):
             f"<td>&nbsp;&nbsp;</td><td valign=top><b>Asks</b><table>{side(asks)}</table></td></tr></table>")
 
 
-STEP_GREEN, STEP_YELLOW, STEP_GRAY = "#1db31d", "#e3b23c", "#5a6068"
 
 
 def steps_tip(e, steps):
@@ -129,52 +128,17 @@ def steps_tip(e, steps):
 
 
 class StepsDelegate(QStyledItemDelegate):
-    """The Steps cell: 4 circles joined by a line, a green ✔ in each step done, a yellow half for one
-    partly done, empty gray for the rest. The steps: the item's UserRole ([DONE / HALF / TODO] x 4)."""
-    R, GAP = 8, 26          # the circles' radius, the distance between their centres
+    """The Steps cell: the trade's 4 steps drawn (otc_checklist.paint_steps; the item's UserRole holds
+    them, [DONE / HALF / TODO] x 4)."""
 
     def sizeHint(self, option, index):
-        return QSize(2 * self.R + 3 * self.GAP + 16, 2 * self.R + 8)
+        return QSize(2 * STEP_R + 3 * STEP_GAP + 16, 2 * STEP_R + 8)
 
     def paint(self, p, option, index):
         steps = index.data(Qt.ItemDataRole.UserRole)
         if not steps:
             return super().paint(p, option, index)
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        r, gap = self.R, self.GAP
-        rect = option.rect
-        x0 = rect.left() + (rect.width() - (2 * r + 3 * gap)) / 2 + r
-        y = rect.center().y() + 0.5
-        centres = [QPointF(x0 + i * gap, y) for i in range(4)]
-        for i in range(3):          # the joining lines: green between steps done
-            color = STEP_GREEN if steps[i + 1] in (DONE, HALF) and steps[i] == DONE else STEP_GRAY
-            p.setPen(QPen(QColor(color), 2))
-            p.drawLine(QPointF(centres[i].x() + r, y), QPointF(centres[i + 1].x() - r, y))
-        for c, st in zip(centres, steps):
-            circle = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
-            if st == DONE:
-                p.setPen(QPen(QColor(STEP_GREEN), 1.5))
-                p.setBrush(QColor(STEP_GREEN))
-                p.drawEllipse(circle)
-                tick = QPainterPath(QPointF(c.x() - r * 0.45, c.y()))
-                tick.lineTo(QPointF(c.x() - r * 0.1, c.y() + r * 0.38))
-                tick.lineTo(QPointF(c.x() + r * 0.5, c.y() - r * 0.4))
-                p.setPen(QPen(QColor("#ffffff"), 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawPath(tick)
-            elif st == HALF:            # the left half filled, yellow
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(STEP_YELLOW))
-                p.drawPie(circle, 90 * 16, 180 * 16)
-                p.setPen(QPen(QColor(STEP_YELLOW), 1.5))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(circle)
-            else:
-                p.setPen(QPen(QColor(STEP_GRAY), 1.5))
-                p.setBrush(QColor("#1b1e22"))
-                p.drawEllipse(circle)
-        p.restore()
+        paint_steps(p, option.rect, steps)
 
 
 class SortMixin:
