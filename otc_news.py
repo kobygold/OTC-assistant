@@ -229,3 +229,173 @@ class UserClient:
         except Exception:
             pass
         self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+# ================================================================ the reader (main server) ===
+NEWS_PREFIX = "news/"               # shared data: news/<ticker>/<post id> = the post that matters, understood
+NEWS_STATE = "telegram/news_state"  # {"last_id"}: the last post read (a new main server goes on from it)
+POLL_S = 15                         # the channel read this often
+FIRST_POSTS = 50                    # the first time ever: the last ones only
+KEEP_DAYS = 30                      # the news kept this long
+RETRY_S = 60                        # after an error
+TELL_HOURS = 2                      # the phones are told of posts this fresh only
+
+
+def login_ok(login):
+    return isinstance(login, dict) and str(login.get("api_id") or "").isdigit() and login.get("api_hash") \
+        and login.get("session")
+
+
+class NewsReader:
+    """(main server) Reads the news channel with the user's login every POLL_S: each post that matters
+    (otc_news_parse) goes to the shared data, and the account phones whose stocks it's about are told
+    (a favorite, an ATM trade, an alert)."""
+
+    def __init__(self, server, login):
+        self.server, self.login = server, dict(login)
+        self.client = None
+        self.entity = None
+        self.tasks = []
+        self.pruned = 0.0
+
+    def start(self):
+        self.tasks = [asyncio.create_task(self.run())]
+        return self.tasks
+
+    async def stop(self):
+        for t in self.tasks:
+            t.cancel()
+        if self.tasks:
+            await asyncio.wait(self.tasks, timeout=3)
+        self.tasks = []
+        await self.disconnect()
+
+    async def disconnect(self):
+        client, self.client = self.client, None
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    def item(self, key):
+        return (self.server.store.items.get(key) or {}).get("data")
+
+    async def run(self):
+        told = False
+        while True:
+            try:
+                if self.client is None:
+                    self.client = make_client(self.login["session"], self.login["api_id"], self.login["api_hash"])
+                    await self.client.connect()
+                    if not await self.client.is_user_authorized():
+                        self.server.event("News: the Telegram login doesn't work any more: log in again "
+                                          "(Settings → News Telegram Bot)")
+                        await self.disconnect()
+                        return
+                    try:
+                        self.entity = await self.client.get_entity(int(self.login.get("channel") or NEWS_CHANNEL))
+                    except (ValueError, TypeError):
+                        await self.client.get_dialogs()
+                        self.entity = await self.client.get_entity(int(self.login.get("channel") or NEWS_CHANNEL))
+                    self.server.event(f"News: reading \"{getattr(self.entity, 'title', 'the channel')}\" "
+                                      f"(as {self.login.get('name') or 'your account'})")
+                    told = False
+                await self.poll()
+                self.prune()
+                await asyncio.sleep(POLL_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if not told:
+                    self.server.log(f"News: {error_text(e)}")
+                    told = True
+                if type(e).__name__ in ("AuthKeyUnregisteredError", "SessionRevokedError", "UserDeactivatedError"):
+                    self.server.event("News: the Telegram login ran out: log in again (Settings → News Telegram Bot)")
+                    await self.disconnect()
+                    return
+                await self.disconnect()
+                await asyncio.sleep(RETRY_S)
+
+    async def poll(self):
+        """The posts since the last one read, oldest first."""
+        import otc_news_parse as parse
+        last = int((self.item(NEWS_STATE) or {}).get("last_id") or 0)
+        posts = []
+        async for m in self.client.iter_messages(self.entity, min_id=last, limit=200 if last else FIRST_POSTS):
+            posts.append(m)
+        if not posts:
+            return
+        for m in sorted(posts, key=lambda m: m.id):
+            # the very first read (the last FIRST_POSTS) only kept: the phones aren't told old news
+            self.take(m.id, getattr(m, "date", None), m.message or "", parse, tell=bool(last))
+        self.server.put_shared(NEWS_STATE, {"last_id": max(m.id for m in posts)})
+
+    def take(self, post_id, when, text, parse, tell=True):
+        p = parse.parse(text)
+        level = parse.level(p)
+        if not p["ticker"] or level is None:
+            return None
+        from datetime import datetime, timedelta, timezone
+        when = when or datetime.now(timezone.utc)
+        local = when.astimezone() if when.tzinfo else when
+        item = {"id": post_id, "ticker": p["ticker"], "time": local.isoformat(timespec="seconds"),
+                "kind": p["kind"], "level": level, "flags": p["flags"], "summary": parse.summary(p),
+                "text": text[:800]}
+        key = f"{NEWS_PREFIX}{p['ticker']}/{post_id}"
+        if self.item(key) is not None:
+            return None
+        # the channel posts some news twice: the same ticker's same news within a day is kept once
+        day_ago = (local - timedelta(days=1)).isoformat()[:19]
+        pre = f"{NEWS_PREFIX}{p['ticker']}/"
+        if any(isinstance(it.get("data"), dict) and it["data"].get("summary") == item["summary"]
+               and str(it["data"].get("time", ""))[:19] >= day_ago
+               for k, it in self.server.store.items.items() if k.startswith(pre)):
+            return None
+        self.server.put_shared(key, item)
+        self.server.log(f"News: {p['ticker']} {level}: {item['summary'].splitlines()[0][:120]}")
+        # the phones: fresh news only (TELL_HOURS: a post read late, after no computer read for a while)
+        if tell and (datetime.now(timezone.utc) - (when if when.tzinfo else when.replace(tzinfo=timezone.utc))
+                     ).total_seconds() < TELL_HOURS * 3600:
+            self.tell(item)
+        return item
+
+    def interest(self, ticker):
+        """{account: [why]} of the accounts with the ticker: a favorite, an ATM trade working, an alert."""
+        out = {}
+        for key, it in self.server.store.items.items():
+            d = it.get("data")
+            if not isinstance(d, dict):
+                continue
+            parts = key.split("/")
+            if key.startswith("favorites/") and len(parts) == 3 and parts[2] == ticker:
+                out.setdefault(parts[1], []).append("favorite")
+            elif key.startswith("atm/") and d.get("ticker") == ticker and d.get("state") not in ("sold", "canceled"):
+                out.setdefault(parts[1], []).append("ATM trade")
+            elif key.startswith("alerts/") and d.get("ticker") == ticker and d.get("state") == "active":
+                out.setdefault(parts[1], []).append("alert")
+        return {a: list(dict.fromkeys(w)) for a, w in out.items()}
+
+    def tell(self, item):
+        bot = getattr(self.server, "bot", None)
+        if bot is None:
+            return
+        for tail, why in self.interest(item["ticker"]).items():
+            chats = [p["chat_id"] for p in bot.phones(tail)]
+            if chats:
+                head = "⚠️" if item["level"] == "warn" else "📰"
+                bot.send_to(chats, f"{head} {item['ticker']} news ({', '.join(why)}, account ...{tail})\n"
+                                   f"{item['summary']}")
+
+    def prune(self):
+        """News older than KEEP_DAYS out of the shared data (once an hour)."""
+        import time
+        from datetime import datetime, timedelta
+        if time.time() - self.pruned < 3600:
+            return
+        self.pruned = time.time()
+        cut = (datetime.now() - timedelta(days=KEEP_DAYS)).isoformat()
+        for key, it in list(self.server.store.items.items()):
+            d = it.get("data")
+            if key.startswith(NEWS_PREFIX) and isinstance(d, dict) and str(d.get("time", ""))[:19] < cut[:19]:
+                self.server.put_shared(key, None)

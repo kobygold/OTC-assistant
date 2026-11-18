@@ -253,9 +253,10 @@ NEWS_COLOR = "#c792ea"      # the section's title (the Telegram bot's is blue, t
 class NewsSettings(QWidget):
     """The settings of the news channel reader: a colored section, as the Telegram one below it."""
 
-    def __init__(self, settings, save, parent=None):
+    def __init__(self, settings, save, parent=None, send=None):
         super().__init__(parent)
         self.settings, self.save = settings, save
+        self.send = send            # to this computer's server: the login goes to the main server (all)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)         # (in line with the Settings tab's own)
         title = QLabel("News Telegram Bot: OTC Markets changes and headlines")
@@ -368,6 +369,39 @@ class NewsSettings(QWidget):
             self.settings["telegram_user_session"] = dlg.session
             self.settings["telegram_user_name"] = dlg.name
             self.save(self.settings)
+            self.share()
+        self.show_state()
+
+    # ---- the login on all the computers (the main server reads with it) ----
+    def login(self):
+        """The login as the server takes it ({} without one)."""
+        login = {"api_id": str(self.settings.get("telegram_api_id") or "").strip(),
+                 "api_hash": str(self.settings.get("telegram_api_hash") or "").strip(),
+                 "session": str(self.settings.get("telegram_user_session") or "").strip(),
+                 "channel": str(self.settings.get("news_channel") or otc_news.NEWS_CHANNEL).strip(),
+                 "name": str(self.settings.get("telegram_user_name") or "")}
+        return login if otc_news.login_ok(login) else {}
+
+    def share(self):
+        if self.send is not None:
+            self.send({"type": "news_login", "login": self.login()})
+
+    def from_server(self, login, says_none):
+        """The main server's login (keys): saved here; none there while this one has one: sent to it."""
+        if otc_news.login_ok(login):
+            new = {"telegram_api_id": login["api_id"], "telegram_api_hash": login["api_hash"],
+                   "telegram_user_session": login["session"], "news_channel": login.get("channel") or "",
+                   "telegram_user_name": login.get("name") or ""}
+            if any((self.settings.get(k) or "") != v for k, v in new.items()):
+                self.settings.update({k: v for k, v in new.items() if v})
+                self.save(self.settings)
+                self.api_id.setText(login["api_id"])
+                self.api_hash.setText(login["api_hash"])
+                self.channel.setText(str(login.get("channel") or otc_news.NEWS_CHANNEL))
+        elif says_none and self.login():
+            if self.settings.pop("telegram_user_session", None) is not None:      # logged out elsewhere
+                self.settings.pop("telegram_user_name", None)
+                self.save(self.settings)
         self.show_state()
 
     def test(self):
@@ -412,4 +446,5 @@ class NewsSettings(QWidget):
         self.settings.pop("telegram_user_session", None)
         self.settings.pop("telegram_user_name", None)
         self.save(self.settings)
+        self.share()                    # (logged out on every computer)
         self.show_state()

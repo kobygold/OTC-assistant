@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.6.19"
+APP_VERSION = "2.6.20"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1029,9 +1029,10 @@ class MainWindow(QMainWindow):
         self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
         # (Enter in the box shows the chart) News: the ticker's news on OTC Markets, in the browser
-        news_btn = QPushButton("News")
+        self.news_btn = news_btn = QPushButton("News")
         news_btn.setToolTip("Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser")
         news_btn.clicked.connect(self.open_news)
+        self.news_told = set()          # the news keys a message was shown for (once)
         row.addWidget(news_btn)
         row.addSpacing(16)
 
@@ -2091,6 +2092,75 @@ class MainWindow(QMainWindow):
         self.chart_ticker.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.chart_ticker.selectAll()
 
+    # ---- the news channel (otc_news: read by the main server, in the shared data news/<ticker>/<id>) ----
+    def news_of(self, ticker, days=30):
+        """The ticker's news that matters, newest first."""
+        if not self.shared_imported or not ticker:
+            return []
+        items = [d for d in self.shared.get(f"news/{ticker}/").values() if isinstance(d, dict)]
+        cut = (datetime.now() - timedelta(days=days)).isoformat()[:19]
+        return sorted((d for d in items if str(d.get("time", ""))[:19] >= cut),
+                      key=lambda d: str(d.get("time", "")), reverse=True)
+
+    def news_interest(self, ticker):
+        """Why the chosen account cares about the ticker: [favorite, ATM trade, alert]."""
+        why = []
+        if ticker in self.favs:
+            why.append("favorite")
+        atm_trades = self.checklist.atm
+        if any(e.get("ticker") == ticker and e.get("state") not in ("sold", "canceled")
+               and (e.get("account") or atm_trades.chosen_account()) == atm_trades.chosen_account()
+               for e in atm_trades.entries):
+            why.append("ATM trade")
+        if any(a.get("ticker") == ticker and a.get("state") == "active" for a in self.alerts()):
+            why.append("alert")
+        return why
+
+    def on_news(self, key):
+        """News came (or the shared data was read): the News button; news of a stock of the chosen account,
+        just read: a beep and a message (once)."""
+        self.show_news_button()
+        if not key:
+            return
+        d = (self.shared.items.get(key) or [0, None])[1]
+        if not isinstance(d, dict) or key in self.news_told:
+            return
+        self.news_told.add(key)
+        try:
+            fresh = time.time() - datetime.fromisoformat(str(d.get("time"))[:19]).timestamp() < 900
+        except ValueError:
+            fresh = False
+        why = self.news_interest(d.get("ticker"))
+        if fresh and why:
+            QApplication.beep()
+            first = (d.get("summary") or "").splitlines()[0][:160]
+            self.notify(f"{'⚠️' if d.get('level') == 'warn' else '📰'} {d.get('ticker')} news "
+                        f"({', '.join(why)}): {first}", 30000)
+
+    def show_news_button(self):
+        """The Chart tab's News button: orange with the ticker's news of the last days (a warning: red), the
+        news in its tooltip."""
+        btn = getattr(self, "news_btn", None)
+        if btn is None:
+            return
+        ticker = (self.chart.ticker or "").upper()
+        news = self.news_of(ticker, days=7)
+        base = "Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser"
+        if not news:
+            btn.setText("News")
+            btn.setStyleSheet("")
+            btn.setToolTip(base)
+            return
+        warn = any(d.get("level") == "warn" for d in news)
+        btn.setText(f"News ({len(news)})")
+        btn.setStyleSheet(f"QPushButton {{ color: {'#ff5050' if warn else '#f0a020'}; font-weight: bold; }}")
+        lines = [f"<b>{ticker}: the news channel, the last 7 days</b>"]
+        for d in news[:8]:
+            when = str(d.get("time", "")).replace("T", " ")[5:16]
+            text = html.escape(d.get("summary") or "").replace("\n", "<br>")
+            lines.append(f"<span style='color:#a8a8a8'>{when}</span> {text}")
+        btn.setToolTip("<br>".join(lines) + f"<br><br>{base}")
+
     def open_news(self):
         """The chart's ticker (else the one typed) on OTC Markets' News tab, in the default browser."""
         ticker = (self.chart.ticker or self.chart_ticker.text()).strip().upper()
@@ -2161,6 +2231,7 @@ class MainWindow(QMainWindow):
         self.chart_fav_ticker = ticker
         self.chart_name = name or ""
         self.update_chart_fav()
+        self.show_news_button()             # the ticker's news (the News button's color and tooltip)
         self.update_checklist()
         if self.level2_show.isChecked():
             self.level2.follow(ticker, self.chart_name)
@@ -2820,6 +2891,8 @@ class MainWindow(QMainWindow):
             self.show_position_default()
         if key == "" or key.startswith(otc_alerts.PREFIX):
             self.on_alerts_changed(key)
+        if key.startswith("news/") or key == "":
+            self.on_news(key)
 
     def on_shared_refused(self, key, why):
         what = key.split("/")[0]
@@ -3067,6 +3140,15 @@ class MainWindow(QMainWindow):
         token = msg["telegram_token"] if "telegram_token" in msg else keys.get("telegram_token")
         if token is not None and msg.get("type") in ("welcome", "keys") and hasattr(self, "telegram"):
             self.telegram.token_from_server(token)
+        # the news reader's Telegram login, as the main server has it (made on any computer)
+        if msg.get("type") in ("welcome", "keys") and hasattr(self, "news_settings"):
+            login = msg["news_login"] if "news_login" in msg else keys.get("news_login")
+            if login:
+                self.news_settings.from_server(login, False)
+            elif "news_login" in msg:           # removed there (logged out on another computer)
+                self.news_settings.from_server({}, True)
+            elif self.news_settings.login():    # the main server has none yet: this one's
+                self.news_settings.share()
         if keys.get("api_key") and not self.settings.get("api_key", "").strip():
             # Massive's API key (the Download tab's): saved, and in its box
             self.settings["api_key"] = keys["api_key"]
@@ -3691,7 +3773,7 @@ class MainWindow(QMainWindow):
         root.addLayout(form)
         root.addSpacing(10)
         from otc_news_tab import NewsSettings
-        self.news_settings = NewsSettings(self.settings, save_settings)     # the news channel's reader
+        self.news_settings = NewsSettings(self.settings, save_settings, send=self.server.send)  # the news reader
         root.addWidget(self.news_settings)
         root.addSpacing(6)
         root.addWidget(self.telegram, 1)

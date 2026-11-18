@@ -623,7 +623,7 @@ class TelegramBot:
         details = await asyncio.to_thread(info.daily, ticker, None, m.get("day"))
         text = info.ticker_text(tail, ticker, favs.get(ticker), m["q"], m["when"], details,
                                 m["bids"], m["asks"], info.trades(self.server.store, tail, ticker),
-                                info.alerts(self.server.store, tail, ticker))
+                                info.alerts(self.server.store, tail, ticker), info.news(self.server.store, ticker))
         return text, info.ticker_buttons(tail, ticker)
 
     async def ask_info(self, chat, what):

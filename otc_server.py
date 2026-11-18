@@ -101,6 +101,7 @@ import otc_alerts
 from otc_recorder import Recorder, at_close, in_session, last_close, subtract_ranges
 from otc_shared import SharedStore
 from otc_telegram import TelegramBot
+import otc_news
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
@@ -207,6 +208,16 @@ def tailscale_ip():
     return None
 
 
+def news_login_of(settings):
+    """The news reader's login from settings.json ({} without one)."""
+    login = {"api_id": str(settings.get("telegram_api_id") or "").strip(),
+             "api_hash": str(settings.get("telegram_api_hash") or "").strip(),
+             "session": str(settings.get("telegram_user_session") or "").strip(),
+             "channel": str(settings.get("news_channel") or otc_news.NEWS_CHANNEL).strip(),
+             "name": str(settings.get("telegram_user_name") or "")}
+    return login if otc_news.login_ok(login) else {}
+
+
 def book_side(levels, side):
     """[(market maker, price, size)] from one side of a book message."""
     rows = []
@@ -282,6 +293,9 @@ class Server:
         self.massive_key = settings.get("api_key", "").strip()      # Massive's (the daily candles)
         self.telegram_token = str(settings.get("telegram_token") or "").strip()     # the phones' bot
         self.bot = None                         # (main server) the Telegram bot, while it runs
+        # the news channel's reader (otc_news): the user's Telegram login, typed in an app, passed to all
+        self.news_login = news_login_of(settings)
+        self.news = None                        # (main server) the reader, while it runs
         self.log = log
         self.secret = str(settings.get("server_secret", ""))
         self.cluster_secret = str(settings.get("cluster_secret", "")).strip()
@@ -489,6 +503,8 @@ class Server:
                     asyncio.create_task(self.on_at_close(conn, str(msg.get("ticker") or "")))
                 elif kind == "telegram_token":
                     self.on_telegram_token(msg.get("token"))
+                elif kind == "news_login":
+                    self.on_news_login(msg.get("login"))
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -571,6 +587,8 @@ class Server:
                     asyncio.create_task(self.hand_over(conn))
                 elif kind == "telegram_token":
                     self.on_telegram_token(msg.get("token"))
+                elif kind == "news_login":
+                    self.on_news_login(msg.get("login"))
                 elif kind == "history_index":
                     conn.put({"type": "history_index", "days": await asyncio.to_thread(self.recorder.coverage_index)})
                 elif kind == "history_get":
@@ -760,6 +778,46 @@ class Server:
         self.to_peers(msg)
         asyncio.create_task(self.restart_bot())
 
+    # ---- the news channel's reader (main server) ----
+    def on_news_login(self, login):
+        """The news reader's login (Settings → News Telegram Bot) from an app: to the main server; it
+        passes it on to all (keys) and reads with it. {} : logged out."""
+        login = dict(login) if otc_news.login_ok(login) else {}
+        if not self.leader:
+            self.up_send({"type": "news_login", "login": login})
+            return
+        if login == self.news_login:
+            return
+        self.news_login = login
+        self.event("News: the Telegram login " + (f"of {login.get('name') or 'your account'} came" if login
+                                                   else "was removed: the news channel isn't read"))
+        msg = {"type": "keys", "keys": self.keys() or {}, "news_login": login}
+        self.broadcast(msg)
+        self.to_peers(msg)
+        asyncio.create_task(self.restart_news())
+
+    def take_news_login(self, login, removed=False):
+        """(client) The main server's news login: the one to read with if this computer takes over."""
+        login = dict(login) if otc_news.login_ok(login) else {}
+        if (login or removed) and login != self.news_login:
+            self.news_login = login
+            self.event(f"News: got the Telegram login from the main server {self.leader_name}" if login else
+                       "News: the Telegram login was removed (on the main server)")
+
+    def start_news(self):
+        if self.leader and self.news_login and self.news is None:
+            self.news = otc_news.NewsReader(self, self.news_login)
+            self.leader_tasks += self.news.start()
+
+    async def stop_news(self):
+        news, self.news = self.news, None
+        if news is not None:
+            await news.stop()
+
+    async def restart_news(self):
+        await self.stop_news()
+        self.start_news()
+
     def start_bot(self):
         if self.leader and self.telegram_token and self.bot is None:
             self.bot = TelegramBot(self, self.telegram_token)
@@ -862,6 +920,7 @@ class Server:
         self.wanted()
         self.wants_changed.set()
         self.start_bot()
+        self.start_news()
         if self.bot is not None and self.cluster_secret:
             self.bot.leader_moved(term, why)
         # what this computer's apps sent while there was no main server (kept for it): done here now
@@ -874,6 +933,8 @@ class Server:
                 asyncio.create_task(self.on_login(m.get("token")))
             elif kind == "telegram_token":
                 self.on_telegram_token(m.get("token"))
+            elif kind == "news_login":
+                self.on_news_login(m.get("login"))
         if waiting:
             log(f"Done {len(waiting)} change(s) sent while there was no main server")
 
@@ -888,6 +949,7 @@ class Server:
             t.cancel()
         await asyncio.wait(tasks, timeout=6) if tasks else None
         await self.stop_bot()
+        await self.stop_news()
         self.client = None
         self.symbols = set()
         if handover_to is not None:
@@ -1143,7 +1205,7 @@ class Server:
         """(client) To the main server; kept until it is back when it's away."""
         if self.up is not None:
             self.up.put(msg)
-        elif msg.get("type") in ("change", "login", "token_request", "telegram_token"):
+        elif msg.get("type") in ("change", "login", "token_request", "telegram_token", "news_login"):
             self.waiting.append(msg)
 
     def send_want(self):
@@ -1178,6 +1240,8 @@ class Server:
             keys["api_key"] = self.massive_key
         if self.telegram_token:
             keys["telegram_token"] = self.telegram_token
+        if self.news_login:
+            keys["news_login"] = self.news_login
         return keys or None
 
     def on_up_welcome(self, w):
@@ -1192,6 +1256,7 @@ class Server:
             self.massive_key = keys["api_key"]
             self.event(f"Got Massive's API key from the main server {self.leader_name}")
         self.take_telegram_token(keys.get("telegram_token"))
+        self.take_news_login(keys.get("news_login"))
         if self.keys():
             self.broadcast({"type": "keys", "keys": self.keys()})
         if w.get("token"):
@@ -1274,7 +1339,9 @@ class Server:
             self.need_login(m["why"])
         elif kind == "keys":
             self.take_telegram_token(m.get("telegram_token"), removed="telegram_token" in m)
-            self.broadcast({"type": "keys", "keys": self.keys() or {}, "telegram_token": self.telegram_token})
+            self.take_news_login(m.get("news_login"), removed="news_login" in m)
+            self.broadcast({"type": "keys", "keys": self.keys() or {}, "telegram_token": self.telegram_token,
+                            "news_login": self.news_login})
 
     def take_telegram_token(self, token, removed=False):
         """(client) The main server's bot token: the one to run if this computer takes over."""

@@ -55,6 +55,16 @@ def trades(store, tail, ticker=None):
     return sorted(out, key=lambda ke: (ke[1].get("state") in ("sold", "canceled"), str(ke[1].get("time") or ke[0])))
 
 
+def news(store, ticker, days=30, most=3):
+    """The ticker's news that matters (the news channel, otc_news), newest first."""
+    from datetime import datetime, timedelta
+    pre = f"news/{ticker}/"
+    cut = (datetime.now() - timedelta(days=days)).isoformat()[:19]
+    items = [it.get("data") for k, it in store.items.items() if k.startswith(pre)]
+    items = [d for d in items if isinstance(d, dict) and str(d.get("time", ""))[:19] >= cut]
+    return sorted(items, key=lambda d: str(d.get("time", "")), reverse=True)[:most]
+
+
 def alerts(store, tail, ticker=None):
     pre = f"{otc_alerts.PREFIX}{tail}/"
     out = [it.get("data") for k, it in store.items.items() if k.startswith(pre)]
@@ -152,7 +162,7 @@ def book_table(bids, asks):
     return out
 
 
-def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_list):
+def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_list, news_list=()):
     """A ticker's details, for the phone."""
     def field(name, value):
         return f"<b>{name}:</b> {value}"
@@ -183,6 +193,10 @@ def ticker_text(tail, ticker, fav, q, when, info, bids, asks, trade_list, alert_
     for _, e in trade_list[:2]:
         lines.append(field("ATM", f"{steps_line(e).replace(chr(10), chr(10) + '   ')}\n   "
                                   f"{trade_what(e).replace(chr(10), chr(10) + '   ')}"))
+    for d in news_list:                 # the news channel: dilution, filings, tier, big headlines
+        day = str(d.get("time", "")).replace("T", " ")[5:16]
+        lines.append(field(("⚠️" if d.get("level") == "warn" else "📰") + f" News {day}",
+                           esc((d.get("summary") or "")[:300])))
     for a in alert_list:
         lines.append(field("🔔 Alert", esc(otc_alerts.describe(a)) + (" (fired)" if a.get("state") == "triggered" else "")))
     if fav:
