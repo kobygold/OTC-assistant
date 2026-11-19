@@ -163,6 +163,7 @@ PANEL_STYLE = """
 #checklist QLabel#cl_order { color: #4fc3f7; }
 #checklist QLabel#cl_locked { color: #4fc3f7; font-weight: bold; background: transparent;
                               border: none; padding: 1px 0px 1px 5px; }
+#checklist QLineEdit#cl_order_edit { background: transparent; border: none; padding: 1px 0px 1px 3px; }
 """
 
 
