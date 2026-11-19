@@ -2,7 +2,7 @@
 short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a double-click
 opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
 from PyQt6.QtCore import QRect, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSizePolicy, QStyle,
                              QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QToolButton,
                              QVBoxLayout, QWidget)
@@ -12,6 +12,7 @@ from otc_news_panel import KeepColorDelegate
 
 GOLD, DIM = "#e3b23c", "#8a8a8a"
 UP, DOWN = "#3ccf3c", "#ff6060"
+CURRENT_BG = "#24405e"                 # the chart's ticker's row
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1
 R, GAP = 5, 12                          # the small steps' circles
 PANEL_W = 214                           # the panel's width (open)
@@ -116,13 +117,13 @@ class FavSidePanel(QWidget):
         t.verticalHeader().setDefaultSectionSize(22)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)    # the chart's ticker's row is the highlight
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         t.setShowGrid(False)
         t.setWordWrap(False)
         t.setItemDelegateForColumn(2, SmallSteps(t))
         t.setStyleSheet("QTableWidget { background: #0d1014; color: #e0e0e0; border: 1px solid #2a3038; } "
-                        "QTableWidget::item:selected { background: #1a2a3a; }")
+                        "QTableWidget::item:focus { outline: none; }")
         t.setItemDelegate(KeepColorDelegate(t))       # selected: each cell keeps its color
         h = t.horizontalHeader()
         h.setMinimumSectionSize(20)
@@ -283,14 +284,16 @@ class FavSidePanel(QWidget):
             self.fill(i)
 
     def set_current(self, ticker):
-        """The chart's ticker: its row selected."""
+        """The chart's ticker: its row highlighted (a brighter blue, the ticker in gold), and selected."""
         self.current = ticker or ""
         i = self.row_of(self.current)
         t = self.table
-        t.blockSignals(True)
-        if i >= 0:
-            t.selectRow(i)
+        for row in range(t.rowCount()):
+            here = row == i
+            for c in range(len(COLUMNS)):
+                item = t.item(row, c)
+                if item is not None:
+                    item.setBackground(QColor(CURRENT_BG) if here else QBrush())
+            t.item(row, 0).setForeground(QColor(GOLD) if here else QBrush())
+        if i >= 0 and not t.isRowHidden(i):
             t.scrollToItem(t.item(i, 0))
-        else:
-            t.clearSelection()
-        t.blockSignals(False)
