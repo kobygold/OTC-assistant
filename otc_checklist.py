@@ -227,8 +227,13 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
     elif out["entry"] and usd:
         out["shares"] = round(usd / out["entry"])
     if out["shares"] and bids:
+        # the bids under the entry only (the checklist's "bids below the entry": a new entry moves the stop,
+        # and an open buy's own bid isn't counted); a trips entry joins the bid: the bids at it count too
+        e = out["entry"]
         total = 0
         for _, price, size, _ in bids:
+            if e and (price > e + 1e-12 if is_trips(e) else price >= e - 1e-12):
+                continue
             total += size
             if total >= COVER_X * out["shares"]:
                 auto["stop"] = price
