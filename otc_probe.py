@@ -21,6 +21,8 @@ import otc_zones as zones
 
 PROBE_BATCH = 150           # tickers streamed at once (fewer when Schwab's Level II room is smaller)
 PROBE_WAIT_MS = 10000       # a batch's most time: the tickers without a book by then have none
+ROOM_WAIT_MS = 180_000      # no Level II room (another computer's check, the charts...): waits this long for it
+ROOM_RETRY_MS = 3000        # ...looking again this often
 CLOSE_IN_FLIGHT = 20        # at_close questions out at once (each reads the record's files)
 CLOSE_WAIT_MS = 30000       # the most time for the answers of the record
 
@@ -65,6 +67,11 @@ class ProbeRunner(QObject):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._timeout)
+        self.room_wait_ms = ROOM_WAIT_MS    # the most time to wait for Level II room (the app may change it)
+        self.room_waited = 0
+        self.room_timer = QTimer(self)
+        self.room_timer.setSingleShot(True)
+        self.room_timer.timeout.connect(lambda: self.running and not self.held and self._next_batch())
         link.message.connect(self._on_message)
 
     # ---- in ----
@@ -74,6 +81,7 @@ class ProbeRunner(QObject):
         self.todo = list(dict.fromkeys(t for t in tickers if t))
         self.total, self.done, self.no_l2 = len(self.todo), 0, 0
         self.q, self.books, self.batch = {}, {}, set()
+        self.room_waited = 0
         if not self.todo:
             self._finish("Nothing to check.")
             return
@@ -88,6 +96,7 @@ class ProbeRunner(QObject):
             return
         self.running = False
         self.timer.stop()
+        self.room_timer.stop()
         if not self.held:
             self._probe([])
         self.batch, self.todo = set(), []
@@ -106,11 +115,20 @@ class ProbeRunner(QObject):
                          + (f" ({self.no_l2:,} without Level II)." if self.no_l2 else "."))
             return
         size = PROBE_BATCH if self.room is None else max(0, min(PROBE_BATCH, self.room))
+        if size < 1 and self.room_waited < self.room_wait_ms:
+            # no room now (another computer's check, most likely): ours waits for it, not to take it away
+            self._probe([])
+            self.room_waited += ROOM_RETRY_MS
+            self.room_timer.start(ROOM_RETRY_MS)
+            self.progress.emit(self.done, self.total, f"Checking L1/L2 live: {self.done:,} of {self.total:,}, "
+                                                      f"waiting for Level II room (another check?)...")
+            return
         if size < 1:
             self._probe([])
             self._finish("Schwab's Level II (100 tickers) is all in use by the charts, the trades and the "
                          "favorites: no room to check more now.")
             return
+        self.room_waited = 0
         part, self.todo = self.todo[:size], self.todo[size:]
         self.batch = set(part)
         for t in part:
@@ -199,4 +217,5 @@ class ProbeRunner(QObject):
     def _finish(self, text):
         self.running = False
         self.timer.stop()
+        self.room_timer.stop()
         self.finished.emit(text)

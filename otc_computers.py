@@ -174,6 +174,12 @@ class ComputersPanel(QWidget):
         info = self.info
         return bool(info) and (not info.get("clustered") or info.get("role") == "main server")
 
+    def my_place(self):
+        """This computer's place in the priority order (0: the first), 0 when not known (no cluster)."""
+        names = [c.get("name") for c in self.info.get("computers") or []]
+        me = self.info.get("me")
+        return names.index(me) if me in names else 0
+
     def block_reason(self):
         """Why orders can't be sent now ("" when they can): no main server."""
         return self.banner_text

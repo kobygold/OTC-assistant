@@ -60,15 +60,15 @@ from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
 from otc_checklist import ChecklistPanel, copy_value
 from otc_intraday import MinuteLoader
 from otc_level2 import MM_YELLOW, TOKEN_DAYS, Level2Panel, token_created
-from otc_probe import ProbeRunner, candle_part
-from otc_recorder import RELOAD_DAYS, find_reloads, in_session
+from otc_probe import ROOM_WAIT_MS, ProbeRunner, candle_part
+from otc_recorder import RELOAD_DAYS, find_reloads, in_session, market_date, session as market_session
 from otc_telegram_tab import TelegramPanel
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.33"
+APP_VERSION = "2.7.34"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -168,6 +168,10 @@ ATM_DEFAULTS = {
     "lookback": 20, "gap": 25, "tol": 5.0, "legs": 4, "pmin": 0.0005, "pmax": 0.05, "dollar": 500, "days": 5,
     "skip_types": True, "tiers": core.TIER_GROUPS, "checks": 0,
 }
+AUTO_CHECK_MIN = 10             # the ATM tab's automatic Check L1/L2: this many minutes before the close (15:50 ET:
+                                # 22:50 in Israel), the first computer; each next one in the priority order a minute
+                                # later (15:51, 15:52...): not all asking for the stream at once
+AUTO_CHECK_POLL_MS = 30_000     # how often the time is looked at (a timer of hours drifts through sleep)
 CHECK_CONFIRM = 300             # Check L1/L2 asks first for more tickers than this
 RANGES = [("1D", None), ("1M", 1), ("2M", 2), ("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24), ("All", None)]
 TYPE_NAMES = {"CS": "Common stock", "ADRC": "ADR", "PFD": "Preferred", "WARRANT": "Warrant",
@@ -815,6 +819,7 @@ class MainWindow(QMainWindow):
         # my computers: the main server and its clients, their priority, the connection log
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
+        self.computers.summary.connect(lambda *_: hasattr(self, "atm_auto_when") and self.show_auto_when())
         self.server.message.connect(self.on_server_token)
         self.server.message.connect(lambda msg: msg.get("type") == "news_reading" and hasattr(self, "news_panel")
                                     and self.news_panel.show_reading(msg))
@@ -3564,6 +3569,39 @@ class MainWindow(QMainWindow):
         self.atm_check_btn.setToolTip(self.check_tip("the tickers shown"))
         self.atm_check_btn.clicked.connect(lambda: self.check_market("atm"))
         brow.addWidget(self.atm_check_btn)
+        # the same, by itself, shortly before the close: the record then has the tickers' market near the
+        # close (the end-of-day values the checks use after the hours, with Hold on)
+        auto = self.settings.get("atm_auto_check") or {}
+        self.atm_auto_check = QCheckBox("Auto")
+        self.atm_auto_check.setChecked(bool(auto.get("on", True)))
+        self.atm_auto_min = QSpinBox()
+        self.atm_auto_min.setRange(1, 120)
+        self.atm_auto_min.setValue(int(auto.get("min", AUTO_CHECK_MIN)))
+        self.atm_auto_min.setSuffix(" min before close")
+        tip = ("Runs Check L1/L2 of the tickers shown by itself, this long before the market closes (each "
+               "market day, the app open; the half days too). Their Level 1 and Level II are recorded then, so "
+               "after the hours (Hold on) the checks use values from near the close, not from whenever "
+               "they were last checked. The favorites are streamed all day: they don't need it.\n"
+               "Every computer runs it, each a minute after the one before it in the Computers tab's priority "
+               "order (the first at this time, the second a minute later...), so they don't all ask for the "
+               "stream at once.")
+        self.atm_auto_when = QLabel()
+        for w in (self.atm_auto_check, self.atm_auto_min, self.atm_auto_when):
+            w.setToolTip(tip)
+        self.atm_auto_min.valueChanged.connect(lambda _v: self.show_auto_when())
+        self.atm_auto_check.toggled.connect(lambda _v: self.show_auto_when())
+        self.atm_auto_check.toggled.connect(self.save_auto_check)
+        self.atm_auto_min.valueChanged.connect(self.save_auto_check)
+        self.atm_auto_check.toggled.connect(self.atm_auto_min.setEnabled)
+        self.atm_auto_min.setEnabled(self.atm_auto_check.isChecked())
+        brow.addWidget(self.atm_auto_check)
+        brow.addWidget(self.atm_auto_min)
+        brow.addWidget(self.atm_auto_when)
+        self.auto_checked_day = None        # the market day the automatic check ran (once a day)
+        self.auto_check_timer = QTimer(self)
+        self.auto_check_timer.timeout.connect(self.auto_check_tick)
+        self.auto_check_timer.start(AUTO_CHECK_POLL_MS)
+        self.show_auto_when()
         brow.addWidget(QLabel("Min checks"))
         self.af_checks = QSpinBox()
         self.af_checks.setRange(0, len(checklist.SCAN_CHECKS))
@@ -3975,8 +4013,65 @@ class MainWindow(QMainWindow):
         if prep is not None and ticker in self.favs and self.live_held():
             self.show_check(ticker, self.check_of(ticker, r, prep, self.live_info, True))
 
-    def check_market(self, source):
-        """Check L1/L2 of the ATM tab's tickers shown or of the favorites (again, on either tab: stop)."""
+    def save_auto_check(self):
+        self.settings["atm_auto_check"] = {"on": self.atm_auto_check.isChecked(), "min": self.atm_auto_min.value()}
+        save_settings(self.settings)
+
+    def auto_place(self):
+        """This computer's minute after the first one: its place in the priority order (within the minutes
+        before the close)."""
+        place = self.computers.my_place() if hasattr(self, "computers") else 0
+        return place % self.atm_auto_min.value()
+
+    def auto_check_start(self, day):
+        """When this computer's automatic check of the market day starts (ms), or None (no session)."""
+        times = market_session(day)
+        if times is None:
+            return None
+        return times[1] - (self.atm_auto_min.value() - self.auto_place()) * 60_000
+
+    def auto_check_due(self, now_ms=None):
+        """The market day whose automatic check is due now (from its time until the close), or None."""
+        now_ms = time.time() * 1000 if now_ms is None else now_ms
+        day = market_date(now_ms)
+        start = self.auto_check_start(day)
+        if start is None:
+            return None
+        return day if start <= now_ms < market_session(day)[1] else None
+
+    def show_auto_when(self):
+        """Beside the minutes: this computer's time, New York's and here."""
+        if not self.atm_auto_check.isChecked():
+            self.atm_auto_when.setText("")
+            return
+        # a regular day's time (16:00 close): New York's, and this computer's clock today
+        day = market_date(time.time() * 1000)
+        while market_session(day) is None or market_session(day)[1] - market_session(day)[0] < 6 * 3600_000:
+            day += timedelta(days=1)
+        here = datetime.fromtimestamp(self.auto_check_start(day) / 1000)
+        place = self.auto_place()
+        ny = 16 * 60 - (self.atm_auto_min.value() - place)      # minutes into the New York day (a 16:00 close)
+        self.atm_auto_when.setText(f"{ny // 60}:{ny % 60:02d} NY = {here:%H:%M} here (computer #{place + 1})")
+
+    def auto_check_tick(self, now_ms=None):
+        """The ATM tab's Check L1/L2 by itself, once a market day, shortly before the close."""
+        if not self.atm_auto_check.isChecked():
+            return
+        day = self.auto_check_due(now_ms)
+        if day is None or day == self.auto_checked_day:
+            return
+        self.auto_checked_day = day
+        if self.probe.running or self.atm_check_job is not None:
+            return          # (a check running already: it's recorded as well)
+        tbl = self.atm_table
+        if not any(tbl.item(r, ATM_TICKER_COL) for r in range(tbl.rowCount())):
+            self.atm_status.setText("Auto Check L1/L2 before the close: no tickers shown (scan first).")
+            return
+        self.check_market("atm", auto=True)
+
+    def check_market(self, source, auto=False):
+        """Check L1/L2 of the ATM tab's tickers shown or of the favorites (again, on either tab: stop).
+        auto: the one before the close (no question first)."""
         if self.probe.running or self.atm_check_job is not None:
             self.atm_check_prep = None
             self.probe.stop()
@@ -3995,7 +4090,7 @@ class MainWindow(QMainWindow):
         self.check_from = source
         btn, status, _ = self.check_ui()
         held = self.hold_close.isChecked() and not in_session()
-        if len(tickers) > CHECK_CONFIRM and QMessageBox.question(
+        if not auto and len(tickers) > CHECK_CONFIRM and QMessageBox.question(
                 self, "Check L1/L2",
                 f"Check all {len(tickers):,} tickers shown?" +
                 ("" if held else f" They are streamed in batches of up to 150, about 10 seconds each "
@@ -4037,13 +4132,17 @@ class MainWindow(QMainWindow):
                 return
             self.atm_check_prep = prep
             self.atm_check_info = (days, period, usd)
+            # no Level II room (another computer's check): waits for it; the one before the close until the close
+            times = market_session(market_date(time.time() * 1000)) if auto else None
+            self.probe.room_wait_ms = max(int(times[1] - time.time() * 1000), ROOM_WAIT_MS) if times \
+                else ROOM_WAIT_MS
             self.probe.start(tickers, held)
 
         self.atm_check_job = Job(fn)
         self.atm_check_job.signals.finished.connect(finished)
         btn.set_progress(0, 0)          # (reading the candles first: no % yet)
         btn.setToolTip(f"Checking {len(tickers):,} tickers: click to stop")
-        status.setText(f"Checking L1/L2 of {len(tickers):,} tickers" +
+        status.setText(("Auto before the close: c" if auto else "C") + f"hecking L1/L2 of {len(tickers):,} tickers" +
                        (" at the last close..." if held else " live..."))
         self.atm_check_job.start()
 
