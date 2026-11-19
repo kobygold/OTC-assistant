@@ -1,9 +1,9 @@
 """The Chart tab's Mini Favorites side panel: a narrow list on the chart's left, every favorite with its status in
 short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a double-click
 opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
-from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QTimer, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSizePolicy, QStyle,
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QSizePolicy, QSplitter, QStyle,
                              QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QToolButton,
                              QVBoxLayout, QWidget)
 
@@ -18,6 +18,7 @@ R, GAP = 5, 12                          # the small steps' circles
 PANEL_W = 170                           # the panel's width (open)
 COLUMNS = ["Ticker", "ATM", "✓"]
 ATM_COL, CHECKS_COL = 1, 2
+NOTES_SAVE_MS = 800                     # the notes saved this long after the last key (and on leaving the box)
 STAR_W = 24                             # the star's part of the Ticker cell (a click there: the group menu)
 
 
@@ -70,13 +71,16 @@ class Strip(QToolButton):
 
 class FavSidePanel(QWidget):
     """rows: [{"ticker", "group", "icon", "close", "change", "steps", "atm_tip", "checks", "total", "notes"}];
-    open_ticker(ticker): a row double-clicked (or Enter); shown_changed(open): closed / opened."""
+    open_ticker(ticker): a row double-clicked (or Enter); shown_changed(open): closed / opened;
+    notes_changed(ticker, text): the chart's favorite's notes typed (below the list); split_changed([list, notes])."""
 
     open_ticker = pyqtSignal(str)
     change_group = pyqtSignal(str, QPoint)      # its star clicked (or the row right-clicked): the group menu there
     shown_changed = pyqtSignal(bool)
+    notes_changed = pyqtSignal(str, str)
+    split_changed = pyqtSignal(list)
 
-    def __init__(self, parent=None, shown=True):
+    def __init__(self, parent=None, shown=True, split=None):
         super().__init__(parent)
         self.rows = {}              # ticker -> its row's data
         self.live = {}              # ticker -> the stream's quote fields so far
@@ -141,12 +145,47 @@ class FavSidePanel(QWidget):
         t.cellClicked.connect(self.star_clicked)
         t.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         t.customContextMenuRequested.connect(self.row_menu)
-        body.addWidget(t, 1)
+        # the list over the chart's favorite's notes (about 20% of the height; the line between them drags)
+        upper = QWidget()
+        ulay = QVBoxLayout(upper)
+        ulay.setContentsMargins(0, 0, 0, 0)
+        ulay.setSpacing(0)
+        ulay.addWidget(t, 1)
         self.empty = QLabel("No favorites yet:\nthe star by the ticker\nadds one.")
         self.empty.setStyleSheet(f"color: {DIM};")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        body.addWidget(self.empty, 1)
+        ulay.addWidget(self.empty, 1)
         self.empty.hide()
+        lower = QWidget()
+        nlay = QVBoxLayout(lower)
+        nlay.setContentsMargins(0, 2, 0, 0)
+        nlay.setSpacing(2)
+        self.notes_title = QLabel("📝 Notes")
+        self.notes_title.setStyleSheet(f"color: {GOLD}; font-weight: bold;")
+        nlay.addWidget(self.notes_title)
+        self.notes = QPlainTextEdit()
+        self.notes.setStyleSheet("QPlainTextEdit { background: #0d1014; color: #e0e0e0; border: 1px solid #2a3038; }")
+        self.notes.setToolTip("The notes of the favorite on the chart (the Favorites tab's Notes too, on every "
+                              "computer). Saved as you type")
+        self.notes.textChanged.connect(self.notes_typed)
+        self.notes.installEventFilter(self)
+        nlay.addWidget(self.notes, 1)
+        self.notes_ticker = ""          # whose notes the box shows
+        self.notes_loading = False
+        self.notes_pending = False      # typed, not saved yet
+        self.notes_timer = QTimer(self)
+        self.notes_timer.setSingleShot(True)
+        self.notes_timer.setInterval(NOTES_SAVE_MS)
+        self.notes_timer.timeout.connect(self.save_notes)
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(upper)
+        self.split.addWidget(lower)
+        self.split.setStretchFactor(0, 1)
+        self.split.setSizes(split if split and len(split) == 2 and all(isinstance(x, int) and x > 0 for x in split)
+                            else [800, 200])
+        self.split.splitterMoved.connect(lambda *_: self.split_changed.emit(self.split.sizes()))
+        body.addWidget(self.split, 1)
         lay.addWidget(self.body)
         self.strip = Strip()
         self.strip.clicked.connect(lambda: self.set_shown(True))
@@ -165,7 +204,44 @@ class FavSidePanel(QWidget):
     def eventFilter(self, obj, e):
         if obj is self.table.viewport() and e.type() == QEvent.Type.MouseButtonPress:
             self.press_x = e.position().x()
+        elif obj is getattr(self, "notes", None) and e.type() == QEvent.Type.FocusOut:     # (made later)
+            self.save_notes()           # (left the box: saved now)
         return False
+
+    # ------------------------------------------------------------------ the notes ---
+    def show_notes(self):
+        """The chart's ticker's notes in the box (a favorite's; else the box is off)."""
+        ticker = self.current if self.current in self.rows else ""
+        if ticker != self.notes_ticker:
+            self.save_notes()           # the one shown before: its typing first
+        text = (self.rows.get(ticker) or {}).get("notes") or ""
+        self.notes_title.setText(f"📝 Notes · {ticker}" if ticker else "📝 Notes")
+        self.notes.setEnabled(bool(ticker))
+        self.notes.setPlaceholderText("Notes of this favorite..." if ticker else "The notes of a favorite on the chart")
+        # (while typing in it, the box isn't put back from the list)
+        if ticker != self.notes_ticker or (not self.notes.hasFocus() and not self.notes_pending
+                                           and self.notes.toPlainText() != text):
+            self.notes_loading = True
+            self.notes.setPlainText(text)
+            self.notes_loading = False
+        self.notes_ticker = ticker
+
+    def notes_typed(self):
+        if not self.notes_loading and self.notes_ticker:
+            self.notes_pending = True
+            self.notes_timer.start()
+
+    def save_notes(self):
+        """The notes typed: to the app (saved in the favorites, shared)."""
+        self.notes_timer.stop()
+        if not self.notes_pending or not self.notes_ticker:
+            return
+        self.notes_pending = False
+        text = self.notes.toPlainText().strip()
+        r = self.rows.get(self.notes_ticker)
+        if r is not None:
+            r["notes"] = text
+        self.notes_changed.emit(self.notes_ticker, text)
 
     def ticker_at(self, row):
         item = self.table.item(row, 0)
@@ -327,3 +403,4 @@ class FavSidePanel(QWidget):
             t.item(row, 0).setForeground(QColor(GOLD) if here else QBrush())
         if i >= 0 and not t.isRowHidden(i):
             t.scrollToItem(t.item(i, 0))
+        self.show_notes()

@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.20"
+APP_VERSION = "2.7.21"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1326,7 +1326,10 @@ class MainWindow(QMainWindow):
         # closes to a thin strip, so the chart keeps the room
         from otc_fav_side import FavSidePanel
         self.fav_side_info = {}         # ticker -> (last close, the day's change, name): from the candles
-        self.fav_side = FavSidePanel(shown=bool(self.settings.get("fav_side_show", True)))
+        self.fav_side = FavSidePanel(shown=bool(self.settings.get("fav_side_show", True)),
+                                     split=self.settings.get("fav_side_split"))
+        self.fav_side.notes_changed.connect(self.on_side_notes)
+        self.fav_side.split_changed.connect(self.on_side_split)
         self.fav_side.open_ticker.connect(self.show_chart)
         self.fav_side.change_group.connect(self.choose_fav)        # its star: the color, or out
         self.fav_side.shown_changed.connect(self.on_fav_side_shown)
@@ -1354,6 +1357,30 @@ class MainWindow(QMainWindow):
         new = min(self.checklist_want, room)
         if new > have:
             self.checklist_split.setSizes([total - new, new])
+
+    def on_side_notes(self, ticker, text):
+        """The Mini Favorites' notes typed: the favorite's notes (shared), the Favorites tab's cell too."""
+        fav = self.favs.get(ticker)
+        if fav is None or (fav.get("notes") or "") == text:
+            return
+        if text:
+            fav["notes"] = text
+        else:
+            fav.pop("notes", None)
+        self.save_favs()
+        col = FAV_COLUMNS.index("Notes")
+        for r in range(self.fav_table.rowCount()):
+            if self.fav_row_ticker(r) == ticker:
+                item = self.fav_table.item(r, col)
+                if item is not None:
+                    self.fav_filling = True         # (not a typed change there)
+                    item.setText(text)
+                    item.setToolTip(text)
+                    self.fav_filling = False
+
+    def on_side_split(self, sizes):
+        self.settings["fav_side_split"] = sizes
+        save_settings(self.settings)
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
