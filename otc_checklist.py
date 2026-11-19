@@ -2253,9 +2253,10 @@ class AtmTrades(QObject):
             old_shares, old_price = e["shares"], e["entry"]
             if pending["shares"] != old_shares:
                 e.setdefault("shares-original", old_shares)
-            e["shares"], e["size"] = pending["shares"], pending["size"]
+            e["shares"] = pending["shares"]
             self._adopt(e, side, {"id": str(new_id) if new_id else None, "price": price},
                         pending.get("old_id"), 0, "Changed in the checklist")
+            e["size"] = pending["size"]         # (the $ as typed there, or the amount x the price)
             e["note"] = (f"Changed in the checklist: {old_shares:,} @ {fmt_price(old_price)} -> "
                          f"{e['shares']:,} @ {fmt_price(price)}.")
             self.save()
@@ -2280,8 +2281,9 @@ class AtmTrades(QObject):
         if side == "BUY":
             e.setdefault("entry-original", e["entry"])
             old = e["entry"]
-            e.update(entry=price, usd=round(e["shares"] * price, 2), note=f"{how}: the buy price "
-                     f"{fmt_price(old)} -> {fmt_price(price)}.")
+            # the plan follows the order: the same amount at the new price (the $ follows it)
+            e.update(entry=price, usd=round(e["shares"] * price, 2), size=round(e["shares"] * price, 2),
+                     note=f"{how}: the buy price {fmt_price(old)} -> {fmt_price(price)}.")
             if new.get("id"):
                 e["order_id"] = new["id"]
         else:
@@ -2294,11 +2296,20 @@ class AtmTrades(QObject):
             if new.get("id"):
                 e["sell_id"] = new["id"]
             e["sell_at"] = price
+            if e.get("exit") != price:      # the plan's exit: the sell order's price now
+                e.setdefault("exit-original", e.get("exit"))
+                e["exit"] = price
             if self.active(e["ticker"]) is e:     # the checklist's exit follows
                 self.settings.setdefault("checklist_prices", {}).setdefault(e["ticker"], {})["exit"] = limit_text(price)
                 self.save_settings(self.settings)
         self.save()
         self.update_live(e["ticker"])
+        if side == "BUY":       # the plan's safety net: the live one for the new amount and price
+            net = e.get("safety-net-live")
+            if net is not None and net != e.get("safety-net"):
+                e.setdefault("safety-net-original", e.get("safety-net"))
+                e["safety-net"] = net
+                self.save()
 
     def _replacement(self, e, side, old_id, shares):
         """The order that took the place of the trade's old order in thinkorswim: open, the same
