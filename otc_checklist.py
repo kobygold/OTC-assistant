@@ -1892,6 +1892,27 @@ class AtmTrades(QObject):
                 n += self.remaining(e) - (e.get("sell_filled") or 0)
         return n
 
+    def bid_for(self, ticker, shares):
+        """Selling `shares` on the bid: (the price the Level II bids fill them all at, best first; or the
+        best bid without a book, a note when that differs from the best bid or isn't enough)."""
+        m = self.market.get(ticker, {})
+        best, best_size = (m.get("bid") or [None, None])[:2]
+        bids = [b for b in (m.get("bids") or []) if b[1] and b[2]]
+        if not bids:
+            if best and best_size and best_size < shares:
+                return best, (f"The bid {fmt_price(best)} is for {best_size:,} only, of the {shares:,} "
+                              "(no Level II to look further down): the rest may not sell at it.")
+            return best, ""
+        price, total = bid_fill(bids, shares)
+        if total < shares:
+            return price, (f"All the bids down to the lowest ({fmt_price(price)}) add up to {total:,} only, "
+                           f"of the {shares:,}: the rest may not sell.")
+        if best and price < best:
+            top = sum(b[2] for b in bids if b[1] >= best)
+            return price, (f"The best bid {fmt_price(best)} takes {top:,} only, of the {shares:,}: "
+                           f"{fmt_price(price)} is the bid that fills them all.")
+        return price, ""
+
     def ask_sell_position(self, parent, ticker, where="bid"):
         """Sell on the Bid / Ask of the stocks owned list: the dialog (amount, price, duration), then
         a limit sell order (not an ATM trade: it shows with the other orders)."""
@@ -1909,7 +1930,13 @@ class AtmTrades(QObject):
                                     "already: change or cancel them in the Other Pending Orders list.")
             return
         m = self.market.get(ticker, {})
-        start = (m.get(where) or [None])[0] or (m.get("bid") or [None])[0] or pos.get("avg")
+        free = pos["shares"] - in_orders
+        filled_note = ""
+        if where == "bid":          # the bid that takes them all (Level II), not only the best one's size
+            start, filled_note = self.bid_for(ticker, free)
+        else:
+            start = (m.get(where) or [None])[0]
+        start = start or (m.get("bid") or [None])[0] or pos.get("avg")
         if not start:
             QMessageBox.warning(parent, f"Sell {ticker}", f"No {where} for {ticker} yet: try again in a moment.")
             return
@@ -1918,6 +1945,7 @@ class AtmTrades(QObject):
                     and (e.get("account") or self.chosen_account()) == self.chosen_account()), None)
         note = (f"{self.remaining(atm):,} of these are an ATM trade's: Sell ATM sells them as the ATM trade."
                 if atm else "")
+        note = " ".join(x for x in (filled_note, note) if x)
         if self.fee_reader:
             self.fee_reader.load_accounts()
         res = sell_dialog(parent, self.account_name(self.chosen_account()), ticker, pos["shares"], in_orders,

@@ -1074,7 +1074,11 @@ class PositionsTable(AtmTable):
         """Sell on Bid / Ask of an ATM trade whose stocks are in its sell order: that order changed to the
         bid / ask now (Schwab replaces it), after the change dialog (the price can be changed there)."""
         m = self.atm.market.get(e["ticker"], {})
-        price = (m.get(where) or [None])[0]
+        # on the bid: the bid that takes all the stocks left (Level II), not only the best one's size
+        if where == "bid":
+            price = self.atm.bid_for(e["ticker"], AtmTrades.remaining(e))[0]
+        else:
+            price = (m.get(where) or [None])[0]
         if not price:
             QMessageBox.warning(self, f"Sell {e['ticker']}", f"No {where} for {e['ticker']} yet: try again in a moment.")
             return
