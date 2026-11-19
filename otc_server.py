@@ -257,7 +257,8 @@ class Conn:
         self.symbol = None          # an app's chart ticker
         self.symbols = []           # a peer's: its apps' chart tickers
         self.extra = []             # more tickers it wants streamed and sent to it
-        self.track = []             # more tickers it wants streamed for the record only
+        self.track = []             # more tickers it wants streamed for the record (an app gets them too:
+        self.track_set = set()      # its favorites' checks, live)
         self.probe = []             # tickers wanted for a moment (their market once), last in priority
         self.on = False             # False: it wants no stream at all (but its probe tickers)
         self.bye = False
@@ -275,7 +276,7 @@ class Conn:
             return False
         if self.peer:
             return True             # a client records all that's streamed (the same files everywhere)
-        return ticker == self.symbol or ticker in self.extra
+        return ticker == self.symbol or ticker in self.extra or ticker in self.track_set
 
     def put(self, msg):
         self.queue.put_nowait(msg)
@@ -632,11 +633,22 @@ class Server:
     def on_want(self, conn, msg):
         old = conn.symbol if conn.on else None
         old_probe = set(conn.probe)
+        old_seen = (set(conn.extra) | conn.track_set) if conn.on else set()
         conn.symbol = msg.get("symbol") or None
         conn.extra = [t for t in msg.get("extra") or [] if t]
         conn.track = [t for t in msg.get("track") or [] if t]
+        conn.track_set = set(conn.track)
         conn.probe = [t for t in msg.get("probe") or [] if t]
         conn.on = bool(msg.get("on", True))
+        # its extra and tracked tickers streamed already: what came so far, now (a thin stock may not
+        # change for a long while)
+        if conn.on:
+            for t in dict.fromkeys(conn.extra + conn.track):
+                if t not in old_seen and t != conn.symbol and t not in conn.probe and t in self.symbols:
+                    if self.l1.get(t):
+                        conn.put({"type": "quote", "ticker": t, "q": dict(self.l1[t])})
+                    if self.books.get(t):
+                        self.emit_book(t, [conn])
         # probe tickers streamed already (another's, a client's received ones too): what came so far, now
         for t in conn.probe:
             if t not in old_probe and t in self.symbols and t != conn.symbol:

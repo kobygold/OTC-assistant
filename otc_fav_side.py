@@ -15,8 +15,9 @@ UP, DOWN = "#3ccf3c", "#ff6060"
 CURRENT_BG = "#24405e"                 # the chart's ticker's row
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1
 R, GAP = 5, 12                          # the small steps' circles
-PANEL_W = 214                           # the panel's width (open)
-COLUMNS = ["Ticker", "Chg", "ATM", "✓"]
+PANEL_W = 170                           # the panel's width (open)
+COLUMNS = ["Ticker", "ATM", "✓"]
+ATM_COL, CHECKS_COL = 1, 2
 
 
 class SmallSteps(QStyledItemDelegate):
@@ -110,9 +111,8 @@ class FavSidePanel(QWidget):
         body.addWidget(self.filter)
         t = self.table = QTableWidget(0, len(COLUMNS))
         t.setHorizontalHeaderLabels(COLUMNS)
-        t.horizontalHeaderItem(3).setToolTip("Check L1/L2: the checks passed")
-        t.horizontalHeaderItem(2).setToolTip("The ATM trade's 4 steps: buy sent, bought, sell sent, sold")
-        t.horizontalHeaderItem(1).setToolTip("The day's change: live in the market's hours, else the last day's")
+        t.horizontalHeaderItem(CHECKS_COL).setToolTip("Check L1/L2: the checks passed (live from the stream)")
+        t.horizontalHeaderItem(ATM_COL).setToolTip("The ATM trade's 4 steps: buy sent, bought, sell sent, sold")
         t.verticalHeader().setVisible(False)
         t.verticalHeader().setDefaultSectionSize(22)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -121,14 +121,14 @@ class FavSidePanel(QWidget):
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         t.setShowGrid(False)
         t.setWordWrap(False)
-        t.setItemDelegateForColumn(2, SmallSteps(t))
+        t.setItemDelegateForColumn(ATM_COL, SmallSteps(t))
         t.setStyleSheet("QTableWidget { background: #0d1014; color: #e0e0e0; border: 1px solid #2a3038; } "
                         "QTableWidget::item:focus { outline: none; }")
         t.setItemDelegate(KeepColorDelegate(t))       # selected: each cell keeps its color
         h = t.horizontalHeader()
         h.setMinimumSectionSize(20)
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col, w in ((1, 50), (2, 2 * R + 3 * GAP + 8), (3, 30)):
+        for col, w in ((ATM_COL, 2 * R + 3 * GAP + 8), (CHECKS_COL, 30)):
             h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             t.setColumnWidth(col, w)
         t.cellDoubleClicked.connect(lambda r, _c: self.open_row(r))
@@ -173,15 +173,12 @@ class FavSidePanel(QWidget):
             f.setBold(True)
             name.setFont(f)
             t.setItem(i, 0, name)
-            chg = QTableWidgetItem("")
-            chg.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            t.setItem(i, 1, chg)
             steps = QTableWidgetItem("")
             steps.setData(STEPS_ROLE, r.get("steps"))
-            t.setItem(i, 2, steps)
+            t.setItem(i, ATM_COL, steps)
             ck = QTableWidgetItem("")
             ck.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            t.setItem(i, 3, ck)
+            t.setItem(i, CHECKS_COL, ck)
             self.fill(i)
         n = len(rows)
         self.title.setText(f"★ Mini Favorites ({n})" if n else "★ Mini Favorites")
@@ -236,10 +233,7 @@ class FavSidePanel(QWidget):
         q = self.live.get(ticker)
         if q and q.get("LAST_PRICE") and q.get("CLOSE_PRICE"):
             price, change, live = q["LAST_PRICE"], q["LAST_PRICE"] / q["CLOSE_PRICE"] - 1, True
-        chg = t.item(i, 1)
-        chg.setText(f"{change * 100:+.1f}%" if change is not None else "")
-        chg.setForeground(QColor(UP if (change or 0) > 0 else DOWN if (change or 0) < 0 else DIM))
-        ck = t.item(i, 3)
+        ck = t.item(i, CHECKS_COL)
         checks, total = r.get("checks"), r.get("total")
         ck.setText("" if checks is False else "N/A" if checks is None else f"{checks}")
         ck.setForeground(QColor(checklist.MARKS[checklist.OK][1] if checks and checks == total else "#c8c8c8"))
