@@ -9,6 +9,7 @@ for all tickers, the prices per ticker, and clearing a field brings back the aut
 import json
 import math
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -1311,6 +1312,61 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
     return (amount.value(), price, duration.currentData(), aon.isChecked()) if price and free > 0 else None
 
 
+def partial_sell_dialog(parent, account_name, e, start, fee):
+    """! Sell Partial: a partly filled ATM buy's stocks sold, the rest of the buy canceled first. The amount
+    (all those bought so far, or fewer), the limit price (from `start`, the exit now; the reset: the plan's
+    exit), +/- and the reset by each, white while they show the default and yellow once changed, All or none
+    (unchecked). (shares, price, aon) or None when canceled."""
+    filled, entry = int(e.get("filled") or 0), e["entry"]
+    plan_exit = e.get("exit") or start
+    box = PriceBox(plan_exit, reset_tip=f"Back to {fmt_price(plan_exit)}, the plan's exit")
+    if start and abs(start - plan_exit) > 1e-9:
+        box.set_price(Decimal(str(start)))      # changed since the plan (pinned on the checklist...): yellow
+    amount = AmountBox("shares", lambda: filled, lambda: 1000 if box.price() < 1 else 10,
+                       f"Back to all {filled:,} bought so far", "Up / down 1,000 shares under $1, else 10")
+    amount.setToolTip(f"Up to {filled:,}: those bought so far")
+    aon = aon_box()
+    usual = fee is None
+    fee = FEE_USD if usual else fee
+
+    def make(shares, price):
+        total = shares * price
+        gain = shares * (price - entry) - 2 * fee
+        rest = int(e.get("shares") or 0) - filled
+        rows = [("Ticker", e["ticker"]), ("Order", "SELL · Limit · GTC (good till canceled)"),
+                ("Bought so far", f"{filled:,} of {e.get('shares', 0):,} @ {fmt_price(entry)}"),
+                ("The rest of the buy", (f"canceled first ({rest:,} not bought yet), then this sell goes out", "#f0a020")),
+                ("Amount of stocks", amount), ("Limit price", PRICE_ROW)] + fee_rows(fee, total, sell=True)
+        rows += [("Profit after both fees", usd_signed(gain)), ("Fill", aon)]
+        return f"Sell {shares:,} {e['ticker']} at {fmt_price(price)} (partly bought)?", rows
+    title, rows = make(filled, box.price())
+    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, "Cancel the rest & SELL",
+                                                   SELL_COLOR, box)
+
+    def changed(*_):
+        price, shares = box.price(), int(amount.value())
+        ok = price > 0 and 0 < shares <= filled
+        send.setEnabled(ok)
+        send.setToolTip("" if ok else f"The amount: 1 to {filled:,}")
+        if not ok:
+            return
+        t, new_rows = make(shares, price)
+        title_label.setText(f"<b>{t}</b>")
+        dlg.setWindowTitle(t)
+        for label, (_k, v) in zip(values, new_rows):
+            if label is not None:
+                label.setText(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
+    box.price_changed.connect(changed)
+    amount.value_changed.connect(changed)
+    changed()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    box._steps()
+    amount._steps()
+    price, shares = box.price(), int(amount.value())
+    return (shares, price, aon.isChecked()) if price > 0 and 0 < shares <= filled else None
+
+
 def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
                  remember_usd=None, quotes=None):
     """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, GTC (the default)
@@ -1682,6 +1738,8 @@ class AtmTrades(QObject):
         self.timer.timeout.connect(self.tick)
         self.timer.start(ORDER_CHECK_S * 1000)
         QTimer.singleShot(3000, self.check)
+        # a Sell Partial waits for its buy's rest to be canceled (here, or told by the shared data)
+        self.changed.connect(self.partial_followup, Qt.ConnectionType.QueuedConnection)
 
     # ---- the file, or the shared data (the server's: use_shared) ----
     def use_shared(self, shared):
@@ -1822,6 +1880,59 @@ class AtmTrades(QObject):
         self.trader.place(ticker, ticker, "BUY", snapshot["shares"], snapshot["entry"], snapshot["account"],
                           bool(snapshot.get("aon")))
 
+    def ask_sell_partial(self, parent, e, price, fee=None):
+        """! Sell Partial (a buy partly filled): the dialog, then the rest of the buy canceled; once Schwab
+        says so (the trade "bought"), the sell goes out by itself (partial_followup)."""
+        if self.trader is None or e.get("state") != "buy_open" or not e.get("filled") or self.busy(e) \
+                or e.get("partial_sell"):
+            return
+        if not e.get("order_id"):
+            QMessageBox.warning(parent, "Sell Partial", "The buy order's number isn't known. Cancel it in Schwab.")
+            return
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        got = partial_sell_dialog(parent, self.account_name(e.get("account")), e, price,
+                                  e.get("fee") if fee is None else fee)
+        if got is None or e.get("state") != "buy_open" or self.busy(e):
+            return
+        shares, price, aon = got
+        e["partial_sell"] = {"shares": shares, "all": shares >= int(e.get("filled") or 0), "price": price,
+                             "aon": aon, "by": socket.gethostname()}
+        e["note"] = f"Sell Partial: canceling the rest of the buy, then selling {shares:,} @ {fmt_price(price)}..."
+        self.save()
+        self.canceling.add(e["id"])
+        self.cancel_ids[e["id"]] = str(e["order_id"])
+        self.app_canceled.add(str(e["order_id"]))
+        self.changed.emit()
+        self.trader.cancel(e["id"], "BUY", e["order_id"], e.get("account"))
+
+    def partial_followup(self):
+        """A Sell Partial waiting (sent from this computer): its rest of the buy canceled, the trade now
+        "bought": its sell goes out (all the stocks bought, if all were chosen and more came meanwhile)."""
+        if self.trader is None:
+            return
+        me = socket.gethostname()
+        for e in self.entries:
+            want = e.get("partial_sell")
+            if not want or want.get("by") != me or e.get("state") == "buy_open":
+                continue
+            e.pop("partial_sell", None)
+            left = self.remaining(e)
+            if e.get("state") != "bought" or left <= 0 or self.busy(e):
+                e["note"] = "Sell Partial: not sent (the trade isn't waiting for a sell)."
+                self.save()
+                self.changed.emit()
+                continue
+            shares = left if want.get("all") else min(int(want["shares"]), left)
+            self.place_sell(e, shares, float(want["price"]), bool(want.get("aon")))
+
+    def place_sell(self, e, shares, price, aon=False):
+        """The trade's sell order out (approved already)."""
+        self.sending.add(e["id"])
+        self.pending[e["id"]] = {"sell_price": price, "shares": shares, "aon": aon}
+        self.changed.emit()
+        self.trader.place(e["id"], e["ticker"], "SELL", shares, price, e.get("account"), aon)
+
     def ask_sell(self, parent, e, price, fee=None, on_bid=None):
         """Sells all the stocks owned at `price`, GTC, after the dialog is approved.
         on_bid: (the price row's name, how it was found) for Sell on Bid."""
@@ -1847,11 +1958,7 @@ class AtmTrades(QObject):
         if not confirm_order(parent, self.account_name(e.get("account")), f"Sell {shares:,} {e['ticker']} at "
                              f"{fmt_price(price)}?", rows, "Send SELL order", SELL_COLOR):
             return
-        aon = aon.isChecked()
-        self.sending.add(e["id"])
-        self.pending[e["id"]] = {"sell_price": price, "shares": shares, "aon": aon}
-        self.changed.emit()
-        self.trader.place(e["id"], e["ticker"], "SELL", shares, price, e.get("account"), aon)
+        self.place_sell(e, shares, price, aon.isChecked())
 
     def ask_cancel(self, parent, e, side):
         """Cancels the trade's open buy or sell order, after asking."""
@@ -2506,7 +2613,8 @@ class AtmTrades(QObject):
             if e is None:
                 return
             e.update(state="sell_open", sell_price=pending.get("sell_price"), sell_id=order_id,
-                     sell_time=now, sell_filled=0, note=message, sell_aon=bool(pending.get("aon")))
+                     sell_time=now, sell_filled=0, note=message, sell_aon=bool(pending.get("aon")),
+                     sell_shares=pending.get("shares"))
             e.pop("status", None)
         self.save()
         self.changed.emit()
@@ -2518,6 +2626,10 @@ class AtmTrades(QObject):
         order_id = self.cancel_ids.pop(key, None)
         if error:
             self.app_canceled.discard(order_id)
+            e = self.find(key)
+            if e is not None and e.pop("partial_sell", None):       # its sell isn't sent either
+                e["note"] = "Sell Partial stopped: the rest of the buy wasn't canceled."
+                self.save()
             QMessageBox.warning(QApplication.activeWindow(), f"{side.title()} order not canceled", error)
         else:
             e = self.find(key)
@@ -3409,8 +3521,9 @@ class ChecklistPanel(QWidget):
 
     @staticmethod
     def style_button(button, name, text):
-        button.setText(text)
-        button.setIcon(red_x_icon() if name == "cl_cancel" else QIcon())   # Cancel Buy / Cancel Sell
+        bang = text.startswith("! ")            # "! Sell Partial": the "!" a yellow icon before the text
+        button.setText(text[2:] if bang else text)
+        button.setIcon(red_x_icon() if name == "cl_cancel" else red_bang_icon("#f2c200") if bang else QIcon())   # Cancel Buy / Sell
         if button.objectName() != name:
             button.setObjectName(name)
             button.style().unpolish(button)     # the panel's style sheet picks the new name
@@ -3427,9 +3540,13 @@ class ChecklistPanel(QWidget):
         else:
             self.style_button(self.buy_btn, "cl_buy", "Buy ATM")
             self.buy_btn.setEnabled(can and state is None)
+        partial = state == "buy_open" and bool(e.get("filled"))      # partly bought: those can be sold
         if state == "sell_open":
             self.style_button(self.sell_btn, "cl_cancel", "Cancel Sell")
             self.sell_btn.setEnabled(can)
+        elif partial:
+            self.style_button(self.sell_btn, "cl_sell", "! Sell Partial")
+            self.sell_btn.setEnabled(can and not e.get("partial_sell"))
         else:
             self.style_button(self.sell_btn, "cl_sell", "Sell ATM")
             self.sell_btn.setEnabled(can and state == "bought")
@@ -3464,6 +3581,8 @@ class ChecklistPanel(QWidget):
                 if state is None else "There is an ATM trade for this ticker (Monitor tab)")
             self.sell_btn.setToolTip(
                 "Cancel the sell order, to change its price or keep the stocks longer" if state == "sell_open" else
+                f"Sell the {e['filled']:,} bought so far (or fewer): the rest of the buy is canceled first, then the "
+                "sell goes out, after you approve it" if partial else
                 "Sell all the stocks at the exit price, GTC, after you approve it" if state == "bought" else
                 "Once the stocks are bought")
         text = ""
@@ -3486,7 +3605,8 @@ class ChecklistPanel(QWidget):
             elif state == "bought":
                 text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
             elif state == "sell_open":
-                text = (f"Sell order open{status}: {left:,} @ {fmt_price(e['sell_price'])} GTC"
+                text = (f"Sell order open{status}: {min(e.get('sell_shares') or left, left):,} @ "
+                        f"{fmt_price(e['sell_price'])} GTC"
                         + (f" · {e['sell_filled']:,} sold so far" if e.get("sell_filled") else ""))
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
@@ -3506,6 +3626,8 @@ class ChecklistPanel(QWidget):
         e = self.order()
         if e and e.get("state") == "sell_open":
             self.atm.ask_cancel(self, e, "SELL")
+        elif e and e.get("state") == "buy_open" and e.get("filled"):
+            self.sell_partial()
         else:
             self.sell()
 
@@ -3578,6 +3700,15 @@ class ChecklistPanel(QWidget):
         self.evaluate()
         p, _ = self.last_plan
         self.atm.ask_sell(self, e, p["exit"] or e.get("sell_at"), self.fees.get(self.ticker, (None, ""))[0])
+
+    def sell_partial(self):
+        """! Sell Partial: the stocks bought so far, at the exit now (the plan's, or changed here)."""
+        e = self.order()
+        if not e or e.get("state") != "buy_open" or not e.get("filled"):
+            return
+        self.evaluate()
+        p, _ = self.last_plan
+        self.atm.ask_sell_partial(self, e, p["exit"] or current_exit(e), self.fees.get(self.ticker, (None, ""))[0])
 
     def sell_on_bid(self):
         """The Sell ATM dialog at the best price the bids fill all the stocks at."""
