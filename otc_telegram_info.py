@@ -8,7 +8,8 @@ only. Plain Python, no Qt.
 Telegram can't color the text: the favorites' stars are colored emoji, the tables monospace (HTML <pre>).
 
 Buttons' data (callback_data, up to 64 bytes): "i:f:<account>" the favorites, "i:t:<account>:<ticker>"
-a ticker's details.
+a ticker's details (the message becomes them), "i:n:<account>:<ticker>" the same in a new message (an
+alert's button: the alert stays).
 """
 
 import html
@@ -232,6 +233,11 @@ def trade_what(e):
     if state == "sold":
         return f"Sold {e.get('sold') or e.get('filled') or 0:,}\nBought @ {entry}"
     return f"{e.get('shares', 0):,} @ {entry}"
+
+
+def alert_buttons(tail, ticker):
+    """Under an alert that fired: its ticker's details (a new message)."""
+    return [[(f"📊 {ticker}", f"i:n:{tail}:{ticker}")]]
 
 
 def ticker_buttons(tail, ticker):

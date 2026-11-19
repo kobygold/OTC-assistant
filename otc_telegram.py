@@ -102,6 +102,7 @@ CODES = "telegram/codes/"
 SENT = "telegram/sent/"
 ACTIONS = "telegram/actions/"
 DEMO = "telegram/demo/"
+TICKER_RE = r"[A-Za-z0-9.\-]{1,12}"   # a ticker in a button's data
 
 
 def keyboard(buttons, styled=True):
@@ -486,10 +487,13 @@ class TelegramBot:
         return ""
 
     def alert_fired(self, tail, a, now):
-        """A price / volume alert of the account fired (the server marked it): its phones are told."""
+        """A price / volume alert of the account fired (the server marked it): its phones are told, with a
+        button of its ticker (its details, in a message of their own: the alert stays)."""
         chats = [p["chat_id"] for p in self.phones(tail)]
-        if chats:
-            self.send_to(chats, otc_alerts.fired_text(a, now, tail))
+        ticker = str(a.get("ticker") or "")
+        buttons = info.alert_buttons(tail, ticker) if re.fullmatch(TICKER_RE, ticker) else None
+        for c in chats:
+            asyncio.create_task(self.send(c, otc_alerts.fired_text(a, now, tail), buttons))
 
     # ---- the Schwab login, the main server ----
     async def login_loop(self):
@@ -664,9 +668,12 @@ class TelegramBot:
             return
         if parts[1] == "f":
             text, buttons = await self.favs_message(tail)
-        elif parts[1] == "t" and len(parts) == 4 and re.fullmatch(r"[A-Za-z0-9.\-]{1,12}", parts[3]):
+        elif parts[1] in ("t", "n") and len(parts) == 4 and re.fullmatch(TICKER_RE, parts[3]):
             text, buttons = await self.ticker_message(tail, parts[3])
         else:
+            return
+        if parts[1] == "n":         # (an alert's button: the details below it, the alert kept)
+            await self.send(chat, text, buttons, html=True)
             return
         await self.edit(chat, mid, text, buttons, html=True)
 
