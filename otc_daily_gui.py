@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.15"
+APP_VERSION = "2.7.16"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -511,6 +511,8 @@ class OnResize(QObject):
             QTimer.singleShot(0, self.fn)
         return False
 
+
+LIVE_CHECK_MS = 2000        # the favorites' live checks: those whose market changed, this often
 
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1     # an ATM cell's 4 steps ([DONE / HALF / TODO] x 4)
 
@@ -1336,6 +1338,7 @@ class MainWindow(QMainWindow):
         chart_row.addWidget(self.checklist_split, 1)
         root.addLayout(chart_row, 1)
         QTimer.singleShot(0, self.refresh_favorites_table)     # (the Favorites tab is made after this one)
+        QTimer.singleShot(1500, self.start_live_checks)         # the favorites' checks, all the time
         return tab
 
     def keep_checklist_width(self):
@@ -1856,6 +1859,7 @@ class MainWindow(QMainWindow):
         self.download_job = None
         self.set_running(False)
         QTimer.singleShot(0, self.refresh_favorites_table)
+        QTimer.singleShot(0, self.prepare_live_checks)
         self.refresh_stats()
         self.refresh_screener_dates()
         if message.startswith(("Error", "Unexpected")):
@@ -1872,6 +1876,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export problem", message[:1500])
 
     def on_hourly_tick(self):
+        self.prepare_live_checks()      # the favorites' candle part and market makers refilling, again
         if self.is_running() or self.names_running():
             return
         self.refresh_stats()
@@ -3788,6 +3793,128 @@ class MainWindow(QMainWindow):
         item.setToolTip(c["tip"])
         item.setForeground(QBrush(QColor(checklist.MARKS[checklist.OK][1])) if passed == total else QBrush())
 
+    # ---- the favorites' Checks, all the time: each favorite's market streams anyway (Level 1, and Level II
+    # for the first 100 tickers wanted), so its checks are worked out again whenever its quote or book
+    # changes; outside the market's hours (Hold last L1/L2 on) from the record's last close, once ----
+    def start_live_checks(self):
+        """(once) The live favorites' checks: their candle part now, again hourly and when they change."""
+        from otc_probe import ProbeRunner
+        self.live_prep, self.live_info = {}, None      # ticker -> (rows, range, reloaders); (days, period, usd)
+        self.live_market = {}           # ticker -> {"q": the quote's fields so far, "bids", "asks", "got"}
+        self.live_dirty = set()
+        self.live_job = None
+        self.live_timer = QTimer(self)
+        self.live_timer.setInterval(LIVE_CHECK_MS)
+        self.live_timer.timeout.connect(self.run_live_checks)
+        self.live_timer.start()
+        self.close_probe = ProbeRunner(self.server, self)       # the last close's market (held), of the favorites
+        self.close_probe.result.connect(self.on_close_check)
+        self.server.message.connect(self.on_live_market)
+        self.level2.held_changed.connect(lambda _held: QTimer.singleShot(0, self.refresh_live_mode))
+        self.hold_close.toggled.connect(lambda _on: QTimer.singleShot(0, self.refresh_live_mode))
+        self.prepare_live_checks()
+
+    def refresh_live_mode(self):
+        """Live <-> the last close (the market opened / closed, or Hold switched): every favorite again."""
+        if self.live_held():
+            self.check_favs_at_close()
+        else:
+            self.close_probe.stop(quiet=True)
+            self.live_dirty |= set(self.live_market)
+
+    def live_held(self):
+        """Outside the market's hours with Hold last L1/L2 on: the favorites' checks are at the last close."""
+        return self.hold_close.isChecked() and not in_session()
+
+    def prepare_live_checks(self):
+        """The favorites' candle part (the range, the volume, the market makers refilling), in the background;
+        then every favorite checked with what is known of its market."""
+        if getattr(self, "live_job", "off") == "off" or self.live_job is not None:
+            return
+        tickers = sorted(self.favs)
+        tol, gap = self.af_tol.value() / 100, self.af_gap.value() / 100
+        period = self.avg_period.value()
+        try:
+            usd = float(self.settings.get("checklist_size") or 0) or self.position_default_now()
+        except (TypeError, ValueError):
+            usd = checklist.POSITION_USD
+        prep, days = {}, []
+        record = self.level2.market_log
+
+        def fn(job):
+            con = db()
+            try:
+                days.extend(r[0] for r in con.execute("SELECT DISTINCT date FROM candles ORDER BY date DESC LIMIT ?",
+                                                      (checklist.VOL_DAYS,)).fetchall()[::-1])
+                first_day = atm.first_market_day(con, atm.MAX_LOOKBACK)
+                for t in tickers:
+                    if job.stopping():
+                        raise Stopped()
+                    found = {}
+                    for ev in find_reloads(record, t, MM_YELLOW, RELOAD_DAYS):
+                        found.setdefault(ev["mm"], []).append(ev)
+                    prep[t] = (*candle_part(con, t, first_day, tol, gap), found)
+            finally:
+                con.close()
+            return ""
+
+        def finished(_message, ok):
+            self.live_job = None
+            if not ok:
+                return
+            self.live_prep, self.live_info = prep, (days, period, usd)
+            if set(self.favs) != set(prep):         # (changed meanwhile: again)
+                QTimer.singleShot(0, self.prepare_live_checks)
+            if self.live_held():
+                self.check_favs_at_close()
+            else:
+                self.live_dirty |= set(prep) & set(self.live_market)
+        self.live_job = Job(fn)
+        self.live_job.signals.finished.connect(finished)
+        self.live_job.start()
+
+    def on_live_market(self, msg):
+        """A streamed quote or book (every ticker this app streams): a favorite's checks again, soon."""
+        kind = msg.get("type")
+        if kind not in ("quote", "book"):
+            return
+        t = msg.get("ticker")
+        if t not in self.favs:
+            return
+        m = self.live_market.setdefault(t, {"q": {}, "bids": [], "asks": [], "got": False})
+        if kind == "quote":
+            m["q"].update({k: v for k, v in (msg.get("q") or {}).items() if v is not None})
+        else:
+            m["bids"] = [tuple(r) for r in msg.get("bids") or []]
+            m["asks"] = [tuple(r) for r in msg.get("asks") or []]
+            m["got"] = m["got"] or bool(msg.get("got"))
+        self.live_dirty.add(t)
+
+    def run_live_checks(self):
+        """The favorites whose market changed: their checks again (live; outside the hours with Hold on:
+        the last close's stay)."""
+        if not self.live_dirty or self.live_info is None or self.live_held():
+            return          # (held: the changes wait for the market to open)
+        dirty, self.live_dirty = self.live_dirty, set()
+        for t in sorted(dirty):
+            m, prep = self.live_market.get(t), self.live_prep.get(t)
+            if m is None or prep is None or t not in self.favs:
+                continue
+            r = {"q": m["q"], "bids": m["bids"], "asks": m["asks"], "has_l2": m["got"],
+                 "source": "live" if m["q"] or m["got"] else "none", "at": None}
+            self.show_check(t, self.check_of(t, r, prep, self.live_info, False))
+
+    def check_favs_at_close(self):
+        """Outside the market's hours (Hold on): every favorite checked at the record's last close."""
+        if self.live_info is None or not self.live_held():
+            return
+        self.close_probe.start([t for t in sorted(self.favs) if t in self.live_prep], True)
+
+    def on_close_check(self, ticker, r):
+        prep = self.live_prep.get(ticker)
+        if prep is not None and ticker in self.favs and self.live_held():
+            self.show_check(ticker, self.check_of(ticker, r, prep, self.live_info, True))
+
     def check_market(self, source):
         """Check L1/L2 of the ATM tab's tickers shown or of the favorites (again, on either tab: stop)."""
         if self.probe.running or self.atm_check_job is not None:
@@ -3864,15 +3991,21 @@ class MainWindow(QMainWindow):
         prep = (self.atm_check_prep or {}).get(ticker)
         if prep is None:
             return
+        self.show_check(ticker, self.check_of(ticker, r, prep, self.atm_check_info, self.probe.held))
+
+    @staticmethod
+    def check_of(ticker, r, prep, info, held):
+        """A ticker's Checks result {"passed" (None: N/A), "tip"} from its market r ({"q", "bids", "asks",
+        "has_l2", "source", "at"}), its candle part prep and (days, period, usd)."""
         rows, rng, reloaders = prep
-        days, period, usd = self.atm_check_info
+        days, period, usd = info
         when = ""
         if r["source"] == "close" and r.get("at"):
             when = f"At the close ({datetime.fromtimestamp(r['at'] / 1000):%a %b %d, %H:%M})"
         elif r["source"] == "live":
             when = f"Live, {datetime.now():%H:%M:%S}"
         if r["source"] == "none":
-            c = {"passed": None, "tip": "N/A: " + ("wasn't recorded before the last close" if self.probe.held
+            c = {"passed": None, "tip": "N/A: " + ("wasn't recorded before the last close" if held
                                                    else "no Level 1 or Level II came")}
         else:
             res = checklist.scan_checks(rows, days, rng, period, r["q"], r["bids"], r["asks"], r["has_l2"], usd,
@@ -3891,7 +4024,14 @@ class MainWindow(QMainWindow):
             else:       # Level 1 only: the Level II checks can't pass, so no count (N/A), the details on hover
                 c = {"passed": None, "tip": f"<b>{ticker}</b> · N/A: no Level II came (Level 1 only) · {when}<br>"
                                             + "<br>".join(lines)}
+        return c
+
+    def show_check(self, ticker, c):
+        """A ticker's Checks result: kept, and shown on the ATM and Favorites tabs and the Mini Favorites."""
         self.atm_checks[ticker] = c
+        side = getattr(self, "fav_side", None)
+        if side is not None:
+            side.set_checks(ticker, c["passed"], len(checklist.SCAN_CHECKS))
         for items in (self.atm_check_items, self.fav_check_items):     # shown on both tabs
             item = items.get(ticker)
             if item is None:
@@ -4482,6 +4622,8 @@ class MainWindow(QMainWindow):
         tbl.setColumnWidth(notes, max(min(tbl.columnWidth(notes), room), 100))
         self.fav_filling = False
         self.update_fav_side()
+        if set(self.favs) != set(getattr(self, "live_prep", {}) or {}):
+            self.prepare_live_checks()
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
             f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker, or press Enter, to open its chart."

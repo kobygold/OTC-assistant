@@ -257,6 +257,16 @@ class FavSidePanel(QWidget):
         for c in range(len(COLUMNS)):
             t.item(i, c).setToolTip(tip)
 
+    def set_checks(self, ticker, checks, total):
+        """A favorite's Check L1/L2 result now (None: N/A)."""
+        r = self.rows.get(ticker)
+        if r is None:
+            return
+        r["checks"], r["total"] = checks, total
+        i = self.row_of(ticker)
+        if i >= 0:
+            self.fill(i)
+
     def set_quote(self, ticker, q):
         """A Level 1 quote from the stream (its fields merged: a quote can carry only the ones that changed)."""
         if ticker not in self.rows:
