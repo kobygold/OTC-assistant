@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.23"
+APP_VERSION = "2.7.24"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2070,6 +2070,9 @@ class MainWindow(QMainWindow):
             return          # a refresh that failed: keep the candles shown
         self.chart.set_intraday(ticker, rows, keep_view=True,
                                 message=f"No 1-minute candles for {ticker}: {error}" if error else "")
+        held = getattr(self, "bounce_now", (None, None))
+        if held[0] == ticker and held[1] is not None:       # the purple lines stay (new candles reset them)
+            self.chart.set_bounce(held[1])
         self.apply_live_quote()
 
     def on_expirations_toggled(self, checked):
@@ -2189,7 +2192,7 @@ class MainWindow(QMainWindow):
 
     def chart_bounce(self):
         """The current chart's range with the ATM tab's settings, or None."""
-        if not self.bounces_show.isChecked() or not self.chart.ticker or not self.chart.dates:
+        if not self.bounces_show.isChecked() or not self.chart.ticker or not self.chart_rows:
             return None
         con = db()
         try:
@@ -2211,13 +2214,14 @@ class MainWindow(QMainWindow):
         best one. Its two zones are always shown, whatever the minimum strength is. Then the
         bouncing range, if that's turned on."""
         bounce = self.chart_bounce()
+        self.bounce_now = (self.chart.ticker, bounce)       # (the 1D view's refreshes put it back)
         self.chart.set_bounce(bounce)
         bounce_bit = ""
         if bounce:
             bounce_bit = (f"<b>Bouncing:</b> low {fmt_price(bounce.low)}, high {fmt_price(bounce.high)} "
                           f"(+{bounce.gap * 100:.0f}%), {bounce.legs} legs since {bounce.since}, low touched on "
                           f"{bounce.low_touches} days, high on {bounce.high_touches}")
-        elif self.bounces_show.isChecked() and self.chart.dates:
+        elif self.bounces_show.isChecked() and self.chart_rows:
             bounce_bit = (f"No bounce range of {self.af_gap.value()}% or more in the last "
                           f"{self.af_lookback.value()} market days (settings on the ATM tab).")
         analysis = self.chart_analysis

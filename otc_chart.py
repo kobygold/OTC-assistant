@@ -566,9 +566,9 @@ class CandleChart(DrawingsMixin, QWidget):
                            fmt_compact(vv))
             vv += vstep
 
-        if not self.intraday:       # the zones and the bounce range are for days
+        if not self.intraday:       # the zones are for days
             self._draw_zones(p, price, py)
-            self._draw_bounce(p, price, py)
+        self._draw_bounce(p, price, py)     # the bounce range (from the days) on the 1-minute view too
 
         # Candles and volume bars
         bw = self._bar_w(price)
@@ -673,7 +673,7 @@ class CandleChart(DrawingsMixin, QWidget):
 
         if not self.intraday:
             self._draw_zone_labels(p, price, py)
-            self._draw_bounce_labels(p, price, py)
+        self._draw_bounce_labels(p, price, py)
 
         # X axis labels
         self._draw_x_axis(p, price, vol)
@@ -966,10 +966,17 @@ class CandleChart(DrawingsMixin, QWidget):
                                  ("Low", b.low, py(b.low * (1 - b.tol)) + 1)):
             # No room outside the band at the chart's edge: keep the label just inside the edge,
             # as long as its line is still on the chart
+            arrow = ""
             if not price.top() <= py(level) <= price.bottom():
-                continue
+                if not self.intraday:
+                    continue
+                # the 1-minute view, scaled to the day's candles: a level out of sight gets a tag at the
+                # edge it is beyond (where the range is)
+                above = py(level) < price.top()
+                arrow = "▲ " if above else "▼ "
+                top = price.top() + 1 if above else price.bottom() - 17
             top = min(max(top, price.top() + 1), price.bottom() - 17)
-            text = f"{name} {fmt_chart_price(level)}"
+            text = f"{arrow}{name} {fmt_chart_price(level)}"
             r = QRectF(x0 + 2, top, fm.horizontalAdvance(text) + 8, 16)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(BOUNCE)
