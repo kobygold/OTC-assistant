@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.14"
+APP_VERSION = "2.7.15"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -870,10 +870,12 @@ class MainWindow(QMainWindow):
         # Ctrl+Tab: back to the tab shown before (again: back here), as Alt+Tab does between windows
         self.tab_now, self.tab_before = self.tabs.currentIndex(), None
         self.tab_back = QShortcut(QKeySequence("Ctrl+Tab"), self, self.previous_tab)
-        # Ctrl+F: the Chart tab's ticker box, its text selected to type over
-        QShortcut(QKeySequence("Ctrl+F"), self, self.focus_chart_ticker)
+        # Ctrl+T: the Chart tab's ticker box, its text selected to type over; Ctrl+F: the Mini Favorites' filter
+        QShortcut(QKeySequence("Ctrl+T"), self, self.focus_chart_ticker)
+        QShortcut(QKeySequence("Ctrl+F"), self, self.focus_fav_filter)
         self.chart_ticker.setToolTip((self.chart_ticker.toolTip() + "\n" if self.chart_ticker.toolTip() else "")
-                                     + "Ctrl+F: here, from anywhere in the app")
+                                     + "Ctrl+T: here, from anywhere in the app")
+        self.fav_side.filter.setToolTip(self.fav_side.filter.toolTip() + ". Ctrl+F: here, from anywhere in the app")
         # On the Chart tab, Ctrl+Down / Ctrl+Up open the next / previous ticker of the last list visited.
         # On the Mac, Qt's "Ctrl" is the Cmd key, and Cmd+Up/Down is eaten by the focused table / text box
         # (jump to top / bottom), so there it is Cmd+Option+Up/Down.
@@ -2196,10 +2198,18 @@ class MainWindow(QMainWindow):
         self.zone_info.show()
 
     def focus_chart_ticker(self):
-        """Ctrl+F: to the Chart tab, the cursor in its ticker box with the text selected."""
+        """Ctrl+T: to the Chart tab, the cursor in its ticker box with the text selected."""
         self.tabs.setCurrentIndex(1)
         self.chart_ticker.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.chart_ticker.selectAll()
+
+    def focus_fav_filter(self):
+        """Ctrl+F: to the Chart tab, the Mini Favorites opened, the cursor in their filter (its text selected)."""
+        self.tabs.setCurrentIndex(1)
+        if not self.fav_side.shown:
+            self.fav_side.set_shown(True)
+        self.fav_side.filter.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.fav_side.filter.selectAll()
 
     # ---- the news channel (otc_news: read by the main server, in the shared data news/<ticker>/<id>) ----
     def news_of(self, ticker, days=30):
