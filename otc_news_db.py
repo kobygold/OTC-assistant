@@ -168,7 +168,7 @@ def history_text(h):
     other = h["news"] - h["dilutions"] - h["tier_downs"] - h["filings"]
     if other > 0:
         parts.append(f"{other} other news")
-    return f"{months} months: " + ", ".join(parts)
+    return f"{months} month{'s' if months != 1 else ''}: " + ", ".join(parts)
 
 
 # ---- between the computers: the raw posts ----

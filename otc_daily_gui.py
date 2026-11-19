@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
+    QPushButton, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
 
@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.1"
+APP_VERSION = "2.7.2"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.chart_fav_btn)
         # (Enter in the box shows the chart) News: the ticker's news on OTC Markets, in the browser
         self.news_btn = news_btn = QPushButton("News")
-        news_btn.setToolTip("Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser")
+        news_btn.setToolTip("The chart's ticker's news: the News panel under the chart")
         news_btn.clicked.connect(self.open_news)
         self.news_told = set()          # the news keys a message was shown for (once)
         row.addWidget(news_btn)
@@ -1195,7 +1195,35 @@ class MainWindow(QMainWindow):
         self.server.start()
         self.level2 = Level2Panel(self.settings, APP_DIR / "schwab_token.json", self.server,
                                   mm_icons={level: risk_icon(level) for level in RISK_COLORS})
-        self.level2.setVisible(self.level2_show.isChecked())
+        # Under the chart: Level II, or the News panel (a tab on the left switches them: no height lost)
+        from otc_news_panel import NewsPanel
+        self.news_panel = NewsPanel(self.news_of, self.news_history)
+        self.news_panel.count_changed.connect(self.show_news_count)
+        self.bottom = QWidget()
+        blay = QHBoxLayout(self.bottom)
+        blay.setContentsMargins(0, 0, 0, 0)
+        blay.setSpacing(0)
+        self.bottom_tabs = QTabBar()
+        self.bottom_tabs.setShape(QTabBar.Shape.RoundedWest)
+        self.bottom_tabs.addTab("Level II")
+        self.bottom_tabs.addTab("News")
+        self.bottom_tabs.setTabToolTip(0, "Level II of the chart's ticker")
+        self.bottom_tabs.setTabToolTip(1, "The chart's ticker's news (the News Telegram Bot's channel, months of it)")
+        self.bottom_tabs.setDrawBase(False)
+        self.bottom_tabs.setStyleSheet("QTabBar::tab { padding: 8px 2px; min-height: 60px; } "
+                                       "QTabBar::tab:selected { background: #2a3440; color: #ffffff; font-weight: bold; }")
+        blay.addWidget(self.bottom_tabs, 0, Qt.AlignmentFlag.AlignTop)
+        self.bottom_stack = QStackedWidget()
+        self.bottom_stack.addWidget(self.level2)
+        self.bottom_stack.addWidget(self.news_panel)
+        self.level2_off = QLabel("Level II is off (the \"Level II\" checkbox over the chart): no Schwab stream.")
+        self.level2_off.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.level2_off.setStyleSheet("color: #8a8a8a;")
+        self.bottom_stack.addWidget(self.level2_off)
+        blay.addWidget(self.bottom_stack, 1)
+        self.bottom_tabs.setCurrentIndex(1 if self.settings.get("bottom_tab") == "news" else 0)
+        self.bottom_tabs.currentChanged.connect(self.on_bottom_tab)
+        self.show_bottom()
         self.level2.off = not self.level2_show.isChecked()     # hidden: no stream at all
         self.level2.live_quote.connect(self.on_live_quote)
         self.level2.logged_in.connect(self.on_logged_in)
@@ -1249,7 +1277,7 @@ class MainWindow(QMainWindow):
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
         self.chart_split.addWidget(self.chart)
-        self.chart_split.addWidget(self.level2)
+        self.chart_split.addWidget(self.bottom)
         self.chart_split.setStretchFactor(0, 1)
         self.chart_split.setSizes(self.settings.get("level2_split", [600, 220]))
         self.checklist_split.addWidget(self.chart_split)
@@ -1941,7 +1969,7 @@ class MainWindow(QMainWindow):
     def on_level2_toggled(self, checked):
         self.settings["level2_show"] = checked
         save_settings(self.settings)
-        self.level2.setVisible(checked)
+        self.show_bottom()
         # Hidden, it stops following the ticker, so nothing streams for nothing
         if checked:
             self.level2.off = False
@@ -2167,13 +2195,19 @@ class MainWindow(QMainWindow):
 
     def show_news_button(self):
         """The Chart tab's News button: orange with the ticker's news of the last days (a warning: red), the
-        news in its tooltip."""
+        news in its tooltip; the News panel the ticker's."""
+        panel = getattr(self, "news_panel", None)
+        if panel is not None:
+            if panel.ticker != (self.chart.ticker or "").upper():
+                panel.set_ticker(self.chart.ticker or "")
+            else:
+                panel.refresh()
         btn = getattr(self, "news_btn", None)
         if btn is None:
             return
         ticker = (self.chart.ticker or "").upper()
         news = self.news_of(ticker, days=7)
-        base = "Open the chart's ticker's news on OTC Markets (otcmarkets.com) in the browser"
+        base = "Click: the News panel under the chart (all its news, months of it)"
         months = self.news_history(ticker) if ticker else None
         if not news:
             btn.setText("News")
@@ -2189,9 +2223,34 @@ class MainWindow(QMainWindow):
             when = str(d.get("time", "")).replace("T", " ")[5:16]
             text = html.escape(d.get("summary") or "").replace("\n", "<br>")
             lines.append(f"<span style='color:#a8a8a8'>{when}</span> {text}")
-        btn.setToolTip("<br>".join(lines) + f"<br><br>{base}")
+        btn.setToolTip("<br>".join(lines) + "<br><br>Click: the News panel under the chart")
+
+    # ---- under the chart: Level II or the News panel ----
+    def on_bottom_tab(self, index):
+        self.settings["bottom_tab"] = "news" if index == 1 else "level2"
+        save_settings(self.settings)
+        self.show_bottom()
+
+    def show_bottom(self):
+        """Level II (or its "off" note), or the News panel; the area hidden only with Level II off and shown."""
+        news = self.bottom_tabs.currentIndex() == 1
+        on = self.level2_show.isChecked()
+        self.bottom_stack.setCurrentWidget(self.news_panel if news else self.level2 if on else self.level2_off)
+        self.bottom.setVisible(news or on)
+        if news:
+            self.news_panel.set_ticker(self.chart.ticker or "")
+
+    def show_news_count(self, n, warn):
+        """The News tab: the last 7 days' count, orange (red with a warning)."""
+        self.bottom_tabs.setTabText(1, f"News ({n})" if n else "News")
+        self.bottom_tabs.setTabTextColor(1, QColor("#ff5050" if warn else "#f0a020") if n else QColor("#d8d8d8"))
 
     def open_news(self):
+        """The News button: the News panel under the chart (the OTC Markets page is a button in it)."""
+        self.bottom_tabs.setCurrentIndex(1)
+        self.show_bottom()
+
+    def open_news_web(self):
         """The chart's ticker (else the one typed) on OTC Markets' News tab, in the default browser."""
         ticker = (self.chart.ticker or self.chart_ticker.text()).strip().upper()
         if not ticker:
