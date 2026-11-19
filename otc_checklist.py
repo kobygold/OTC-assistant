@@ -2940,7 +2940,7 @@ class ChecklistPanel(QWidget):
 
     def draft_values(self, e):
         """(price, shares, size, changed): the buy with the new values typed (a new price keeps the
-        position $; the amount or the $ typed last sets the other)."""
+        amount of stocks, the $ follows; the amount or the $ typed last sets the other)."""
         d = self.draft_of(e)
         price = self.draft_number(d.get("entry"), price=True) or e["entry"]
         typed_shares, typed_size = self.draft_number(d.get("shares")), self.draft_number(d.get("size"))
@@ -2948,12 +2948,14 @@ class ChecklistPanel(QWidget):
         if source == "shares" and not typed_shares or source == "size" and not typed_size:
             source = None
         source = source or ("shares" if typed_shares else "size" if typed_size else None)
-        if source == "shares":
-            shares = int(typed_shares)
+        if source == "size":
+            size = typed_size
+            shares = round(size / price)
+        elif source == "shares" or abs(price - e["entry"]) > 1e-9:
+            shares = int(typed_shares) if source == "shares" else e["shares"]    # (a new price: the same amount)
             size = shares * price
         else:
-            size = typed_size or self.order_size(e)
-            shares = round(size / price) if source or abs(price - e["entry"]) > 1e-9 else e["shares"]
+            size, shares = self.order_size(e), e["shares"]
         changed = shares >= 1 and (shares != e["shares"] or abs(price - e["entry"]) > 1e-9)
         return price, shares, size, changed
 
