@@ -1,9 +1,9 @@
-"""The Chart tab's favorites side panel: a narrow list on the chart's left, every favorite with its status in
+"""The Chart tab's Mini Favorites side panel: a narrow list on the chart's left, every favorite with its status in
 short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a double-click
 opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
 from PyQt6.QtCore import QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QSizePolicy, QStyle,
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSizePolicy, QStyle,
                              QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QToolButton,
                              QVBoxLayout, QWidget)
 
@@ -42,7 +42,7 @@ class Strip(QToolButton):
         super().__init__(parent)
         self.setFixedWidth(18)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)     # the full height
-        self.setToolTip("Show the favorites list")
+        self.setToolTip("Show the Mini Favorites")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("QToolButton { border: none; background: #1d2126; } "
                            "QToolButton:hover { background: #2a3440; }")
@@ -61,7 +61,7 @@ class Strip(QToolButton):
         p.translate(self.width() / 2 + 5, 10)
         p.rotate(90)
         p.drawText(QRectF(0, 0, 200, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   "»  ★ Favorites")
+                   "»  ★ Mini Favorites")
         p.end()
 
 
@@ -87,17 +87,26 @@ class FavSidePanel(QWidget):
         body.setSpacing(2)
         top = QHBoxLayout()
         top.setContentsMargins(4, 0, 0, 0)
-        self.title = QLabel("★ Favorites")
+        self.title = QLabel("★ Mini Favorites")
         self.title.setStyleSheet(f"color: {GOLD}; font-weight: bold;")
         top.addWidget(self.title, 1)
         self.close_btn = close = QToolButton()
         close.setText("«")
         close.setAutoRaise(True)
         close.setStyleSheet(f"QToolButton {{ color: {GOLD}; font-weight: bold; font-size: 14px; }}")
-        close.setToolTip("Hide the favorites list (the strip on the left shows it again)")
+        close.setToolTip("Hide the Mini Favorites (the strip on the left shows them again)")
         close.clicked.connect(lambda: self.set_shown(False))
         top.addWidget(close)
         body.addLayout(top)
+        # the filter: the tickers (and names) holding the text typed; Enter opens the first one shown
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("Filter...")
+        self.filter.setClearButtonEnabled(True)
+        self.filter.setToolTip("Show only the favorites whose ticker (or name) holds this text. "
+                               "Enter: open the first one shown. Esc: clear")
+        self.filter.textChanged.connect(self.apply_filter)
+        self.filter.returnPressed.connect(self.open_first)
+        body.addWidget(self.filter)
         t = self.table = QTableWidget(0, len(COLUMNS))
         t.setHorizontalHeaderLabels(COLUMNS)
         t.horizontalHeaderItem(3).setToolTip("Check L1/L2: the checks passed")
@@ -143,12 +152,6 @@ class FavSidePanel(QWidget):
         if tell:
             self.shown_changed.emit(shown)
 
-    def keyPressEvent(self, e):
-        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.table.currentRow() >= 0:
-            self.open_row(self.table.currentRow())
-            return
-        super().keyPressEvent(e)
-
     def open_row(self, row):
         item = self.table.item(row, 0)
         if item is not None and item.data(Qt.ItemDataRole.UserRole):
@@ -180,10 +183,41 @@ class FavSidePanel(QWidget):
             t.setItem(i, 3, ck)
             self.fill(i)
         n = len(rows)
-        self.title.setText(f"★ Favorites ({n})" if n else "★ Favorites")
+        self.title.setText(f"★ Mini Favorites ({n})" if n else "★ Mini Favorites")
         t.setVisible(bool(n))
         self.empty.setVisible(not n)
+        self.apply_filter()
         self.set_current(self.current)
+
+    def apply_filter(self, *_):
+        """Only the rows whose ticker (or name) holds the filter's text."""
+        text = self.filter.text().strip().upper()
+        shown = 0
+        for i in range(self.table.rowCount()):
+            ticker = self.table.item(i, 0).data(Qt.ItemDataRole.UserRole)
+            r = self.rows.get(ticker, {})
+            hit = not text or text in ticker.upper() or text in (r.get("name") or "").upper()
+            self.table.setRowHidden(i, not hit)
+            shown += hit
+        n = len(self.rows)
+        if n:
+            self.title.setText(f"★ Mini Favorites ({shown} of {n})" if text else f"★ Mini Favorites ({n})")
+
+    def open_first(self):
+        """Enter in the filter: the first favorite shown opens on the chart."""
+        for i in range(self.table.rowCount()):
+            if not self.table.isRowHidden(i):
+                self.open_row(i)
+                return
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape and self.filter.text():
+            self.filter.clear()
+            return
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.table.currentRow() >= 0:
+            self.open_row(self.table.currentRow())
+            return
+        super().keyPressEvent(e)
 
     def row_of(self, ticker):
         for i in range(self.table.rowCount()):

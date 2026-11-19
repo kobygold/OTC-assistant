@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.13"
+APP_VERSION = "2.7.14"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -3876,7 +3876,11 @@ class MainWindow(QMainWindow):
             # a pass: ✔, and "?" on No diluter on the Ask (a so-so market maker first: not a diluter caught)
             passed = sum(res[k][0] == checklist.OK or (k == "no_diluter" and res[k][0] == checklist.MAYBE)
                          for k, _ in checklist.SCAN_CHECKS)
-            c = {"passed": passed, "tip": f"<b>{ticker}</b> · {passed}/{len(lines)} · {when}<br>" + "<br>".join(lines)}
+            if r.get("has_l2"):
+                c = {"passed": passed, "tip": f"<b>{ticker}</b> · {passed}/{len(lines)} · {when}<br>" + "<br>".join(lines)}
+            else:       # Level 1 only: the Level II checks can't pass, so no count (N/A), the details on hover
+                c = {"passed": None, "tip": f"<b>{ticker}</b> · N/A: no Level II came (Level 1 only) · {when}<br>"
+                                            + "<br>".join(lines)}
         self.atm_checks[ticker] = c
         for items in (self.atm_check_items, self.fav_check_items):     # shown on both tabs
             item = items.get(ticker)
