@@ -1,7 +1,7 @@
 """The Chart tab's Mini Favorites side panel: a narrow list on the chart's left, every favorite with its status in
 short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a double-click
 opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
-from PyQt6.QtCore import QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSizePolicy, QStyle,
                              QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QToolButton,
@@ -18,6 +18,7 @@ R, GAP = 5, 12                          # the small steps' circles
 PANEL_W = 170                           # the panel's width (open)
 COLUMNS = ["Ticker", "ATM", "✓"]
 ATM_COL, CHECKS_COL = 1, 2
+STAR_W = 24                             # the star's part of the Ticker cell (a click there: the group menu)
 
 
 class SmallSteps(QStyledItemDelegate):
@@ -72,6 +73,7 @@ class FavSidePanel(QWidget):
     open_ticker(ticker): a row double-clicked (or Enter); shown_changed(open): closed / opened."""
 
     open_ticker = pyqtSignal(str)
+    change_group = pyqtSignal(str, QPoint)      # its star clicked (or the row right-clicked): the group menu there
     shown_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None, shown=True):
@@ -132,6 +134,13 @@ class FavSidePanel(QWidget):
             h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             t.setColumnWidth(col, w)
         t.cellDoubleClicked.connect(lambda r, _c: self.open_row(r))
+        # the star: a click opens the favorites' group menu (the color, or out of the favorites); so does a
+        # right-click anywhere on the row
+        self.press_x = None             # where the last click was pressed, in the table (the star or not)
+        t.viewport().installEventFilter(self)
+        t.cellClicked.connect(self.star_clicked)
+        t.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        t.customContextMenuRequested.connect(self.row_menu)
         body.addWidget(t, 1)
         self.empty = QLabel("No favorites yet:\nthe star by the ticker\nadds one.")
         self.empty.setStyleSheet(f"color: {DIM};")
@@ -152,6 +161,33 @@ class FavSidePanel(QWidget):
         self.layout().setContentsMargins(0, 0, 4 if shown else 2, 0)
         if tell:
             self.shown_changed.emit(shown)
+
+    def eventFilter(self, obj, e):
+        if obj is self.table.viewport() and e.type() == QEvent.Type.MouseButtonPress:
+            self.press_x = e.position().x()
+        return False
+
+    def ticker_at(self, row):
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else ""
+
+    def star_clicked(self, row, col):
+        """A click on a row's star (the left of its Ticker cell): the group menu under it."""
+        if col != 0:
+            return
+        t = self.table
+        if self.press_x is None or self.press_x - t.columnViewportPosition(0) > STAR_W:
+            return
+        rect = t.visualItemRect(t.item(row, 0))
+        ticker = self.ticker_at(row)
+        if ticker:
+            self.change_group.emit(ticker, t.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def row_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        ticker = self.ticker_at(row) if row >= 0 else ""
+        if ticker:
+            self.change_group.emit(ticker, self.table.viewport().mapToGlobal(pos))
 
     def open_row(self, row):
         item = self.table.item(row, 0)
@@ -247,7 +283,7 @@ class FavSidePanel(QWidget):
         lines.append(r.get("atm_tip") or "No ATM trade")
         if r.get("notes"):
             lines.append(f"Notes: {r['notes']}")
-        lines.append("Double-click: open its chart")
+        lines.append("Double-click: open its chart · The star (or a right-click): its color, or out of the favorites")
         tip = "\n".join(lines)
         for c in range(len(COLUMNS)):
             t.item(i, c).setToolTip(tip)

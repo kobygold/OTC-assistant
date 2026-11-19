@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.18"
+APP_VERSION = "2.7.19"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1328,6 +1328,7 @@ class MainWindow(QMainWindow):
         self.fav_side_info = {}         # ticker -> (last close, the day's change, name): from the candles
         self.fav_side = FavSidePanel(shown=bool(self.settings.get("fav_side_show", True)))
         self.fav_side.open_ticker.connect(self.show_chart)
+        self.fav_side.change_group.connect(self.choose_fav)        # its star: the color, or out
         self.fav_side.shown_changed.connect(self.on_fav_side_shown)
         self.level2.any_quote.connect(lambda t, q: in_session() and self.fav_side.set_quote(t, q))
         self.level2.held_changed.connect(lambda held: held and self.fav_side.drop_live())
