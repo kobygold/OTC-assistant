@@ -916,7 +916,8 @@ class SchwabOrdersTable(AtmTable):
 # (title, tooltip)
 POS_COLUMNS = [
     ("Ticker", "Double-click: its chart"),
-    ("ATM", "An ATM trade's stocks (its state as on the ATM Trades list); sell those with its Sell ATM"),
+    ("ATM", "An ATM trade's stocks: its 4 steps, as on the ATM Trades list (hover: its state); "
+            "sell those with its Sell ATM"),
     ("Shares", "The shares owned in the account"),
     ("In sell orders", "Of them, those in open sell orders already (an ATM trade's or others')"),
     ("Avg cost", "Schwab's average cost a share"),
@@ -950,6 +951,8 @@ class PositionsTable(AtmTable):
         self.setHorizontalHeaderLabels([t for t, _ in POS_COLUMNS])
         for i, (_, tip) in enumerate(POS_COLUMNS):
             self.horizontalHeaderItem(i).setToolTip(tip)
+        self.steps_delegate = StepsDelegate(self)          # an ATM trade's 4 steps, drawn
+        self.setItemDelegateForColumn(PCOL["ATM"], self.steps_delegate)
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -1036,9 +1039,11 @@ class PositionsTable(AtmTable):
         self.cell(row, PCOL["Ticker"], ticker, "#ffffff", bold=True)
         e = self.atm_entry(ticker)
         if e is not None:       # an ATM trade's: in its state's colours
-            name, bg, fg = STATES.get(e["state"], (e["state"], DIM, "#ffffff"))
-            self.cell(row, PCOL["ATM"], "ATM", fg, bold=True, bg=bg, align=Qt.AlignmentFlag.AlignCenter,
-                      tip=f"An ATM trade: {name}")
+            name = STATES.get(e["state"], (e["state"],))[0]
+            steps = trade_steps(e)
+            item = self.cell(row, PCOL["ATM"], "", align=Qt.AlignmentFlag.AlignCenter,
+                             tip=f"An ATM trade: {name}\n" + steps_tip(e, steps))
+            item.setData(Qt.ItemDataRole.UserRole, steps)
         else:
             self.cell(row, PCOL["ATM"], "", align=Qt.AlignmentFlag.AlignCenter)
         self.cell(row, PCOL["Shares"], f"{p['shares']:,}", bold=True)
