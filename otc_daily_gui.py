@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.22"
+APP_VERSION = "2.7.23"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1296,7 +1296,19 @@ class MainWindow(QMainWindow):
         self.checklist_split = QSplitter(Qt.Orientation.Horizontal)
         self.checklist_split.setChildrenCollapsible(False)
         # The chart over Level II on the left, the checklist on the right at full height
-        self.chart_split.addWidget(self.chart)
+        # over the chart: a yellow bar when its ticker's fee is high (more than checklist.FEE_HIGH)
+        self.fee_bar = QLabel()
+        self.fee_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fee_bar.setStyleSheet("QLabel { background: #e3b23c; color: #111111; font-weight: bold; padding: 3px; }")
+        self.fee_bar.hide()
+        chart_box = QWidget()
+        cbl = QVBoxLayout(chart_box)
+        cbl.setContentsMargins(0, 0, 0, 0)
+        cbl.setSpacing(0)
+        cbl.addWidget(self.fee_bar)
+        cbl.addWidget(self.chart, 1)
+        self.checklist.fee_changed.connect(lambda t: t == self.chart.ticker and self.show_fee_bar())
+        self.chart_split.addWidget(chart_box)
         self.chart_split.addWidget(self.bottom)
         self.chart_split.setStretchFactor(0, 1)
         self.chart_split.setSizes(self.settings.get("level2_split", [600, 220]))
@@ -1381,6 +1393,17 @@ class MainWindow(QMainWindow):
     def on_side_split(self, sizes):
         self.settings["fav_side_split"] = sizes
         save_settings(self.settings)
+
+    def show_fee_bar(self):
+        """The yellow bar over the chart: its ticker's fee, when more than checklist.FEE_HIGH."""
+        ticker = self.chart.ticker or ""
+        fee, details = self.checklist.fees.get(ticker, (None, ""))
+        high = fee is not None and fee > checklist.FEE_HIGH + 1e-9
+        if high:
+            self.fee_bar.setText(f"⚠ {ticker}: fee = ${fee:.2f}   (more than ${checklist.FEE_HIGH:.2f}, "
+                                 f"on the buy and again on the sell: ${2 * fee:.2f} in all)")
+            self.fee_bar.setToolTip(details)
+        self.fee_bar.setVisible(high)
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
@@ -2435,6 +2458,8 @@ class MainWindow(QMainWindow):
             save_settings(self.settings)
         if rows:        # every chart opened, from anywhere: first in the box's Down-arrow history
             self.add_ticker_history(ticker)
+        self.checklist.read_fee(ticker)     # (the checklist hidden too: the fee bar over the chart)
+        self.show_fee_bar()
         risk = ticker_risk(ticker)
         if risk:
             self.chart.set_risk(self.risk_icons[risk[0]], risk[1])

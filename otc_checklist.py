@@ -2632,6 +2632,7 @@ class AtmTrades(QObject):
 # ---------------------------------------------------------------- the panel ---
 class ChecklistPanel(QWidget):
     ticks_changed = pyqtSignal()
+    fee_changed = pyqtSignal(str)       # a ticker's fee read from Schwab (the chart's yellow bar when high)
 
     def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None):
         super().__init__(parent)
@@ -3540,6 +3541,7 @@ class ChecklistPanel(QWidget):
 
     def fee_read(self, ticker, fee, details):
         self.fees[ticker] = (fee, details)
+        self.fee_changed.emit(ticker)
         if ticker == self.ticker:
             self.refresh()
         self.atm.market_changed.emit(ticker)        # the Monitor tab's orders show it
