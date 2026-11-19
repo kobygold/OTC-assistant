@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette, QPen
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                             QStyledItemDelegate,
+                             QStyledItemDelegate, QToolTip,
                              QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 import otc_news_db
@@ -82,36 +82,79 @@ class KeepColorDelegate(QStyledItemDelegate):
 
 
 class SharesChart(QWidget):
-    """The outstanding shares over the range: a step at each change (a dilution goes up, red)."""
+    """The outstanding shares over the range: a step at each change, with axes (the shares on the left, the
+    dates below). Every change marked (a dot on the line and a tick on the time axis: a tiny dilution shows
+    too), red up (dilution), green down; hovering a mark tells its date and change."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.points = []            # [(datetime, before, after)], oldest first
         self.start = self.end = None
-        self.setMinimumHeight(80)
+        self.marks = []             # [(QPointF on the line, x on the axis, its tooltip)] as last drawn
+        self.setMinimumHeight(90)
+        self.setMouseTracking(True)
 
     def set_points(self, points, start, end):
         self.points, self.start, self.end = points, start, end
         self.update()
 
+    @staticmethod
+    def nice_ticks(lo, hi, n=5):
+        """About n round values between lo and hi."""
+        import math
+        span = hi - lo
+        if span <= 0:
+            return [lo]
+        raw = span / n
+        mag = 10 ** math.floor(math.log10(raw))
+        step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+        first = math.ceil(lo / step) * step
+        out, v = [], first
+        while v <= hi + step * 1e-9:
+            out.append(v)
+            v += step
+        return out
+
+    def date_ticks(self):
+        """The time axis' marks: weeks for a month or less, else months."""
+        out = []
+        days = (self.end - self.start).days
+        if days <= 35:
+            t = (self.start + timedelta(days=(7 - self.start.weekday()) % 7)).replace(hour=0, minute=0, second=0,
+                                                                                   microsecond=0)
+            while t <= self.end:
+                out.append((t, f"{t:%m-%d}"))
+                t += timedelta(days=7)
+        else:
+            t = self.start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            while t <= self.end:
+                if t >= self.start:
+                    out.append((t, f"{t:%b}" if t.month != 1 else f"{t:%b %Y}"))
+                t = (t.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return out
+
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        r = QRectF(self.rect()).adjusted(8, 18, -8, -18)
-        p.setPen(QColor(DIM))
         f = QFont(self.font())
-        f.setPointSizeF(8.5)
+        f.setPointSizeF(8)
         p.setFont(f)
-        p.drawText(QRectF(self.rect()).adjusted(8, 2, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+        fm = p.fontMetrics()
+        p.setPen(QColor(DIM))
+        p.drawText(QRectF(self.rect()).adjusted(6, 2, -6, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                    "Outstanding shares")
+        self.marks = []
         if not self.points or self.start is None:
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "No share changes in this range")
+            p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, "No share changes in this range")
             p.end()
             return
         values = [v for _, a, b in self.points for v in (a, b)]
         lo, hi = min(values), max(values)
-        if hi == lo:
-            hi = lo + 1
+        pad = (hi - lo) * 0.08 or max(hi * 0.01, 1)
+        lo, hi = max(0, lo - pad), hi + pad
+        ticks = self.nice_ticks(lo, hi)
+        left = max(fm.horizontalAdvance(short(v)) for v in ticks) + 10
+        r = QRectF(self.rect()).adjusted(left, 18, -10, -(fm.height() + 6))
         span = max((self.end - self.start).total_seconds(), 1)
 
         def x(t):
@@ -119,6 +162,25 @@ class SharesChart(QWidget):
 
         def y(v):
             return r.bottom() - (v - lo) / (hi - lo) * r.height()
+        # the axes: the shares (left), the dates (below), faint lines across
+        grid = QColor("#262c33")
+        for v in ticks:
+            yy = y(v)
+            p.setPen(QPen(grid, 1))
+            p.drawLine(QPointF(r.left(), yy), QPointF(r.right(), yy))
+            p.setPen(QColor(DIM))
+            p.drawText(QRectF(0, yy - 8, left - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       short(v))
+        for t, label in self.date_ticks():
+            xx = x(t)
+            p.setPen(QPen(grid, 1))
+            p.drawLine(QPointF(xx, r.top()), QPointF(xx, r.bottom()))
+            p.setPen(QColor(DIM))
+            p.drawText(QRectF(xx - 40, r.bottom() + 3, 80, fm.height()), Qt.AlignmentFlag.AlignHCenter, label)
+        p.setPen(QPen(QColor("#3a4046"), 1))
+        p.drawLine(QPointF(r.left(), r.bottom()), QPointF(r.right(), r.bottom()))
+        p.drawLine(QPointF(r.left(), r.top()), QPointF(r.left(), r.bottom()))
+        # the line: a step at each change
         path = QPainterPath(QPointF(r.left(), y(self.points[0][1])))
         for t, before, after in self.points:
             path.lineTo(QPointF(x(t), y(before)))
@@ -127,19 +189,36 @@ class SharesChart(QWidget):
         p.setPen(QPen(QColor("#4fc3f7"), 2))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
-        for t, before, after in self.points:         # the steps: up (dilution) red, down green
+        # every change marked: a dot on the line and a tick on the time axis (a tiny one shows too)
+        for t, before, after in self.points:
+            color = QColor("#ff6060" if after > before else "#3ccf3c")
+            pt = QPointF(x(t), y(after))
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#ff6060" if after > before else "#3ccf3c"))
-            p.drawEllipse(QPointF(x(t), y(after)), 3, 3)
+            p.setBrush(color)
+            p.drawEllipse(pt, 3.5, 3.5)
+            p.setPen(QPen(color, 2))
+            p.drawLine(QPointF(pt.x(), r.bottom() - 6), QPointF(pt.x(), r.bottom()))
+            pct = (after - before) / before * 100 if before else 0
+            tip = (f"{t:%Y-%m-%d %H:%M}: {'+' if after >= before else '-'}{abs(after - before):,} "
+                   f"({pct:+.2f}%): {short(before)} → {short(after)}")
+            self.marks.append((pt, pt.x(), tip))
         first, last = self.points[0][1], self.points[-1][2]
         pct = (last - first) / first * 100 if first else 0
-        p.setPen(QColor(INFO))
-        p.drawText(QRectF(r.left(), r.bottom() + 2, r.width() / 2, 14), Qt.AlignmentFlag.AlignLeft,
-                   f"{short(first)}  ({self.start:%m-%d})")
         p.setPen(QColor("#ff6060" if last > first else "#3ccf3c"))
-        p.drawText(QRectF(r.left() + r.width() / 2, r.bottom() + 2, r.width() / 2, 14), Qt.AlignmentFlag.AlignRight,
-                   f"{short(last)}  ({pct:+.1f}%)")
+        p.drawText(QRectF(self.rect()).adjusted(6, 2, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+                   f"{short(first)} → {short(last)} ({pct:+.1f}%), {len(self.points)} change"
+                   f"{'s' if len(self.points) != 1 else ''}")
         p.end()
+
+    def mouseMoveEvent(self, e):
+        """A mark's date and change, when hovered (its dot, or its tick on the time axis)."""
+        pos = e.position()
+        near = [(min((m[0] - pos).manhattanLength(), abs(m[1] - pos.x()) + 0.0), m[2]) for m in self.marks]
+        near = [n for n in near if n[0] <= 6]
+        if near:
+            QToolTip.showText(e.globalPosition().toPoint(), "\n".join(tip for _, tip in sorted(near)[:4]), self)
+        else:
+            QToolTip.hideText()
 
 
 class NewsPanel(QWidget):
@@ -198,10 +277,8 @@ class NewsPanel(QWidget):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setDefaultSectionSize(20)
         self.table.setStyleSheet("QTableWidget { background: #0d1014; gridline-color: #22282f; "
-                                 "border: 1px solid #2a3038; }")
-        pal = self.table.palette()
-        pal.setColor(QPalette.ColorRole.Highlight, QColor("#2a3a4c"))      # the selection: a dark blue
-        self.table.setPalette(pal)
+                                 "border: 1px solid #2a3038; } QTableWidget::item:selected { background: #1a2a3a; }")
+        # (the selection: a dark blue; its text keeps each cell's color: KeepColorDelegate)
         self.table.setItemDelegate(KeepColorDelegate(self.table))
         self.table.itemSelectionChanged.connect(self.show_selected)
         split.addWidget(self.table)
@@ -212,7 +289,7 @@ class NewsPanel(QWidget):
         right.addWidget(self.post)
         self.shares = SharesChart()
         right.addWidget(self.shares)
-        right.setSizes([140, 100])
+        right.setSizes([120, 150])
         split.addWidget(right)
         split.setSizes([600, 420])
         root.addWidget(split, 1)
