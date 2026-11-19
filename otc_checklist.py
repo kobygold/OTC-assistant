@@ -57,6 +57,18 @@ NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
 # Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
 TARGETS = {"profit": 25.0, "ratio": 3.0}
+MIN_SHARES, MIN_SHARES_PENNY = 10_000, 5_000     # the least amount of stocks (Pennies: an entry of 0.01 and up)
+
+
+def min_shares_check(shares, entry):
+    """(state, value, tip): the amount of stocks is at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
+    if not shares or not entry:
+        return UNKNOWN, NA, "No amount of stocks yet"
+    need = MIN_SHARES_PENNY if entry >= 0.01 else MIN_SHARES
+    why = "a Penny (0.01 and up)" if entry >= 0.01 else "under 0.01"
+    return (OK if shares >= need else BAD, f"{shares:,}",
+            f"At least {need:,} stocks (an entry of {fmt_price(entry)}: {why})"
+            + ("" if shares >= need else f": {need - shares:,} short"))
 # Once Buy ATM was pressed these show the plan sent, fixed, in a cell of their own. Entry and size
 # show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
 # the buy; the gains and losses worked out from them)
@@ -3661,6 +3673,7 @@ class ChecklistPanel(QWidget):
         }
 
         r["range"] = range_check(self.rows, self.range)
+        r["min_shares"] = min_shares_check(p["shares"], p["entry"])
         if not self.l2_live:
             for key in ("l2_live", "no_diluter", "buyers", "cushion"):
                 r[key] = (NOT_AVAILABLE if key == "no_diluter" else UNKNOWN, "", "No Level II for this ticker yet")
