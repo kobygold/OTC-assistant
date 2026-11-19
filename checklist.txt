@@ -26,10 +26,8 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - מחיר יציאה (יעד)
   info(exit): Trips: the Ask. Dubs and up: the Ask - 0.0001 (editable)
 - כמות מניות
-  info(shares): round(150 / entry price)
-- כמות מניות מינימלית
-  auto(min_shares): the amount of stocks is at least 10,000; Pennies (an entry of 0.01 and up): at least 5,000.
-        In this panel only (not a check of the ATM and Favorites tables)
+  info(shares): round(150 / entry price). A check beside it when it's at least 10,000 (Pennies, an entry of
+        0.01 and up: at least 5,000), else an X. In this panel only (not a check of the ATM and Favorites tables)
 - כרית ביטחון
   info(stop): going down the Level II bids from the highest, the price of the first bid where the bids so far
         add up to at least twice our amount of stocks (editable)

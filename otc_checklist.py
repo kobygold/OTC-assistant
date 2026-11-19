@@ -2770,8 +2770,8 @@ class ChecklistPanel(QWidget):
                     mark.mousePressEvent = lambda _e, it=item: self.toggle(it)
                     text.setCursor(Qt.CursorShape.PointingHandCursor)
                     text.mousePressEvent = lambda _e, it=item: self.toggle(it)
-                if item.kind == "info" and item.key not in TARGETS:
-                    mark.setFixedWidth(4)
+                if item.kind == "info" and item.key not in TARGETS and item.key != "shares":
+                    mark.setFixedWidth(4)       # (the amount of stocks: its minimum's mark)
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
                 elif item.kind == "info" and item.key == "shares":
@@ -3802,6 +3802,16 @@ class ChecklistPanel(QWidget):
                 manual[item.key] = ticks.get(item.key, ticks.get(item.text, EMPTY))
                 solvers[item.key] = item.text
         passed = total = 0
+
+        def shares_mark(mark, text):
+            """The amount of stocks' mark: at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
+            nonlocal passed, total
+            st, _v, why = results.get("min_shares", (UNKNOWN, "", ""))
+            set_mark(mark, st)
+            for w in (mark, text):
+                w.setToolTip(why)
+            total += 1
+            passed += st == OK
         for item, mark, text, value in self.widgets:
             if item.kind == "manual":
                 state, val, tip = ticks.get(item.key, ticks.get(item.text, EMPTY)), "", "Click: empty → ✔ → ✘ → empty"
@@ -3830,6 +3840,8 @@ class ChecklistPanel(QWidget):
                                   "shares": "New amount of stocks for the buy order: the position $ follows"}[item.key]
                                  + ". Then Update Buy at the top changes the order (after you approve it). "
                                    "Clear the boxes to keep the order as it is.")
+                if item.key == "shares":
+                    shares_mark(mark, text)
                 continue
             if isinstance(value, QLineEdit) and item.key == "shares":
                 # the trade's amount once sent (fixed, in the order colour), else the plan's: type to change
@@ -3844,6 +3856,7 @@ class ChecklistPanel(QWidget):
                     value.setText(f"{int(float(amount)):,}" if amount else "")
                 value.setToolTip(tip if order else f"{tip}. Type an amount (or + / -) to pin it for this ticker: "
                                                    f"the position $ then follows it.")
+                shares_mark(mark, text)
                 continue
             if isinstance(value, QLineEdit):
                 value.setPlaceholderText(val)
