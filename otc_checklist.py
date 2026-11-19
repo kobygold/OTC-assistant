@@ -126,8 +126,8 @@ PANEL_STYLE = """
 #checklist QToolButton { color: #c8c8c8; border: none; }
 #checklist QToolButton#cl_copy { border-radius: 3px; padding: 1px; }
 #checklist QToolButton#cl_copy:hover { background: #2c3136; }
-#checklist QToolButton#cl_new_plan { background: #1d2125; border: 1px solid #3a4046; border-radius: 3px;
-                                      padding: 1px 4px; font-size: 11px; color: #e0e0e0; }
+#checklist QToolButton#cl_new_plan { background: transparent; border: none; border-radius: 3px;
+                                      padding: 1px 2px; font-size: 11px; color: #e0e0e0; }
 #checklist QToolButton#cl_new_plan:hover { background: #2c3136; }
 #checklist QToolButton#cl_new_plan:pressed { background: #3a4046; }
 #checklist QToolButton#cl_step { background: #1d2125; border: 1px solid #3a4046; border-radius: 2px;
@@ -580,13 +580,18 @@ class CopyBox(QWidget):
         self.button.setSizePolicy(policy)
         self.button.hide()
 
+    def set_always(self, on):
+        """The button shown all the time (not only under the mouse)."""
+        self.always = on
+        self.button.setVisible(on and self.copyable)
+
     def enterEvent(self, e):
         text = self.shown_text().strip()
         self.button.setVisible(self.copyable and bool(text) and text != NA)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self.button.hide()
+        self.button.setVisible(getattr(self, "always", False) and self.copyable)
         super().leaveEvent(e)
 
 
@@ -3803,12 +3808,17 @@ class ChecklistPanel(QWidget):
                 lock.setText(fixed.get(key, NA))
                 lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
                     "" if key in ("entry", "size") else ". Beside it: now, from the live prices."))
-        for key in LOCKED + ("shares", "fee", "ticker"):     # no copy buttons by the live cells once sent
+        for key in LOCKED + ("shares", "fee"):     # no copy buttons by the live cells once sent
             if isinstance(self.boxes.get(key), CopyBox):
                 self.boxes[key].set_copyable(not order)
+        if isinstance(self.boxes.get("ticker"), CopyBox):   # an ATM trade: its plan's copy always there
+            self.boxes["ticker"].set_always(bool(order))
+            self.boxes["ticker"].button.setToolTip("Copy the trade plan (the order's)" if order else "Copy")
         # ...and the values without a fixed cell start where the fixed cells' values do
         for item, _, _, value in self.widgets:
-            if item.key in ("ticker", "shares", "fee") and isinstance(value, QLabel):
+            if item.key == "ticker" and isinstance(value, QLabel):
+                value.setIndent(1 if order else -1)     # (beside its copy button)
+            elif item.key in ("shares", "fee") and isinstance(value, QLabel):
                 value.setIndent(LOCKED_INDENT if order else -1)
             elif item.key in LOCKED and isinstance(value, QLabel) and not isinstance(value, QLineEdit):
                 value.setIndent(LIVE_INDENT if order else -1)     # in line with the live price boxes
