@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.5"
+APP_VERSION = "2.7.6"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1295,8 +1295,48 @@ class MainWindow(QMainWindow):
         self.level2.reloaders_changed.connect(self.checklist.set_reloaders)
         self.level2.market_reset.connect(self.on_market_reset)
         self.level2.check_hold()
-        root.addWidget(self.checklist_split, 1)
+        # On the left: the favorites, each with its status in short (a double-click opens it here); it
+        # closes to a thin strip, so the chart keeps the room
+        from otc_fav_side import FavSidePanel
+        self.fav_side_info = {}         # ticker -> (last close, the day's change, name): from the candles
+        self.fav_side = FavSidePanel(shown=bool(self.settings.get("fav_side_show", True)))
+        self.fav_side.open_ticker.connect(self.show_chart)
+        self.fav_side.shown_changed.connect(self.on_fav_side_shown)
+        self.level2.any_quote.connect(lambda t, q: in_session() and self.fav_side.set_quote(t, q))
+        self.level2.held_changed.connect(lambda held: held and self.fav_side.drop_live())
+        chart_row = QHBoxLayout()
+        chart_row.setContentsMargins(0, 0, 0, 0)
+        chart_row.setSpacing(0)
+        chart_row.addWidget(self.fav_side)
+        chart_row.addWidget(self.checklist_split, 1)
+        root.addLayout(chart_row, 1)
+        QTimer.singleShot(0, self.refresh_favorites_table)     # (the Favorites tab is made after this one)
         return tab
+
+    def on_fav_side_shown(self, shown):
+        self.settings["fav_side_show"] = shown
+        save_settings(self.settings)
+
+    def update_fav_side(self):
+        """The Chart tab's favorites list again: the favorites (by group), their day, ATM trade and checks."""
+        side = getattr(self, "fav_side", None)
+        if side is None:
+            return
+        rows = []
+        for t in sorted(self.favs, key=lambda t: (self.favs[t]["group"], t)):
+            fav = self.favs[t]
+            g = fav["group"]
+            close, change, name = self.fav_side_info.get(t, (None, None, ""))
+            atm_cell = QTableWidgetItem()
+            self.fill_fav_atm(atm_cell, self.fav_atm_trade(t))
+            steps = atm_cell.data(STEPS_ROLE)
+            c = self.atm_checks.get(t)
+            rows.append({"ticker": t, "group": g, "group_name": FAV_GROUPS[g][0], "icon": self.fav_icons[g],
+                         "name": name, "close": close, "change": change, "steps": steps,
+                         "atm_tip": atm_cell.toolTip() if steps else "",
+                         "checks": False if c is None else c["passed"], "total": len(checklist.SCAN_CHECKS),
+                         "notes": fav.get("notes", "")})
+        side.set_rows(rows)
 
     # ================================================== Screener tab ===
     def _build_screener_tab(self):
@@ -1777,6 +1817,7 @@ class MainWindow(QMainWindow):
             save_settings(self.settings)
         self.download_job = None
         self.set_running(False)
+        QTimer.singleShot(0, self.refresh_favorites_table)
         self.refresh_stats()
         self.refresh_screener_dates()
         if message.startswith(("Error", "Unexpected")):
@@ -2328,6 +2369,8 @@ class MainWindow(QMainWindow):
         self.apply_chart_zones(channel)
         self.reload_btn.setEnabled(True)
         self.chart_fav_ticker = ticker
+        if getattr(self, "fav_side", None) is not None:
+            self.fav_side.set_current(ticker)
         self.chart_name = name or ""
         self.update_chart_fav()
         self.show_news_button()             # the ticker's news (the News button's color and tooltip)
@@ -3816,6 +3859,7 @@ class MainWindow(QMainWindow):
         btn.setToolTip(f"{done:,} of {total:,} checked: click to stop")
 
     def on_probe_finished(self, text):
+        self.update_fav_side()
         btn, status, items = self.check_ui()
         btn.clear_progress()
         btn.setToolTip(self.check_tip("all the favorites" if self.check_from == "fav" else "the tickers shown"))
@@ -4353,6 +4397,7 @@ class MainWindow(QMainWindow):
             vol_avg = sum(x[5] or 0 for x in rows) / len(rows) if rows else None
             dollar_avg = sum(zones.dollar_price(x[3], x[2], x[4], x[6]) * (x[5] or 0)
                              for x in rows) / len(rows) if rows else None
+            self.fav_side_info[t] = (close, change, name)
             cells = [
                 self.fav_item(t),
                 plain(t),
@@ -4385,6 +4430,7 @@ class MainWindow(QMainWindow):
         room = tbl.viewport().width() - sum(tbl.columnWidth(c) for c in range(notes))
         tbl.setColumnWidth(notes, max(min(tbl.columnWidth(notes), room), 100))
         self.fav_filling = False
+        self.update_fav_side()
         counts = [f"group {g}: {n}" for g in FAV_GROUPS if (n := sum(f["group"] == g for f in self.favs.values()))]
         self.fav_status.setText(
             f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker, or press Enter, to open its chart."
@@ -4446,6 +4492,7 @@ class MainWindow(QMainWindow):
                     item.setData(Qt.ItemDataRole.UserRole, item.value)     # (the table re-sorts by it)
             except RuntimeError:        # (the table was filled again meanwhile)
                 pass
+        self.update_fav_side()
 
     def fav_row_ticker(self, row: int) -> str:
         item = self.fav_table.item(row, FAV_COLUMNS.index("Ticker"))
