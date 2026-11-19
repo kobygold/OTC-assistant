@@ -290,6 +290,7 @@ class Level2Panel(QWidget):
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
         self.prev_quote = {}                   # bid/ask price and size at the last quote update
+        self.quote_trend = {}                  # field -> +1/-1: its last change (kept until it changes again)
         # Hold at the close: outside the market's hours, the last close instead of the stream
         self.hold = bool(settings.get("hold_close", True))
         self.held = False                      # showing the close now
@@ -405,6 +406,7 @@ class Level2Panel(QWidget):
             self.prev = {"BID": {}, "ASK": {}}
             self.trend = {"BID": {}, "ASK": {}}
             self.prev_quote = {}
+            self.quote_trend = {}
             self.ticker, self.name = ticker, name
             self.shown_book = ([], [])
             self.live_q, self.live_book, self.close_info = {}, ([], []), None
@@ -513,6 +515,7 @@ class Level2Panel(QWidget):
         self.prev = {"BID": {}, "ASK": {}}
         self.trend = {"BID": {}, "ASK": {}}
         self.prev_quote = {}
+        self.quote_trend = {}
         if held:
             self.close_info = None
             self.market_reset.emit()
@@ -655,15 +658,15 @@ class Level2Panel(QWidget):
             c[key].setText(f"<span style='color:{LAST}; font-size:13pt; font-weight:bold'>{tos_price(price)}</span>"
                            if price is not None else "")
             c[f"{key}_change"].setText(self._change_text(change, close))
-        # Bid and ask price and size, each on its own: green when it went up at this update, red when
-        # it went down, yellow when it stayed
+        # Bid and ask price and size, each on its own: green after it went up, red after it went down
+        # (kept until that value changes again, as the book's sizes), yellow before any change
         def tone(field):
             if self.held:
                 return HELD
             now, before = q.get(field), self.prev_quote.get(field)
-            if now is None or before is None or now == before:
-                return LAST
-            return GREEN if now > before else RED
+            if now is not None and before is not None and now != before:
+                self.quote_trend[field] = 1 if now > before else -1
+            return {1: GREEN, -1: RED}.get(self.quote_trend.get(field), LAST)
         for key, side in (("bid", "BID"), ("ask", "ASK")):
             price = q.get(f"{side}_PRICE")
             size = q.get(f"{side}_SIZE")    # not known yet (or 0) while waiting for the book: N/A
