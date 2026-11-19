@@ -126,6 +126,10 @@ PANEL_STYLE = """
 #checklist QToolButton { color: #c8c8c8; border: none; }
 #checklist QToolButton#cl_copy { border-radius: 3px; padding: 1px; }
 #checklist QToolButton#cl_copy:hover { background: #2c3136; }
+#checklist QToolButton#cl_new_plan { background: #1d2125; border: 1px solid #3a4046; border-radius: 3px;
+                                      padding: 1px 4px; font-size: 11px; color: #e0e0e0; }
+#checklist QToolButton#cl_new_plan:hover { background: #2c3136; }
+#checklist QToolButton#cl_new_plan:pressed { background: #3a4046; }
 #checklist QToolButton#cl_step { background: #1d2125; border: 1px solid #3a4046; border-radius: 2px;
                                   padding: 0px; font-size: 11px; font-weight: bold; }
 #checklist QToolButton#cl_step:hover { background: #2c3136; }
@@ -2752,6 +2756,7 @@ class ChecklistPanel(QWidget):
         self.default_usd = lambda: default_position(self.settings)
         self.draft_tools = {}   # key -> the +/- and reset buttons of its new value's box (an open buy)
         self.boxes = {}         # key -> its live value's box
+        self.new_plan_btn = None    # by the ticker: an open buy's plan with the new values copied
         for name, items in sections:
             head = QLabel(name)
             head.setObjectName("cl_section")
@@ -2791,9 +2796,32 @@ class ChecklistPanel(QWidget):
                         value.setCursor(Qt.CursorShape.PointingHandCursor)
                         value.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
                         value.mousePressEvent = lambda e, b=box: b.copy() if e.button() == Qt.MouseButton.LeftButton else None
+                        # an open buy (state 2): above the new values' column, the plan with them copied
+                        self.boxes[item.key] = box
+                        group = QWidget()
+                        group.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+                        glay = QHBoxLayout(group)
+                        glay.setContentsMargins(0, 0, 0, 0)
+                        glay.setSpacing(2)
+                        box.setFixedWidth(LOCKED_W)         # (over the fixed cells' column)
+                        glay.addWidget(box)
+                        self.new_plan_btn = QToolButton()
+                        self.new_plan_btn.setObjectName("cl_new_plan")
+                        self.new_plan_btn.setIcon(copy_icon())
+                        self.new_plan_btn.setText("New plan")
+                        self.new_plan_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+                        self.new_plan_btn.setToolTip("Copy the trade plan with the new values (this column)")
+                        self.new_plan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                        self.new_plan_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                        self.new_plan_btn.clicked.connect(
+                            lambda: copy_value(self.new_plan_text(), self.new_plan_btn, as_is=True))
+                        self.new_plan_btn.hide()
+                        glay.addWidget(self.new_plan_btn)
+                        glay.addStretch()
+                        box = group
                     else:
                         box = CopyBox(value, shown)
-                    self.boxes[item.key] = box
+                        self.boxes[item.key] = box
                     if item.key in LOCKED or item.key in ORDER_EDITS:
                         # the fixed cell, the box, +/- and the pin close together, left to right
                         group = QWidget()
@@ -3709,6 +3737,19 @@ class ChecklistPanel(QWidget):
             usd = e.get("size") or e.get("usd") or usd
             fee = FEE_USD if e.get("fee") is None else e["fee"]
             p = plan(None, None, [], usd, e["entry"], e.get("exit"), e.get("safety-net"), fee, e.get("shares"))
+        return self.format_plan(p, usd)
+
+    def new_plan_text(self):
+        """An open buy (state 2): the plan with the new values, as the right column shows them now."""
+        e = self.drafting()
+        if not self.ticker or e is None:
+            return ""
+        self.evaluate()             # (the right column: the new entry and amount, the live exit and stop)
+        p, _ = self.last_plan
+        _, _, size, _ = self.draft_values(e)
+        return self.format_plan(p, size)
+
+    def format_plan(self, p, usd):
         def num(v, fmt):
             return NA if v is None else fmt(v)
         plain = lambda v: f"{v:,.2f}".replace(",", "").rstrip("0").rstrip(".")     # 150.00 -> 150, 23.50 -> 23.5
@@ -3750,6 +3791,8 @@ class ChecklistPanel(QWidget):
         self.update_trade_buttons()
         fixed = self.locked_texts(order) if order else {}
         changeable = self.can_change_order(order)
+        if self.new_plan_btn is not None:
+            self.new_plan_btn.setVisible(changeable)
         for key, oe in self.order_edits.items():
             oe.setVisible(changeable)
             if changeable and not oe.hasFocus() and not self.changing_order:
