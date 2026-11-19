@@ -38,7 +38,7 @@ COLUMNS = [
     ("Ticker", ""),
     ("Steps", "1 Buy order placed · 2 Got the stocks · 3 Sell order placed · 4 Sold. Green ✔: done. "
               "Yellow half: partly (some bought / some sold so far). Empty: not yet."),
-    ("State", "Step 1/4: Wait for Buy → 2/4: Sell the Shares (you own them) → 3/4: Wait for Sell → 4/4: Done!"
+    ("State", "Wait for Buy (step 1) → Sell the Shares (2: you own them) → Wait for Sell (3) → Done! (4)"
               " · Transaction Canceled: the buy was canceled before anything was bought"),
     ("Sent", "When the Buy ATM was sent"),
     ("Shares", "Step 1: the amount ordered. Steps 2-3: the amount owned. Step 4: the amount sold."),
@@ -314,7 +314,9 @@ class AtmTable(SortMixin, QTableWidget):
         steps = trade_steps(e)
         item = self.cell(row, COL["Steps"], "", tip=steps_tip(e, steps))
         item.setData(Qt.ItemDataRole.UserRole, steps)
-        self.cell(row, COL["State"], name + (" ..." if busy else ""), fg,
+        # the words only: the Steps column beside it shows which step it is
+        short = name.split(": ", 1)[1] if name.startswith("Step ") and ": " in name else name
+        self.cell(row, COL["State"], short + (" ..." if busy else ""), fg,
                   bold=True, bg=color, tip=e.get("note") or "")
         self.cell(row, COL["Sent"], (e.get("time") or "").replace("T", " ")[5:16], DIM,
                   tip=f"Sent {e.get('time', '')}" + (f"\nBought {e['bought_time']}" if e.get("bought_time") else "")
