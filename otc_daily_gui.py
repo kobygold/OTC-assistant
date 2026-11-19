@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.19"
+APP_VERSION = "2.7.20"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2363,10 +2363,8 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(f"https://www.otcmarkets.com/stock/{ticker}/news"))
 
     def chart_from_box(self, ticker: str):
-        """A ticker typed or picked in the Chart tab's box: shown, and added to the history if it has data."""
+        """A ticker typed or picked in the Chart tab's box: shown (and so in the history, if it has data)."""
         self.show_chart(ticker)
-        if self.chart_rows:
-            self.add_ticker_history(ticker)
 
     def add_ticker_history(self, ticker: str):
         ticker = ticker.strip().upper()
@@ -2408,6 +2406,8 @@ class MainWindow(QMainWindow):
         if rows and self.settings.get("chart_ticker") != ticker:
             self.settings["chart_ticker"] = ticker      # opened again at the next start
             save_settings(self.settings)
+        if rows:        # every chart opened, from anywhere: first in the box's Down-arrow history
+            self.add_ticker_history(ticker)
         risk = ticker_risk(ticker)
         if risk:
             self.chart.set_risk(self.risk_icons[risk[0]], risk[1])
