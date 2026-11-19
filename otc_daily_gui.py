@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.6"
+APP_VERSION = "2.7.7"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -496,6 +496,20 @@ class ProgressButton(QPushButton):
         p.setBrush(QColor("#1db31d"))   # and a solid line along the bottom
         p.drawRect(r.left(), r.bottom() - 2, int(r.width() * self.fraction), 3)
         p.end()
+
+
+class OnResize(QObject):
+    """Calls fn (soon after) whenever target is resized."""
+
+    def __init__(self, target, fn):
+        super().__init__(target)
+        self.fn = fn
+        target.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self.fn)
+        return False
 
 
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1     # an ATM cell's 4 steps ([DONE / HALF / TODO] x 4)
@@ -1286,6 +1300,15 @@ class MainWindow(QMainWindow):
         self.checklist_split.addWidget(self.checklist)
         self.checklist_split.setStretchFactor(0, 1)
         self.checklist_split.setSizes(self.settings.get("checklist_split", [1000, 320]))
+        # The checklist keeps the width last dragged to: a moment's squeeze (the window or the chart's side
+        # wider for a while) doesn't leave it narrow, as the splitter gives the room back to the chart only
+        try:
+            self.checklist_want = max(int(self.settings.get("checklist_split", [1000, 320])[1]), 200)
+        except (TypeError, ValueError, IndexError):
+            self.checklist_want = 320
+        self.checklist_split.splitterMoved.connect(
+            lambda _pos, _i: setattr(self, "checklist_want", self.checklist.width()))
+        self.checklist_keeper = OnResize(self.checklist_split, self.keep_checklist_width)
         self.checklist_btn.toggled.connect(self.on_checklist_toggled)
         self.level2.live_quote.connect(self.checklist.set_quote)
         self.level2.book_changed.connect(self.checklist.set_book)
@@ -1312,6 +1335,19 @@ class MainWindow(QMainWindow):
         root.addLayout(chart_row, 1)
         QTimer.singleShot(0, self.refresh_favorites_table)     # (the Favorites tab is made after this one)
         return tab
+
+    def keep_checklist_width(self):
+        """The checklist back to its width (checklist_want) when it was squeezed and the chart has room."""
+        if not self.checklist.isVisible():
+            return
+        have = self.checklist.width()
+        if have >= self.checklist_want - 2:
+            return
+        total = sum(self.checklist_split.sizes())
+        room = total - max(self.chart_split.minimumSizeHint().width(), 300)
+        new = min(self.checklist_want, room)
+        if new > have:
+            self.checklist_split.setSizes([total - new, new])
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
@@ -2033,6 +2069,7 @@ class MainWindow(QMainWindow):
         self.checklist.setVisible(checked)
         if checked:
             self.update_checklist()
+            QTimer.singleShot(0, self.keep_checklist_width)
 
     def update_checklist(self):
         """The checklist's candle part: the last market days' volume and the bounce range, looking
@@ -4575,7 +4612,8 @@ class MainWindow(QMainWindow):
             self.settings["level2_split"] = self.chart_split.sizes()
             save_settings(self.settings)
         if self.checklist_btn.isChecked():   # the chart / checklist split
-            self.settings["checklist_split"] = self.checklist_split.sizes()
+            sizes = self.checklist_split.sizes()      # (the width wanted, if squeezed now)
+            self.settings["checklist_split"] = [sum(sizes) - self.checklist_want, self.checklist_want]                 if sizes[1] < self.checklist_want else sizes
             save_settings(self.settings)
         if all(self.schwab_split.sizes()):  # the Monitor tab's three lists (once it was shown)
             self.settings["schwab_sizes"] = self.schwab_split.sizes()

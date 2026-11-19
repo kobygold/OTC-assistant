@@ -226,6 +226,34 @@ class ServerFeed(QObject):
                 self.status.emit(msg["status"])
 
 
+class ElidedLabel(QLabel):
+    """A label of plain text that ends in "..." when its room is short (the full text on hover): it never
+    makes the window wider than the screen."""
+
+    full = ""
+
+    def setText(self, text):
+        self.full = text or ""
+        self.setToolTip(self.full)
+        self.fit()
+        self.updateGeometry()
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self.full) + 24, super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(40, super().minimumSizeHint().height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.fit()
+
+    def fit(self):
+        room = max(self.contentsRect().width() - 20, 0)        # (the style's padding)
+        super().setText(self.fontMetrics().elidedText(self.full, Qt.TextElideMode.ElideRight, room)
+                        if self.fontMetrics().horizontalAdvance(self.full) > room else self.full)
+
+
 class Level2Panel(QWidget):
     live_quote = pyqtSignal(str, dict)            # ticker, Level 1 fields: for the chart's price and volume tags
     book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown
@@ -299,6 +327,8 @@ class Level2Panel(QWidget):
             lb.setTextFormat(Qt.TextFormat.RichText)
             lb.setToolTip(tips.get(key, ""))
             self.cells[key] = lb
+            if key == "name":           # a long name: cut when the room is short (not the window wider)
+                lb.setMinimumWidth(30)
             head.addWidget(lb)
             # A thin light gray line after each group, as in thinkorswim. A widget of its own: the
             # Windows 11 style doesn't draw borders on labels.
@@ -313,7 +343,7 @@ class Level2Panel(QWidget):
         self.login_btn.clicked.connect(self.login)
         self.login_btn.hide()
         head.addWidget(self.login_btn)
-        self.status_label = QLabel()
+        self.status_label = ElidedLabel()      # (shortened when the room is short)
         self.status_label.setObjectName("l2status")
         head.addWidget(self.status_label)
         root.addWidget(bar)
