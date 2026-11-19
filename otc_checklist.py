@@ -3702,6 +3702,11 @@ class ChecklistPanel(QWidget):
             return ""
         self.evaluate()
         p, usd = self.last_plan
+        e = self.order()
+        if e and e.get("entry"):        # an ATM trade: its plan (the fixed cells), not the panel's live one
+            usd = e.get("size") or e.get("usd") or usd
+            fee = FEE_USD if e.get("fee") is None else e["fee"]
+            p = plan(None, None, [], usd, e["entry"], e.get("exit"), e.get("safety-net"), fee, e.get("shares"))
         def num(v, fmt):
             return NA if v is None else fmt(v)
         plain = lambda v: f"{v:,.2f}".replace(",", "").rstrip("0").rstrip(".")     # 150.00 -> 150, 23.50 -> 23.5
