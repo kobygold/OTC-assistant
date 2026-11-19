@@ -3897,9 +3897,18 @@ class ChecklistPanel(QWidget):
                 value.setToolTip(tip)
                 if item.key == "shares":
                     value.setStyleSheet(f"color: {ORDER_COLOR};" if order else "")
-                if item.key in ("profit", "loss", "profit_usd", "loss_usd"):
+                if item.key in ("profit", "profit_usd", "loss_usd"):
                     value.setStyleSheet("" if val in ("", NA) else
                                         f"color: {MARKS[OK if val.startswith('+') else BAD][1]};")
+                elif item.key in ("loss", "ratio"):
+                    # the loss: green when the profit is at least 3x it, else red; the ratio: green from 1:3
+                    # (the ratio's ✔); both by the ratio's check, so they always agree
+                    plan_now = self.last_plan[0]
+                    good = target_state("ratio", plan_now["ratio"])[0]
+                    if plan_now["ratio"] is None and plan_now["loss"] == 0 and (plan_now["profit"] or 0) > 0:
+                        good = OK           # (no loss at all, and a profit)
+                    value.setStyleSheet("" if val in ("", NA) or good == UNKNOWN else
+                                        f"color: {MARKS[OK if good == OK else BAD][1]};")
                 if item.key not in TARGETS:
                     continue
                 # ✔ once it reaches its target, else ✘ (? while unknown)
