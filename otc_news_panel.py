@@ -14,8 +14,9 @@ import html
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette, QPen
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                             QStyledItemDelegate,
                              QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 import otc_news_db
@@ -67,6 +68,17 @@ def post_html(d):
     summary = html.escape(d.get("summary") or "").replace("\n", "<br>")
     return ("<div style='font-size:10pt'>" + "<br>".join(lines) + "</div>"
             + (f"<hr><div style='color:{GOLD}'>{summary}</div>" if summary else ""))
+
+
+class KeepColorDelegate(QStyledItemDelegate):
+    """A selected row keeps its cells' own colors (a warning stays red), on the selection's background."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        fg = index.data(Qt.ItemDataRole.ForegroundRole)
+        if fg is not None:
+            color = fg.color() if isinstance(fg, QBrush) else QColor(fg)
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 
 
 class SharesChart(QWidget):
@@ -186,7 +198,11 @@ class NewsPanel(QWidget):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setDefaultSectionSize(20)
         self.table.setStyleSheet("QTableWidget { background: #0d1014; gridline-color: #22282f; "
-                                 "border: 1px solid #2a3038; } QTableWidget::item:selected { background: #2a3a4c; }")
+                                 "border: 1px solid #2a3038; }")
+        pal = self.table.palette()
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#2a3a4c"))      # the selection: a dark blue
+        self.table.setPalette(pal)
+        self.table.setItemDelegate(KeepColorDelegate(self.table))
         self.table.itemSelectionChanged.connect(self.show_selected)
         split.addWidget(self.table)
         right = QSplitter(Qt.Orientation.Vertical)
@@ -251,7 +267,7 @@ class NewsPanel(QWidget):
             kind, text = line_of(d, prefer)
             warn = d.get("level") == "warn"
             color = QColor(WARN if warn else INFO)
-            when = str(d.get("time", "")).replace("T", " ")[2:16]
+            when = str(d.get("time", "")).replace("T", " ")[:16]          # yyyy-mm-dd HH:MM
             cells = [when, ("⚠️ " if warn else "📰 ") + kind, text]
             for col, value in enumerate(cells):
                 item = QTableWidgetItem(value)
