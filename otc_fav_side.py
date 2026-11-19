@@ -1,6 +1,6 @@
 """The Chart tab's Mini Favorites side panel: a narrow list on the chart's left, every favorite with its status in
-short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a double-click
-opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
+short (its group's star, the day's change, its ATM trade's 4 steps, its Check L1/L2 result); a click (or
+Up / Down) opens it on the chart. It closes to a thin strip on the left edge (a click opens it again)."""
 from PyQt6.QtCore import QEvent, QPoint, QTimer, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QSizePolicy, QSplitter, QStyle,
@@ -18,6 +18,7 @@ R, GAP = 5, 12                          # the small steps' circles
 PANEL_W = 170                           # the panel's width (open)
 COLUMNS = ["Ticker", "ATM", "✓"]
 ATM_COL, CHECKS_COL = 1, 2
+KEY_OPEN_MS = 150                       # Up / Down held: the chart opens once the keys stop this long
 NOTES_SAVE_MS = 800                     # the notes saved this long after the last key (and on leaving the box)
 STAR_W = 24                             # the star's part of the Ticker cell (a click there: the group menu)
 
@@ -71,7 +72,7 @@ class Strip(QToolButton):
 
 class FavSidePanel(QWidget):
     """rows: [{"ticker", "group", "icon", "close", "change", "steps", "atm_tip", "checks", "total", "notes"}];
-    open_ticker(ticker): a row double-clicked (or Enter); shown_changed(open): closed / opened;
+    open_ticker(ticker): a row clicked (or Up / Down, Enter); shown_changed(open): closed / opened;
     notes_changed(ticker, text): the chart's favorite's notes typed (below the list); split_changed([list, notes])."""
 
     open_ticker = pyqtSignal(str)
@@ -137,12 +138,17 @@ class FavSidePanel(QWidget):
         for col, w in ((ATM_COL, 2 * R + 3 * GAP + 8), (CHECKS_COL, 30)):
             h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             t.setColumnWidth(col, w)
-        t.cellDoubleClicked.connect(lambda r, _c: self.open_row(r))
         # the star: a click opens the favorites' group menu (the color, or out of the favorites); so does a
         # right-click anywhere on the row
         self.press_x = None             # where the last click was pressed, in the table (the star or not)
         t.viewport().installEventFilter(self)
-        t.cellClicked.connect(self.star_clicked)
+        t.installEventFilter(self)      # Up / Down: the next favorite on the chart
+        t.cellClicked.connect(self.row_clicked)
+        self.key_ticker = ""            # Up / Down: the favorite to open once the keys stop
+        self.key_timer = QTimer(self)
+        self.key_timer.setSingleShot(True)
+        self.key_timer.setInterval(KEY_OPEN_MS)
+        self.key_timer.timeout.connect(lambda: self.key_ticker and self.open_ticker.emit(self.key_ticker))
         t.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         t.customContextMenuRequested.connect(self.row_menu)
         # the list over the chart's favorite's notes (about 20% of the height; the line between them drags)
@@ -204,6 +210,10 @@ class FavSidePanel(QWidget):
     def eventFilter(self, obj, e):
         if obj is self.table.viewport() and e.type() == QEvent.Type.MouseButtonPress:
             self.press_x = e.position().x()
+        elif obj is getattr(self, "table", None) and e.type() == QEvent.Type.KeyPress \
+                and e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self.step(-1 if e.key() == Qt.Key.Key_Up else 1)
+            return True
         elif obj is getattr(self, "notes", None) and e.type() == QEvent.Type.FocusOut:     # (made later)
             self.save_notes()           # (left the box: saved now)
         return False
@@ -247,12 +257,12 @@ class FavSidePanel(QWidget):
         item = self.table.item(row, 0)
         return item.data(Qt.ItemDataRole.UserRole) if item is not None else ""
 
-    def star_clicked(self, row, col):
-        """A click on a row's star (the left of its Ticker cell): the group menu under it."""
-        if col != 0:
-            return
+    def row_clicked(self, row, col):
+        """A click: on a row's star (the left of its Ticker cell) the group menu under it, else its chart."""
         t = self.table
-        if self.press_x is None or self.press_x - t.columnViewportPosition(0) > STAR_W:
+        if col != 0 or self.press_x is None or self.press_x - t.columnViewportPosition(0) > STAR_W:
+            self.key_timer.stop()
+            self.open_row(row)
             return
         rect = t.visualItemRect(t.item(row, 0))
         ticker = self.ticker_at(row)
@@ -313,6 +323,25 @@ class FavSidePanel(QWidget):
         if n:
             self.title.setText(f"★ Mini Favorites ({shown} of {n})" if text else f"★ Mini Favorites ({n})")
 
+    def step(self, direction):
+        """Up / Down: the favorite above / below the chart's one (of those shown) on the chart, highlighted at once
+        and opened once the keys stop (held: not every one on the way)."""
+        t = self.table
+        shown = [i for i in range(t.rowCount()) if not t.isRowHidden(i)]
+        if not shown:
+            return
+        at = self.row_of(self.key_ticker if self.key_timer.isActive() else self.current)
+        if at in shown:
+            new = shown[max(0, min(len(shown) - 1, shown.index(at) + direction))]
+        else:
+            new = shown[0] if direction > 0 else shown[-1]
+        ticker = self.ticker_at(new)
+        if not ticker or (ticker == self.current and not self.key_timer.isActive()):
+            return
+        self.key_ticker = ticker
+        self.set_current(ticker)        # (the app's chart then says the same)
+        self.key_timer.start()
+
     def open_first(self):
         """Enter in the filter: the first favorite shown opens on the chart."""
         for i in range(self.table.rowCount()):
@@ -326,6 +355,9 @@ class FavSidePanel(QWidget):
             return
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.table.currentRow() >= 0:
             self.open_row(self.table.currentRow())
+            return
+        if e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):     # (in the filter box too)
+            self.step(-1 if e.key() == Qt.Key.Key_Up else 1)
             return
         super().keyPressEvent(e)
 
@@ -359,7 +391,7 @@ class FavSidePanel(QWidget):
         lines.append(r.get("atm_tip") or "No ATM trade")
         if r.get("notes"):
             lines.append(f"Notes: {r['notes']}")
-        lines.append("Double-click: open its chart · The star (or a right-click): its color, or out of the favorites")
+        lines.append("Click (or Up / Down): open its chart · The star (or a right-click): its color, or out of the favorites")
         tip = "\n".join(lines)
         for c in range(len(COLUMNS)):
             t.item(i, c).setToolTip(tip)

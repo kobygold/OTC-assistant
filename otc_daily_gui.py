@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.34"
+APP_VERSION = "2.7.35"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -4129,7 +4129,15 @@ class MainWindow(QMainWindow):
             if not ok:
                 btn.clear_progress()
                 status.setText(message or "Stopped.")
+                self.log(f"Check L1/L2 stopped while reading the candles: {message or 'stopped'}")
                 return
+            # in the Download tab's log: its start, a wait for Level II room, its end
+            what = "favorites" if source == "fav" else "ATM Scanner tickers"
+            self.check_run = {"start": time.time(), "waited": False}
+            self.log(f"Check L1/L2 started" + (f" (auto, before the close; computer #{self.auto_place() + 1})"
+                                               if auto else "")
+                     + f": {len(tickers):,} {what}, " + ("at the last close (from the record)" if held else
+                                                       f"live (about {-(-len(tickers) // 150) * 10} s)"))
             self.atm_check_prep = prep
             self.atm_check_info = (days, period, usd)
             # no Level II room (another computer's check): waits for it; the one before the close until the close
@@ -4203,6 +4211,11 @@ class MainWindow(QMainWindow):
                 pass
 
     def on_probe_progress(self, done, total, _text):
+        run = getattr(self, "check_run", None)
+        if run is not None and "waiting for Level II room" in _text and not run["waited"]:
+            run["waited"] = True        # (once a run)
+            self.log(f"Check L1/L2: {done:,} of {total:,} done, waiting for Level II room (another computer's "
+                     f"check, the charts...)")
         """The check's progress: on its button (a fill and the %), the count on hover."""
         btn = self.check_ui()[0]
         btn.set_progress(done, total)
@@ -4220,6 +4233,9 @@ class MainWindow(QMainWindow):
             self.apply_atm_filters()
         status.setText(f"{text}   {good:,} pass all {len(checklist.SCAN_CHECKS)} checks. "
                        f"Hover over a Checks cell for the details.")
+        run, self.check_run = getattr(self, "check_run", None), None
+        took = f" in {int(time.time() - run['start']) // 60}:{int(time.time() - run['start']) % 60:02d}" if run else ""
+        self.log(f"Check L1/L2 ended{took}: {text} {good:,} pass all {len(checklist.SCAN_CHECKS)} checks.")
 
     def export_atm(self):
         if self.atm_table.rowCount() == 0:
