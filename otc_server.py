@@ -510,6 +510,8 @@ class Server:
                     self.on_news_login(msg.get("login"))
                 elif kind == "news_backfill":
                     self.on_news_backfill(msg.get("months"))
+                elif kind == "news_refresh":
+                    self.on_news_refresh()
                 elif kind == "login":
                     if self.leader:
                         await self.on_login(msg.get("token"))
@@ -596,6 +598,8 @@ class Server:
                     self.on_news_login(msg.get("login"))
                 elif kind == "news_backfill":
                     self.on_news_backfill(msg.get("months"))
+                elif kind == "news_refresh":
+                    self.on_news_refresh()
                 elif kind == "news_get":
                     self.serve_news(conn, msg)
                 elif kind == "history_index":
@@ -868,6 +872,18 @@ class Server:
     def news_updated(self):
         """(main server) The history grew (read back): the clients ask for what they miss."""
         self.to_peers({"type": "news_updated"})
+
+    def on_news_refresh(self):
+        """An app opened its News tab: the main server's reader reads now."""
+        if not self.leader:
+            self.up_send({"type": "news_refresh"})
+        elif self.news is not None:
+            self.news.refresh()
+
+    def news_progress(self, msg):
+        """(main server) The reading's progress: to its apps and the clients' (they pass it on)."""
+        self.broadcast(msg)
+        self.to_peers(msg)
 
     def on_news_backfill(self, months):
         """Read back the channel's months (Settings): by the main server's reader."""
@@ -1393,6 +1409,8 @@ class Server:
             self.take_news_part(m)
         elif kind == "news_updated":
             self.ask_news()
+        elif kind == "news_reading":            # the main server's reading: to this computer's apps
+            self.broadcast(m)
         elif kind in ("orders", "positions"):
             if m.get("data") is not None:
                 self.last_reads[(kind, m.get("account"))] = m

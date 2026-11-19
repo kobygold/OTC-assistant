@@ -67,7 +67,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.4"
+APP_VERSION = "2.7.5"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -798,6 +798,8 @@ class MainWindow(QMainWindow):
         self.computers = ComputersPanel(self.settings, save_settings, self.server, self.shared)
         self.computers.summary.connect(self.show_cluster_summary)
         self.server.message.connect(self.on_server_token)
+        self.server.message.connect(lambda msg: msg.get("type") == "news_reading" and hasattr(self, "news_panel")
+                                    and self.news_panel.show_reading(msg))
         self.computers.banner.connect(self.show_banner)
         self.computers.history.connect(self.show_history)
         if self.checklist.trader is not None:
@@ -2239,6 +2241,14 @@ class MainWindow(QMainWindow):
         self.bottom.setVisible(news or on)
         if news:
             self.news_panel.set_ticker(self.chart.ticker or "")
+            self.ask_news_now()
+
+    def ask_news_now(self):
+        """The News tab opened: the main server reads the channel now (at most every 5 seconds)."""
+        if time.time() - getattr(self, "news_asked", 0) < 5:
+            return
+        self.news_asked = time.time()
+        self.server.send({"type": "news_refresh"})
 
     def show_news_count(self, n, warn):
         """The News tab: the last 7 days' count, orange (red with a warning)."""

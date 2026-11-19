@@ -234,7 +234,9 @@ class UserClient:
 # ================================================================ the reader (main server) ===
 NEWS_PREFIX = "news/"               # shared data: news/<ticker>/<post id> = the post that matters, understood
 NEWS_STATE = "telegram/news_state"  # {"last_id"}: the last post read (a new main server goes on from it)
-POLL_S = 15                         # the channel read this often
+POLL_SESSION_S = 30                 # the channel read this often in the US market's hours,
+POLL_OTHER_S = 600                  # ...and this often the rest of the time (nights, weekends: few posts);
+                                    # always at once when an app opens its News tab (refresh)
 FIRST_POSTS = 50                    # the first time ever: the last ones only
 KEEP_DAYS = 3                       # the news kept this long in the shared data (the live notices);
                                     # the history (months) in news.db (otc_news_db)
@@ -251,7 +253,7 @@ def login_ok(login):
 
 
 class NewsReader:
-    """(main server) Reads the news channel with the user's login every POLL_S: each post that matters
+    """(main server) Reads the news channel with the user's login every POLL_SESSION_S in the US market's hours, POLL_OTHER_S else, and at once when an app opens its News tab: each post that matters
     (otc_news_parse) goes to the shared data, and the account phones whose stocks it's about are told
     (a favorite, an ATM trade, an alert)."""
 
@@ -262,6 +264,7 @@ class NewsReader:
         self.tasks = []
         self.pruned = 0.0
         self.backfilling = None         # the task reading back months, while it runs
+        self.wake = asyncio.Event()     # set: read now (an app opened its News tab)
 
     def start(self):
         self.tasks = [asyncio.create_task(self.run())]
@@ -313,7 +316,11 @@ class NewsReader:
                             self.server.news_add(it["data"])
                 await self.poll()
                 self.prune()
-                await asyncio.sleep(POLL_S)
+                try:                    # until the next round, or an app's "read now"
+                    await asyncio.wait_for(self.wake.wait(), timeout=self.interval())
+                except asyncio.TimeoutError:
+                    pass
+                self.wake.clear()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -327,22 +334,42 @@ class NewsReader:
                 await self.disconnect()
                 await asyncio.sleep(RETRY_S)
 
+    @staticmethod
+    def interval():
+        """The time to the next round: POLL_SESSION_S in the US market's hours, else POLL_OTHER_S."""
+        from otc_recorder import in_session
+        return POLL_SESSION_S if in_session() else POLL_OTHER_S
+
+    def refresh(self):
+        """Read now (an app opened its News tab): the round's wait ends."""
+        self.wake.set()
+
+    def progress(self, reading, read):
+        """The reading's progress, to every app (their News panel): {"reading", "read", "at"}."""
+        from datetime import datetime
+        self.server.news_progress({"type": "news_reading", "reading": reading, "read": read,
+                                   "at": datetime.now().isoformat(timespec="seconds")})
+
     async def poll(self):
-        """The posts since the last one read, oldest first."""
+        """The posts since the last one read, oldest first; the progress to the apps."""
         import otc_news_parse as parse
         last = int((self.item(NEWS_STATE) or {}).get("last_id") or 0)
         posts = []
+        self.progress(True, 0)
         # every post since the last one read (however many: no computer read for a while), a page of 100
         # at a time; the very first time ever: the last FIRST_POSTS only
         async for m in self.client.iter_messages(self.entity, min_id=last, limit=None if last else FIRST_POSTS,
                                                  wait_time=BACKFILL_WAIT_S if last else None):
             posts.append(m)
-        if not posts:
-            return
+            if len(posts) % 100 == 0:
+                self.progress(True, len(posts))
         for m in sorted(posts, key=lambda m: m.id):
             # the very first read (the last FIRST_POSTS) only kept: the phones aren't told old news
             self.take(m.id, getattr(m, "date", None), m.message or "", parse, tell=bool(last))
-        self.server.put_shared(NEWS_STATE, {"last_id": max(m.id for m in posts)})
+        if posts:
+            self.server.put_shared(NEWS_STATE, {"last_id": max(m.id for m in posts)})
+            self.server.news_updated()          # (the other computers: the raw posts too)
+        self.progress(False, len(posts))
 
     def take(self, post_id, when, text, parse, tell=True, shared=True):
         """A post read: kept as it came (every post: news.db's posts), and when it matters (news.db's news):

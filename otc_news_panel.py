@@ -240,6 +240,10 @@ class NewsPanel(QWidget):
         self.summary = QLabel("")
         self.summary.setStyleSheet(f"color: {GOLD}; font-weight: bold;")
         top.addWidget(self.summary, 1)
+        self.reading = QLabel("")           # the main server's reading of the channel
+        self.reading.setStyleSheet(f"color: {DIM};")
+        top.addWidget(self.reading)
+        top.addSpacing(8)
 
         def segment(names, pick, start):
             group = QButtonGroup(self)
@@ -309,6 +313,21 @@ class NewsPanel(QWidget):
     def set_days(self, days):
         self.days = days
         self.refresh()
+
+    def show_reading(self, msg):
+        """The main server's reading: "Reading the latest news... 300 posts", then "Up to date, checked
+        14:32:05" (the panel shows what came)."""
+        at = str(msg.get("at") or "")[11:19]
+        if msg.get("reading"):
+            n = msg.get("read") or 0
+            self.reading.setText("⏳ Reading the latest news..." + (f" {n:,} posts" if n else ""))
+            self.reading.setStyleSheet(f"color: {GOLD};")
+        else:
+            n = msg.get("read") or 0
+            self.reading.setText(f"✓ Up to date · checked {at}" + (f" ({n:,} new)" if n else ""))
+            self.reading.setStyleSheet(f"color: {DIM};")
+            if n:
+                self.refresh()
 
     def open_web(self):
         if self.ticker:
