@@ -27,6 +27,7 @@ import math
 import sys
 import threading
 import html
+import secrets
 import socket
 import time
 import traceback
@@ -67,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.28"
+APP_VERSION = "2.7.29"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -512,6 +513,7 @@ class OnResize(QObject):
         return False
 
 
+ORDER_ALERT_STEP = 0.0001     # a buy made / changed: an alert on Bid >= its price + this; a sell: Ask <= price - this
 LIVE_CHECK_MS = 2000        # the favorites' live checks: those whose market changed, this often
 
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1     # an ATM cell's 4 steps ([DONE / HALF / TODO] x 4)
@@ -820,6 +822,7 @@ class MainWindow(QMainWindow):
         self.computers.history.connect(self.show_history)
         if self.checklist.trader is not None:
             self.checklist.trader.blocked = self.computers.block_reason
+            self.checklist.trader.order_set.connect(self.order_alert)     # (the alert by each order)
             # the orders and positions: read by the main server, once for all my computers
             self.checklist.trader.use_server(self.server)
             self.checklist.atm.decides = self.computers.decides
@@ -4331,6 +4334,30 @@ class MainWindow(QMainWindow):
              "by": socket.gethostname()}
         self.put_alert(a)
         self.notify(f"Alert made: {ticker} {otc_alerts.describe(a)}", 8000)
+
+    def order_alert(self, ticker, side, price, account):
+        """A buy made or changed: an alert on Bid >= its price + 0.0001; a sell: on Ask <= its price - 0.0001.
+        The ticker's earlier one of that side (still waiting) is replaced by it."""
+        if not self.shared_imported or not ticker or not price:
+            return
+        account = account or self.shared_account()
+        buy = side == "BUY"
+        value = round(price + ORDER_ALERT_STEP if buy else price - ORDER_ALERT_STEP, 6)
+        if value <= 0:
+            return
+        auto = side.lower()
+        prefix = f"{otc_alerts.PREFIX}{account}/"
+        for a in self.shared.get(prefix).values():
+            if (isinstance(a, dict) and a.get("ticker") == ticker and a.get("auto") == auto
+                    and a.get("state") == "active"):
+                self.shared.put(prefix + a["id"], None)
+        now = datetime.now().isoformat(timespec="seconds")
+        a = {"id": f"{ticker}-{auto}-{int(time.time() * 1000)}-{secrets.token_hex(2)}", "ticker": ticker, "field": "bid" if buy else "ask",
+             "cond": "ge" if buy else "le", "value": value, "state": "active", "created": now,
+             "by": socket.gethostname(), "auto": auto, "note": f"By the {auto} order at {fmt_price(price)}"}
+        self.shared.put(prefix + a["id"], a)
+        self.alerts_refresh()
+        self.notify(f"Alert made: {ticker} {otc_alerts.describe(a)} (the {auto} order at {fmt_price(price)})", 8000)
 
     def edit_alert(self, alert_id):
         a = self.alert(alert_id)

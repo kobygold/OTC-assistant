@@ -774,8 +774,10 @@ class SchwabTrader(QObject):
     placed(key, side, order id or None, message), checked(key, side, order or None, message),
     canceled(key, side, error or ""), quotes({ticker: Schwab quote}),
     orders(account tail, [order_info()] or None, error), replaced(key, side, new order id or None,
-    price, error or ""). side is "BUY" or "SELL"."""
+    price, error or ""). side is "BUY" or "SELL". order_set(ticker, side, price, account tail): a limit order
+    Schwab took (made or changed), whoever sent it (the app's alert by it)."""
     placed = pyqtSignal(str, str, object, str)
+    order_set = pyqtSignal(str, str, float, str)
     checked = pyqtSignal(str, str, object, str)
     canceled = pyqtSignal(str, str, str)
     quotes = pyqtSignal(object)
@@ -829,6 +831,14 @@ class SchwabTrader(QObject):
         text = f"Not sent: {why}"
         QTimer.singleShot(0, lambda: emit(text))
         return True
+
+    def _taken(self, ticker, side, price, account_tail):
+        """A limit order made or changed: order_set (to the GUI thread: a queued signal)."""
+        try:
+            if price:
+                self.order_set.emit(ticker, side, float(price), str(account_tail or self.session.chosen_tail() or ""))
+        except Exception:
+            pass                    # (an alert's trigger: never the order's answer)
 
     def _start(self, target, *args):
         threading.Thread(target=target, args=args, name="order", daemon=True).start()
@@ -911,6 +921,8 @@ class SchwabTrader(QObject):
                     order_id = Utils(client, account).extract_order_id(r)
                 except ValueError:
                     order_id = None
+            if order_type != "MARKET":
+                self._taken(ticker, side, price, account_tail)
             self.sent.emit(key, order_id, "")
         except Exception as e:
             self.sent.emit(key, None, f"{type(e).__name__}: {e}")
@@ -941,6 +953,7 @@ class SchwabTrader(QObject):
                     order_id = Utils(client, account).extract_order_id(r)
                 except ValueError:
                     order_id = None
+            self._taken(ticker, side, price, account_tail)
             self.placed.emit(key, side, order_id,
                              "" if order_id else "Schwab took the order but didn't say its number. "
                                                  "Check it in Schwab; the app can't follow it.")
@@ -1001,6 +1014,7 @@ class SchwabTrader(QObject):
                     new_id = Utils(client, account).extract_order_id(r)
                 except ValueError:
                     new_id = None       # found among the account's orders at the next check
+            self._taken(ticker, side, price, account_tail)
             self.replaced.emit(key, side, new_id, price, "")
         except Exception as e:
             self.replaced.emit(key, side, None, price, f"{type(e).__name__}: {e}")
