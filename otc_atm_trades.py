@@ -47,10 +47,10 @@ COLUMNS = [
     ("Exit plan", "The exit price planned at the buy"),
     ("Safety Net", "The safety net (stop) planned at the buy"),
     ("Fee", "Schwab's fee for each buy and each sell, read at the buy"),
-    ("Bid then", "The bid when the buy was sent (price x size). Tooltip: the Level II then."),
-    ("Ask then", "The ask when the buy was sent (price x size). Tooltip: the Level II then."),
-    ("Bid now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
-    ("Ask now", "Green: higher than then. Red: lower. Hover: Level II now (bids and asks)."),
+    ("Bid then", "The bid when the buy was sent. Hover: its size, and the Level II then."),
+    ("Ask then", "The ask when the buy was sent. Hover: its size, and the Level II then."),
+    ("Bid now", "Green: higher than then. Red: lower. Hover: its size, and the Level II now (bids and asks)."),
+    ("Ask now", "Green: higher than then. Red: lower. Hover: its size, and the Level II now (bids and asks)."),
     ("P/L", "After both fees. Sold: of the sale. Owned: if the rest sold at the bid now."),
     ("New Price", "Step 1: a new limit for the buy order (Update). Step 2: the price Sell ATM sells all the "
                   "stocks at (starts as the exit plan; the checklist's exit follows it). Step 3: a new limit for "
@@ -102,6 +102,17 @@ def quote_text(pair):
     if not price:
         return "-"
     return fmt_price(price) + (f" x {size:,}" if size else "")
+
+
+def price_text(pair):
+    """A quote's price only (its size on hover: quote_line)."""
+    price = (list(pair or []) + [None])[0]
+    return fmt_price(price) if price else "-"
+
+
+def quote_line(what, pair):
+    """The tooltip's first line: "Bid now: 0.0017 x 110,000"."""
+    return f"<b>{what}: {quote_text(pair)}</b><br><br>"
 
 
 def book_html(title, bids, asks):
@@ -348,8 +359,9 @@ class AtmTable(SortMixin, QTableWidget):
                   bold=bool(fee and fee > FEE_HIGH), tip="" if fee is not None else "Not read from Schwab at the buy")
         then = book_html(f"{e['ticker']} Level II when the buy was sent", e.get("level2", {}).get("bids", []),
                          e.get("level2", {}).get("asks", []))
-        self.cell(row, COL["Bid then"], quote_text(e.get("bid")), tip=then)
-        self.cell(row, COL["Ask then"], quote_text(e.get("ask")), tip=then)
+        # the price only (the columns stay narrow); hover: the size, and the Level II then
+        self.cell(row, COL["Bid then"], price_text(e.get("bid")), tip=quote_line("Bid then", e.get("bid")) + then)
+        self.cell(row, COL["Ask then"], price_text(e.get("ask")), tip=quote_line("Ask then", e.get("ask")) + then)
 
         # New Price: step 2, the price Sell ATM sells at; steps 1 and 3, a new limit for the open order
         # (Update sends it); else the sell order's price
@@ -429,7 +441,8 @@ class AtmTable(SortMixin, QTableWidget):
             color = None
             if now and now[0] and then and then[0]:
                 color = GREEN if now[0] > then[0] else RED if now[0] < then[0] else None
-            self.cell(row, col, quote_text(now), color, bold=True, tip=tip)
+            self.cell(row, col, price_text(now), color, bold=True,      # the price only; hover: its size too
+                      tip=quote_line(f"{key.title()} now", now) + tip)
         bid = (m.get("bid") or [None])[0]
         pl = AtmTrades.profit(e, bid)
         self.cell(row, COL["P/L"], "-" if pl is None else usd_signed(pl),
