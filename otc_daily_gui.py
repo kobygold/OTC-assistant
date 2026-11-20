@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.49"
+APP_VERSION = "2.7.50"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1099,6 +1099,14 @@ class MainWindow(QMainWindow):
         self.checklist_btn.setToolTip("Show or hide the trade checklist on the right of the chart "
                                       "(its items are in checklist.txt)")
         row.addWidget(self.checklist_btn)
+        self.reload_btn = QPushButton("Reload History")
+        self.reload_btn.setToolTip(
+            "Re-downloads this ticker's full history in one API call, split-adjusted as of "
+            "today. Use it after a split or reverse split. Stored prices stay where the new ones "
+            "only differ by rounding to 4 decimals.")
+        self.reload_btn.clicked.connect(self.reload_ticker)
+        self.reload_btn.setEnabled(False)
+        row.addWidget(self.reload_btn)
         self.chart_opts = QWidget()
         main_row, row = row, QHBoxLayout(self.chart_opts)
         row.setContentsMargins(0, 0, 0, 0)
@@ -1205,14 +1213,6 @@ class MainWindow(QMainWindow):
         row.addWidget(self.orders_btn)
         row.addStretch()
 
-        self.reload_btn = QPushButton("Reload History")
-        self.reload_btn.setToolTip(
-            "Re-downloads this ticker's full history in one API call, split-adjusted as of "
-            "today. Use it after a split or reverse split. Stored prices stay where the new ones "
-            "only differ by rounding to 4 decimals.")
-        self.reload_btn.clicked.connect(self.reload_ticker)
-        self.reload_btn.setEnabled(False)
-        row.addWidget(self.reload_btn)
         root.addLayout(row)
         root.addWidget(self.chart_opts)
         self.chart_opts_btn.toggled.connect(self.on_chart_opts_toggled)
