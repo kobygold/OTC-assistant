@@ -76,8 +76,59 @@ def trade_fee(e):
 
 
 def sold_profit(e):
-    """$ after both fees of what was sold so far (all of it, once sold)."""
+    """$ after the fees of what was sold so far (all of it, once sold): Schwab's own (its transactions: "pl"), else
+    the old way (the orders' limit prices, one fee for the buy and one for the sell)."""
+    if (e.get("pl") or {}).get("net") is not None:
+        return e["pl"]["net"]
     return (e.get("proceeds") or 0.0) - (e.get("sold") or 0) * e["entry"] - 2 * trade_fee(e)
+
+
+def estimate_fees(fills, fee=FEE_USD):
+    """Schwab's commissions as it charges them: once per order and day it fills (a changed order is a new one);
+    a buy's on top of its cost, a sell's out of its proceeds and never more than they are (a sell of a few small
+    fills, canceled: its proceeds only). fills: [{"order", "side", "time" (ISO), "value"}]; each gets "fee"."""
+    by = {}
+    for f in fills:
+        by.setdefault((f.get("order"), str(f.get("time") or "")[:10], f["side"]), []).append(f)
+    for (_order, _day, side), group in by.items():
+        left = fee
+        for f in sorted(group, key=lambda f: str(f.get("time") or "")):
+            take = left if side == "BUY" else min(left, f["value"])
+            f["fee"] = round(take, 2)
+            left = round(left - take, 2)
+    return fills
+
+
+def pl_summary(fills, source):
+    """The trade's P/L from its fills ([{"order", "side", "time", "shares", "price", "value", "fee"}]): {"source"
+    ("schwab": its transactions; "estimate": its orders and the fee rule), "bought", "buy_value", "sold",
+    "sell_value", "fees", "net", "fills"}."""
+    buys = [f for f in fills if f["side"] == "BUY"]
+    sells = [f for f in fills if f["side"] == "SELL"]
+    out = {"source": source, "bought": sum(f["shares"] for f in buys),
+           "buy_value": round(sum(f["value"] for f in buys), 4), "sold": sum(f["shares"] for f in sells),
+           "sell_value": round(sum(f["value"] for f in sells), 4), "fees": round(sum(f.get("fee") or 0 for f in fills), 2),
+           "fills": sorted(fills, key=lambda f: str(f.get("time") or ""))}
+    out["net"] = round(out["sell_value"] - out["buy_value"] - out["fees"], 2)
+    return out
+
+
+def pl_lines(pl):
+    """The breakdown as text lines (the P/L hover, the history)."""
+    if not pl:
+        return []
+    src = "Schwab's transactions" if pl.get("source") == "schwab" else "estimated (Schwab's orders, the fee rule)"
+    lines = [f"P/L: {usd_signed(pl['net'])}  ({src})", ""]
+    for f in pl.get("fills") or []:
+        when = str(f.get("time") or "")[5:16].replace("T", " ")
+        fee = f" · fee ${f['fee']:.2f}" if f.get("fee") else ""
+        lines.append(f"{when}  {'Bought' if f['side'] == 'BUY' else 'Sold'} {f['shares']:,} @ {fmt_price(f['price'])}"
+                     f" = ${f['value']:,.2f}{fee}")
+    lines += ["", f"Bought {pl['bought']:,}: ${pl['buy_value']:,.2f}",
+              f"Sold {pl['sold']:,}: ${pl['sell_value']:,.2f}",
+              f"Fees: ${pl['fees']:,.2f}",
+              f"= {usd_signed(pl['net'])}"]
+    return lines
 
 
 def plan_profit(e, price):

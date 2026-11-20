@@ -14,7 +14,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
@@ -25,10 +25,12 @@ from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalett
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
-from otc_orders import ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info
+from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info,
+                        transaction_fills)
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
-from otc_trade import DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, trade_steps
+from otc_trade import (DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, estimate_fees, pl_lines, pl_summary,
+                       trade_steps)
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
@@ -85,6 +87,8 @@ ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed
 # What is read from Schwab, and when. While the stream's account activity is on, an order event
 # (placed, changed, canceled, filled) reads the orders and positions at once, and so does each
 # (re)connect of the stream; nothing else is read on a timer unless it is needed:
+PL_ASK_S = 60               # a sold trade's Schwab transactions: asked again this often while not all are there
+PL_TRIES = 30               # ...this many times at most (then the estimate stays)
 FOLLOWUP_MAX_S = 180        # Update Buy / Sell Partial: their second order goes out only this soon after approved
 HISTORY_MAX = 100           # a trade's history: its notes kept, with their time (the newest this many)
 ORDER_CHECK_S = 15          # the timer's tick; the Monitor tab's quotes while it is open (not streamed tickers)
@@ -795,6 +799,7 @@ class SchwabTrader(QObject):
     replaced = pyqtSignal(str, str, object, float, str)
     positions = pyqtSignal(str, object, str)    # account tail, [position_info()] or None, error
     sent = pyqtSignal(str, object, str)         # a sell from the stocks owned: key, order id or None, message
+    transactions = pyqtSignal(str, object, str)     # key, [transaction_fills()] or None, error
 
     def __init__(self, session: FeeReader):
         super().__init__()
@@ -888,6 +893,23 @@ class SchwabTrader(QObject):
         if self._refused(lambda why: self.replaced.emit(key, side, None, price, why)):
             return
         self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session, aon)
+
+    def read_transactions(self, key, account, ticker, start, end):
+        """The ticker's TRADE transactions in the account between two datetimes (UTC): transactions(key, fills)."""
+        self._start(self._transactions, key, account, ticker, start, end)
+
+    def _transactions(self, key, account_tail, ticker, start, end):
+        try:
+            with self.session._lock:
+                client, account = self.session.connect(account_tail)
+                r = client.get_transactions(account, start_date=start, end_date=end, symbol=ticker,
+                                            transaction_types=[client.Transactions.TransactionType.TRADE])
+            if r.status_code != 200:
+                self.transactions.emit(key, None, f"HTTP {r.status_code}")
+                return
+            self.transactions.emit(key, transaction_fills(r.json() or [], ticker), "")
+        except Exception as e:
+            self.transactions.emit(key, None, f"{type(e).__name__}: {e}")
 
     def read_positions(self, account):
         """The stocks owned in the account, as position_info()."""
@@ -1778,6 +1800,7 @@ class AtmTrades(QObject):
             trader.canceled.connect(self._canceled)
             trader.quotes.connect(self._quotes)
             trader.orders.connect(self._orders)
+            trader.transactions.connect(self._transactions_read)
             trader.replaced.connect(self._replaced)
             trader.positions.connect(self._positions)
             trader.sent.connect(self._sent)
@@ -1793,6 +1816,7 @@ class AtmTrades(QObject):
         self.event_timer.timeout.connect(lambda: self.check(quotes=False))
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
+        self.timer.timeout.connect(self.pl_tick)        # (a sold trade: Schwab's P/L)
         self.timer.start(ORDER_CHECK_S * 1000)
         QTimer.singleShot(3000, self.check)
         # a Sell Partial waits for its buy's rest to be canceled (here, or told by the shared data)
@@ -1941,6 +1965,8 @@ class AtmTrades(QObject):
         cost = (e.get("filled") or 0) * e["entry"]
         got = e.get("proceeds") or 0.0
         if e.get("state") == "sold":
+            if (e.get("pl") or {}).get("net") is not None:      # Schwab's own
+                return e["pl"]["net"]
             return got - cost - 2 * fee
         if e.get("state") == "canceled" or not e.get("filled") or bid is None:
             return None
@@ -2382,6 +2408,85 @@ class AtmTrades(QObject):
                 v["sold"] = int(e.get("sold") or 0) + v["sell_filled"]
                 v["state"] = "sold" if self.remaining(v) <= 0 else "bought"
         return v
+
+    # ---- a sold trade's P/L: Schwab's own (its transactions), else estimated from its orders ----
+    @staticmethod
+    def trade_window(e):
+        """(from, to) of the trade's fills, as UTC datetimes: its buy sent (a minute before) to its sale (an hour after)
+        or now."""
+        def utc(iso):
+            try:
+                d = datetime.fromisoformat(str(iso))
+            except ValueError:
+                return None
+            return (d if d.tzinfo else d.astimezone()).astimezone(timezone.utc)
+        start = utc(e.get("time")) or datetime.now(timezone.utc) - timedelta(days=30)
+        end = utc(e.get("sold_time"))
+        end = end + timedelta(hours=1) if end else datetime.now(timezone.utc)
+        return start - timedelta(minutes=1), min(end, datetime.now(timezone.utc))
+
+    def pl_estimate(self, e):
+        """The trade's P/L from Schwab's latest list of its account's orders (their fills' prices) and the fee rule
+        (otc_trade.estimate_fees), or None when the list has none of its fills."""
+        start, end = self.trade_window(e)
+        fee = FEE_USD if e.get("fee") is None else e["fee"]
+        fills = []
+        for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), []):
+            if o.get("ticker") != e.get("ticker") or not o.get("filled"):
+                continue
+            try:
+                when = datetime.strptime(o.get("entered") or "", "%Y-%m-%dT%H:%M:%S%z")
+            except ValueError:
+                continue
+            if not start <= when <= end:
+                continue
+            price = o.get("fill_price") or o.get("price") or 0
+            fills.append({"order": o["id"], "side": o["side"], "time": o.get("filled_at") or o.get("entered"),
+                          "shares": int(o["filled"]), "price": price, "value": round(o["filled"] * price, 4)})
+        if not fills:
+            return None
+        return pl_summary(estimate_fees(fills, fee), "estimate")
+
+    def trade_pl(self, e):
+        """The trade's P/L: Schwab's (kept with it once read), else the estimate, else None."""
+        if not e:
+            return None
+        return e.get("pl") or self.pl_estimate(e)
+
+    def pl_tick(self):
+        """(the main server's app) The sold trades whose Schwab transactions aren't read yet: asked for."""
+        if self.trader is None or not self.decides():
+            return
+        now = time.time()
+        for e in self.entries:
+            if e.get("state") != "sold" or (e.get("pl") or {}).get("source") == "schwab":
+                continue
+            ask = e.get("pl_ask") or {}
+            if ask.get("tries", 0) >= PL_TRIES or now - ask.get("at", 0) < PL_ASK_S:
+                continue
+            e["pl_ask"] = {"tries": ask.get("tries", 0) + 1, "at": now}
+            start, end = self.trade_window(e)
+            self.trader.read_transactions(e["id"], e.get("account") or self.chosen_account(), e["ticker"], start, end)
+
+    def _transactions_read(self, key, fills, error):
+        e = self.find(key)
+        if e is None or fills is None:
+            return
+        start, end = self.trade_window(e)
+
+        def when(f):
+            try:
+                return datetime.strptime(f["time"][:19] + "+0000", "%Y-%m-%dT%H:%M:%S%z")
+            except ValueError:
+                return None
+        mine = [f for f in fills if when(f) is not None and start <= when(f) <= end]
+        pl = pl_summary(mine, "schwab")
+        if pl["bought"] >= int(e.get("filled") or 0) and pl["sold"] >= int(e.get("sold") or 0) and pl["sold"]:
+            e["pl"] = pl                # all of its fills: Schwab's P/L, kept with the trade (every computer)
+            e.pop("pl_ask", None)
+            e["note"] = f"P/L from Schwab: {usd_signed(pl['net'])} (fees ${pl['fees']:.2f})."
+            self.save()
+            self.changed.emit()
 
     def order_fills(self, e, order_id):
         """How many times the trade's order `order_id` was filled (Schwab's latest list), 0 when not known."""
@@ -4060,9 +4165,12 @@ class ChecklistPanel(QWidget):
                         + bought_line(owned) + "\n"
                         f"Sold so far{times}: {done:,} of {owned:,}" + (" ✔" if owned and done >= owned else ""))
             elif state == "sold":
-                total = self.atm.profit(e)
+                pl = self.atm.trade_pl(e)
+                total = pl["net"] if pl else self.atm.profit(e)
                 money = usd_signed(total)
-                text = f"Sold {e.get('filled', 0):,}: {money} after both fees."
+                src = (" (Schwab)" if pl["source"] == "schwab" else " (estimated)") if pl else ""
+                fees = f" after ${pl['fees']:.2f} fees" if pl else " after both fees"
+                text = f"Sold {e.get('filled', 0):,}: {money}{fees}{src}."
             # (the trade's notes aren't shown here: they're in its history, on hover)
         self.order_text = text          # (as plain text)
         # its lines as rich text: a line's check (all bought / sold) in green

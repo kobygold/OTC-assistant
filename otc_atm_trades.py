@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            STEP_GAP, STEP_R, AtmTrades, paint_steps, red_x_icon, reset_icon, usd_signed)
-from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, trade_steps
+from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, trade_steps
 
 
 
@@ -448,8 +448,16 @@ class AtmTable(SortMixin, QTableWidget):
                       tip=quote_line(f"{key.title()} now", now) + tip)
         bid = (m.get("bid") or [None])[0]
         pl = AtmTrades.profit(e, bid)
+        tip = ""
+        if e.get("state") == "sold":
+            full = self.atm.trade_pl(e)         # Schwab's (or the estimate): the figure and its breakdown
+            if full:
+                pl, tip = full["net"], "\n".join(pl_lines(full))
+        elif pl is not None:
+            tip = (f"Selling the {AtmTrades.remaining(e):,} still owned at the bid {fmt_price(bid)} now, after the "
+                   "fees (estimated)")
         self.cell(row, COL["P/L"], "-" if pl is None else usd_signed(pl),
-                  None if pl is None else GREEN if pl >= 0 else RED, bold=True)
+                  None if pl is None else GREEN if pl >= 0 else RED, bold=True, tip=tip)
 
     # ---- the market, live ----
     def market_changed(self, ticker):
