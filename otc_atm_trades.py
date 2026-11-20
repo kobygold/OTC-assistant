@@ -507,6 +507,24 @@ class AtmTable(SortMixin, QTableWidget):
                 self.fill_market(row, e)
                 self.fit_row(row)
 
+    def show_all_rows(self):
+        """From now on as tall as all its rows (no scroll bar of its own: the Monitor tab's page scrolls)."""
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.fit_timer = QTimer(self)
+        self.fit_timer.setSingleShot(True)
+        self.fit_timer.setInterval(0)
+        self.fit_timer.timeout.connect(self.fit_height)
+        for sig in (self.model().rowsInserted, self.model().rowsRemoved, self.model().modelReset,
+                    self.verticalHeader().sectionResized, self.horizontalHeader().sectionResized):
+            sig.connect(lambda *_a: self.fit_timer.start())
+        self.fit_height()
+
+    def fit_height(self):
+        rows = sum(self.rowHeight(r) for r in range(self.rowCount())) or 30      # (empty: a row's room)
+        bar = self.horizontalScrollBar()
+        extra = bar.sizeHint().height() if bar.maximum() > 0 else 0
+        self.setFixedHeight(self.horizontalHeader().height() + rows + 2 * self.frameWidth() + extra)
+
     def sizeHintForColumn(self, col):
         """A column's width for the auto-sizing: its texts' (as Qt has it) and its buttons' / boxes' too (Qt
         doesn't count the widgets in cells: a column as narrow as a short title would cut its buttons)."""

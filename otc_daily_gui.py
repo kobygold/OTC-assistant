@@ -43,7 +43,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
+    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy,
     QPushButton, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.64"
+APP_VERSION = "2.7.65"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3049,23 +3049,22 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         tlay.addWidget(note)
         # the three lists one over the other, their heights set by dragging between them
-        split = self.schwab_split = QSplitter(Qt.Orientation.Vertical)
-        split.setChildrenCollapsible(False)
-        split.addWidget(trades)
+        # the sections one under the other on a page that scrolls (each list shows all its rows)
+        sections = [trades]
         # all the account's orders (the ATM trades' too), working or not: change or cancel the working ones here
         others = self.orders_box = QGroupBox("All Orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         olay.addWidget(self.orders_table)
-        split.addWidget(others)
+        sections.append(others)
         # the stocks owned in the account: sell them on the bid or the ask
         owned = self.owned_box = QGroupBox("Portfolio")
         play = QVBoxLayout(owned)
         self.owned_table = PositionsTable(self.checklist.atm)
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         play.addWidget(self.owned_table)
-        split.insertWidget(0, owned)        # the portfolio first
+        sections.insert(0, owned)           # the portfolio first
         # the Order Log: what Schwab said of the orders (filled, partly, canceled, placed), newest at the bottom
         log_box = self.order_log_box = QGroupBox("Order Log")
         llay = QVBoxLayout(log_box)
@@ -3075,7 +3074,8 @@ class MainWindow(QMainWindow):
         self.order_log.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self.order_log.setStyleSheet("QPlainTextEdit { background: #0d1014; color: #d8d8d8; }")
         llay.addWidget(self.order_log)
-        split.addWidget(log_box)
+        sections.append(log_box)
+        self.order_log.setFixedHeight(220)      # (the log keeps its own scroll bar: it can be long)
         try:
             lines = ORDER_LOG.read_text(encoding="utf-8").splitlines()[-ORDER_LOG_LOAD:] if ORDER_LOG.exists() else []
         except OSError:
@@ -3083,16 +3083,20 @@ class MainWindow(QMainWindow):
         self.order_log_lines = list(lines)      # all of them (the period shows some)
         self.checklist.atm.order_news.connect(self.on_order_event)
         self.checklist.atm.order_news.connect(self.on_order_filled)     # (a buy done: its Bid alert away)
-        # the heights, in the order shown (saved before as ATM trades, other orders, portfolio)
-        sizes = self.settings.get("schwab_sizes")
-        if not sizes and len(self.settings.get("schwab_split") or []) == 3:
-            old = self.settings["schwab_split"]
-            sizes = [old[2], old[0], old[1]]
-        sizes = list(sizes or [200, 300, 200])
-        if len(sizes) == 3:             # (saved before the Order Log)
-            sizes.append(140)
-        split.setSizes(sizes)
-        root.addWidget(split, 1)
+        page = QWidget()
+        play2 = QVBoxLayout(page)
+        play2.setContentsMargins(0, 0, 0, 0)
+        for box in sections:
+            box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            play2.addWidget(box)
+        play2.addStretch()
+        for table in (self.owned_table, self.trades_table, self.orders_table):
+            table.show_all_rows()
+        self.monitor_scroll = QScrollArea()
+        self.monitor_scroll.setWidgetResizable(True)
+        self.monitor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.monitor_scroll.setWidget(page)
+        root.addWidget(self.monitor_scroll, 1)
         # the three titles: larger, in colour (the account is the one chosen at the top)
         for box, name, color in ((trades, "atm_box", "#e3b23c"), (others, "orders_box", "#4fc3f7"),
                                  (owned, "owned_box", "#1db31d"), (log_box, "order_log_box", "#c8c8c8")):
@@ -5061,18 +5065,7 @@ class MainWindow(QMainWindow):
             if w is not None:
                 w.setVisible(not folded)
         box.setTitle(("▸ " if folded else "▾ ") + title)
-        if folded:
-            box.setMaximumHeight(box.minimumSizeHint().height())
-        else:
-            box.setMaximumHeight(16777215)
-            split = self.schwab_split
-            sizes, i = split.sizes(), split.indexOf(box)
-            if i >= 0 and sizes[i] < 120:          # (opened: some room again, from the largest)
-                big = max(range(len(sizes)), key=lambda k: sizes[k])
-                give = min(200, max(sizes[big] - 120, 0))
-                sizes[i] += give
-                sizes[big] -= give
-                split.setSizes(sizes)
+        box.setMaximumHeight(box.minimumSizeHint().height() if folded else 16777215)
         if save:
             self.settings["monitor_folded"] = sorted(n for n, (b, _t) in self.monitor_boxes.items()
                                                      if getattr(b, "folded", False))
@@ -5253,10 +5246,6 @@ class MainWindow(QMainWindow):
         if self.checklist_btn.isChecked():   # the chart / checklist split
             sizes = self.checklist_split.sizes()      # (the width wanted, if squeezed now)
             self.settings["checklist_split"] = [sum(sizes) - self.checklist_want, self.checklist_want]                 if sizes[1] < self.checklist_want else sizes
-            save_settings(self.settings)
-        if all(self.schwab_split.sizes()):  # the Monitor tab's three lists (once it was shown)
-            self.settings["schwab_sizes"] = self.schwab_split.sizes()
-            self.settings.pop("schwab_split", None)
             save_settings(self.settings)
         event.accept()
         if self.restart_after_close:        # updated: the new version starts (its own server too)
