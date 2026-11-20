@@ -3268,6 +3268,13 @@ class ChecklistPanel(QWidget):
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
+                if item.key == "shares":        # the amounts ($, stocks) over the prices: a thin line between
+                    line = QWidget()
+                    line.setObjectName("cl_split")
+                    line.setFixedHeight(1)
+                    line.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+                    line.setStyleSheet("QWidget#cl_split { background: #3a4046; }")
+                    lay.addWidget(line)
         lay.addStretch()
         self.scroll.setWidget(body)
         self.refresh()
@@ -4334,7 +4341,9 @@ class ChecklistPanel(QWidget):
                 value.setEnabled(True)
                 value.setStyleSheet("")
                 value.setPlaceholderText({"size": f"${size:,.2f}", "entry": fmt_price(price), "shares": f"{n:,}"}[item.key])
-                if not value.hasFocus() and value.text() != typed_text:
+                # (a box with the focus keeps what's being typed in it, but not a value the fixed view left in it
+                # while the order was being sent: that would count as typed when the box is left)
+                if value.text() != typed_text and (not value.hasFocus() or not self.draft.get(item.key)):
                     value.setText(typed_text)
                 value.setToolTip({"size": "New position $ for the buy order: the amount of stocks follows",
                                   "entry": "New limit price for the buy order: the amount of stocks follows (for "
