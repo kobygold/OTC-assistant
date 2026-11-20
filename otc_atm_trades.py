@@ -330,7 +330,8 @@ class AtmTable(SortMixin, QTableWidget):
         # the words only: the Steps column beside it shows which step it is
         short = name.split(": ", 1)[1] if name.startswith("Step ") and ": " in name else name
         self.cell(row, COL["State"], short + (" ..." if busy else ""), fg,
-                  bold=True, bg=color, tip=e.get("note") or "")
+                  bold=True, bg=color, tip=("History (newest first):\n" + self.atm.history_text(e))
+                  if e.get("history") else (e.get("note") or ""))
         self.cell(row, COL["Sent"], (e.get("time") or "").replace("T", " ")[5:16], DIM,
                   tip=f"Sent {e.get('time', '')}" + (f"\nBought {e['bought_time']}" if e.get("bought_time") else "")
                   + (f"\nSell sent {e['sell_time']}" if e.get("sell_time") else "")
@@ -841,11 +842,11 @@ class SchwabOrdersTable(AtmTable):
         edit.setText(limit_text(o["price"]))
         edit.setToolTip(ORDER_COLUMNS[OCOL["New limit"]][1])
         change = button("Change", BUY_COLOR if buy else SELL_COLOR)
-        rebuy = bool(e) and buy and bool(filled)        # a partly bought ATM buy: the rest canceled, then a new buy
+        rebuy = bool(e) and bool(filled)        # a partly filled ATM order: the rest canceled, then a new one
         change.setToolTip("Change the order's limit to the New limit, after asking (Schwab replaces the order, "
                           "as thinkorswim does)" + (". The ATM trade follows (its entry, $ and safety net / its "
                                                     "exit)." if e else "")
-                          + (" Partly bought: the rest is canceled, then a new buy at the New limit." if rebuy else
+                          + (" Partly filled: the rest is canceled, then a new order at the New limit." if rebuy else
                              ". Partly filled: change it in thinkorswim." if filled else ""))
         cancel = button("Cancel", CANCEL_COLOR, "#111111")
         cancel.setIcon(red_x_icon())
