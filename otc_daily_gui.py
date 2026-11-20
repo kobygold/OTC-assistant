@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.65"
+APP_VERSION = "2.7.66"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3075,7 +3075,9 @@ class MainWindow(QMainWindow):
         self.order_log.setStyleSheet("QPlainTextEdit { background: #0d1014; color: #d8d8d8; }")
         llay.addWidget(self.order_log)
         sections.append(log_box)
-        self.order_log.setFixedHeight(220)      # (the log keeps its own scroll bar: it can be long)
+        # (as tall as all its lines, as the tables: the page scrolls; newest first)
+        self.order_log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.order_log.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         try:
             lines = ORDER_LOG.read_text(encoding="utf-8").splitlines()[-ORDER_LOG_LOAD:] if ORDER_LOG.exists() else []
         except OSError:
@@ -5002,7 +5004,7 @@ class MainWindow(QMainWindow):
         line = f"{stamp}  {self.order_text(ev)}"
         self.order_log_lines.append(line)
         del self.order_log_lines[:-ORDER_LOG_LOAD * 4]
-        self.order_log.appendPlainText(line)        # (new: in every period)
+        self.show_order_log()                       # (new: in every period, at the top)
         try:
             with open(ORDER_LOG, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -5042,13 +5044,25 @@ class MainWindow(QMainWindow):
             table.period_days = days
             table.signature = None
             table.rebuild()
-        cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
-        self.order_log.setPlainText("\n".join(x for x in self.order_log_lines if cutoff is None or x[:19] >= cutoff))
-        bar = self.order_log.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self.show_order_log()
         if save:
             self.settings["monitor_period"] = days
             save_settings(self.settings)
+
+    def show_order_log(self):
+        """The Order Log: the period's lines, newest first, the box as tall as all of them (the page scrolls)."""
+        days = self.monitor_period.currentData() or 0
+        cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
+        lines = [x for x in reversed(self.order_log_lines) if cutoff is None or x[:19] >= cutoff]
+        self.order_log.setPlainText("\n".join(lines))
+        log = self.order_log
+        bar = log.horizontalScrollBar()
+        extra = bar.sizeHint().height() if bar.maximum() > 0 else 0
+        margins = log.contentsMargins().top() + log.contentsMargins().bottom()
+        doc = 2 * int(log.document().documentMargin())
+        log.setFixedHeight(max(len(lines), 2) * log.fontMetrics().lineSpacing() + margins + doc + 2 * log.frameWidth()
+                           + extra + 4)
+        log.verticalScrollBar().setValue(0)
 
     def toggle_monitor_box(self, box):
         name = box.objectName()
@@ -5096,10 +5110,12 @@ class MainWindow(QMainWindow):
         self.orders_btn.setText(text if self.order_news else "Orders: no news yet")
 
     def open_order_log(self):
-        """The Orders button: the Monitor tab's Order Log at its newest line (the button back to plain)."""
+        """The Orders button's right-click: the Monitor tab's Order Log (newest first), opened and in sight (the
+        button back to plain)."""
         self.tabs.setCurrentIndex(self.schwab_tab_index)
-        bar = self.order_log.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        if getattr(self.order_log_box, "folded", False):
+            self.fold_monitor_box("order_log_box", False)
+        QTimer.singleShot(0, lambda: self.monitor_scroll.ensureWidgetVisible(self.order_log_box, 0, 0))
         self.calm_orders_btn()
 
     def fav_atm_trade(self, ticker):
