@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.57"
+APP_VERSION = "2.7.58"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3352,10 +3352,14 @@ class MainWindow(QMainWindow):
         self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
         self.refresh_fav_atm()
-        # an ATM trade bought (all its shares, or what it got when its buy ended): its Bid alert isn't needed
+        # an ATM trade bought (all its shares, or what it got when its buy ended): its Bid alert isn't needed;
+        # completed (sold): its Ask alert neither
         for e in self.checklist.atm.entries:
+            account, ticker = e.get("account") or self.shared_account(), e.get("ticker")
             if e.get("state") in ("bought", "sell_open", "sold"):
-                self.drop_buy_alerts(e.get("account") or self.shared_account(), e.get("ticker"))
+                self.drop_order_alerts(account, ticker, ("buy",))
+            if e.get("state") == "sold":
+                self.drop_order_alerts(account, ticker, ("sell",))
 
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""
@@ -4519,19 +4523,29 @@ class MainWindow(QMainWindow):
         self.put_alert(a)
         self.notify(f"Alert made: {ticker} {otc_alerts.describe(a)}", 8000)
 
-    def drop_buy_alerts(self, account, ticker):
-        """The buy is done: the ticker's Bid alert made by its buy order (still waiting) taken away."""
+    def drop_order_alerts(self, account, ticker, sides):
+        """The ticker's alerts made by its orders (still waiting) of these sides ("buy": Bid, "sell": Ask) taken
+        away: its buy is done / its trade completed. Not while it has an open order of that side (a new trade's,
+        or another order: its alert is still wanted); the alerts made by hand and the fired ones stay."""
         if not self.shared_imported or not ticker or not account:
             return
+        working = {o["side"].lower() for o in self.checklist.atm.schwab_orders.get(account, [])
+                   if o.get("open") and o.get("ticker") == ticker}
+        sides = [x for x in sides if x not in working]
         prefix = f"{otc_alerts.PREFIX}{account}/"
         gone = [a for a in self.shared.get(prefix).values()
-                if isinstance(a, dict) and a.get("ticker") == ticker and a.get("auto") == "buy"
+                if isinstance(a, dict) and a.get("ticker") == ticker and a.get("auto") in sides
                 and a.get("state") == "active"]
         for a in gone:
             self.shared.put(prefix + a["id"], None)
         if gone:
             self.alerts_refresh()
-            self.notify(f"{ticker}: bought, its Bid alert removed ({otc_alerts.describe(gone[-1])})", 6000)
+            self.notify(f"{ticker}: its order alert{'s' if len(gone) > 1 else ''} removed ("
+                        + ", ".join(otc_alerts.describe(a) for a in gone) + ")", 6000)
+
+    def drop_buy_alerts(self, account, ticker):
+        """The buy is done: the ticker's Bid alert made by its buy order taken away."""
+        self.drop_order_alerts(account, ticker, ("buy",))
 
     def on_order_filled(self, ev):
         """Schwab's news: a buy order filled (all of it): its Bid alert isn't needed (any account's)."""
