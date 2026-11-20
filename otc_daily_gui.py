@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.40"
+APP_VERSION = "2.7.41"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1418,12 +1418,20 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def update_fav_side(self):
-        """The Chart tab's favorites list again: the favorites (by group), their day, ATM trade and checks."""
+        """The Chart tab's favorites list again: the open ATM trades' first, then by group; their day, ATM trade
+        and checks."""
         side = getattr(self, "fav_side", None)
         if side is None:
             return
         rows = []
-        for t in sorted(self.favs, key=lambda t: (self.favs[t]["group"], t)):
+        # the open ATM trades first, the furthest step first (sell sent, bought, buy sent), then by name; then the
+        # other favorites by group, then by name
+        step = {"sell_open": 3, "bought": 2, "buy_open": 1}
+
+        def order(t):
+            rank = step.get((self.fav_atm_trade(t) or {}).get("state"), 0)
+            return (0, -rank, t) if rank else (1, self.favs[t]["group"], t)
+        for t in sorted(self.favs, key=order):
             fav = self.favs[t]
             g = fav["group"]
             close, change, name = self.fav_side_info.get(t, (None, None, ""))
