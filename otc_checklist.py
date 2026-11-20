@@ -4032,16 +4032,21 @@ class ChecklistPanel(QWidget):
             status = (o or {}).get("status") or e.get("status", "")
             status = f" ({status.replace('_', ' ')})" if status else ""
             left = self.atm.remaining(e)
+
+            def bought_line(n):
+                """"Bought so far (2 times): 3,700 of 19,737" (the buy's fills, its earlier orders' too)."""
+                times = self.atm.fills_count(e, "BUY")
+                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
+                return f"Bought so far{times}: {n:,} of {e['shares']:,}"
             if state == "buy_open":
                 bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
                 # the shares still waiting in the order, and below: all those bought so far (earlier orders too)
-                times = self.atm.fills_count(e, "BUY")
-                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
                 text = (f"Buy order open{status}: {max(e['shares'] - bought, 0):,} @ {fmt_price(e['entry'])} GTC\n"
-                        f"Bought so far{times}: {bought:,} of {e['shares']:,}")
+                        + bought_line(bought))
                 # (new values typed: shown in the right column, sent with Update Buy; no line here)
             elif state == "bought":
-                text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
+                text = (f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price.\n"
+                        + bought_line(int(e.get("filled") or 0)))
             elif state == "sell_open":
                 sold = max(int(e.get("sell_filled") or 0), int((o or {}).get("filled") or 0))
                 selling = min(e.get("sell_shares") or left, left)
@@ -4050,7 +4055,8 @@ class ChecklistPanel(QWidget):
                 times = self.atm.fills_count(e, "SELL")
                 times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
                 text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
-                        f"Sold so far{times}: {done:,} of {int(e.get('filled') or 0):,}")
+                        f"Sold so far{times}: {done:,} of {int(e.get('filled') or 0):,}\n"
+                        + bought_line(int(e.get("filled") or 0)))
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
             # (the trade's notes aren't shown here: they're in its history, on hover)

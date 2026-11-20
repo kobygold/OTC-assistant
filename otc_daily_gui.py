@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.52"
+APP_VERSION = "2.7.53"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3041,6 +3041,7 @@ class MainWindow(QMainWindow):
         for line in lines:
             self.order_log.appendPlainText(line)
         self.checklist.atm.order_news.connect(self.on_order_event)
+        self.checklist.atm.order_news.connect(self.on_order_filled)     # (a buy done: its Bid alert away)
         # the heights, in the order shown (saved before as ATM trades, other orders, portfolio)
         sizes = self.settings.get("schwab_sizes")
         if not sizes and len(self.settings.get("schwab_split") or []) == 3:
@@ -3341,6 +3342,10 @@ class MainWindow(QMainWindow):
         self.level2.refresh_mine()      # my orders' rows in the book
         self.chart.update()
         self.refresh_fav_atm()
+        # an ATM trade bought (all its shares, or what it got when its buy ended): its Bid alert isn't needed
+        for e in self.checklist.atm.entries:
+            if e.get("state") in ("bought", "sell_open", "sold"):
+                self.drop_buy_alerts(e.get("account") or self.shared_account(), e.get("ticker"))
 
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""
@@ -4503,6 +4508,25 @@ class MainWindow(QMainWindow):
              "by": socket.gethostname()}
         self.put_alert(a)
         self.notify(f"Alert made: {ticker} {otc_alerts.describe(a)}", 8000)
+
+    def drop_buy_alerts(self, account, ticker):
+        """The buy is done: the ticker's Bid alert made by its buy order (still waiting) taken away."""
+        if not self.shared_imported or not ticker or not account:
+            return
+        prefix = f"{otc_alerts.PREFIX}{account}/"
+        gone = [a for a in self.shared.get(prefix).values()
+                if isinstance(a, dict) and a.get("ticker") == ticker and a.get("auto") == "buy"
+                and a.get("state") == "active"]
+        for a in gone:
+            self.shared.put(prefix + a["id"], None)
+        if gone:
+            self.alerts_refresh()
+            self.notify(f"{ticker}: bought, its Bid alert removed ({otc_alerts.describe(gone[-1])})", 6000)
+
+    def on_order_filled(self, ev):
+        """Schwab's news: a buy order filled (all of it): its Bid alert isn't needed (any account's)."""
+        if ev.get("kind") == "filled" and ev.get("side") == "BUY":
+            self.drop_buy_alerts(ev.get("account"), ev.get("ticker"))
 
     def order_alert(self, ticker, side, price, account):
         """A buy made or changed: an alert on Bid >= its price + 0.0001; a sell: on Ask <= its price - 0.0001.
