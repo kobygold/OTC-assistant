@@ -2382,6 +2382,22 @@ class AtmTrades(QObject):
                 v["state"] = "sold" if self.remaining(v) <= 0 else "bought"
         return v
 
+    def order_fills(self, e, order_id):
+        """How many times the trade's order `order_id` was filled (Schwab's latest list), 0 when not known."""
+        o = next((o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
+                  if o["id"] == str(order_id or "")), None)
+        return int((o or {}).get("fills") or 0)
+
+    def fills_count(self, e, side):
+        """How many times the trade's shares were bought / sold so far (its earlier orders' too), or None
+        when Schwab's list doesn't tell (a server of an older version)."""
+        field, prev = ("order_id", "fills_prev") if side == "BUY" else ("sell_id", "sell_fills_prev")
+        o = next((o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
+                  if o["id"] == str(e.get(field) or "")), None)
+        if o is None or "fills" not in o:
+            return None
+        return int(o.get("fills") or 0) + int(e.get(prev) or 0)
+
     def live_order(self, e):
         """The trade's open order (its buy while buy_open, its sell while sell_open) in Schwab's latest list of
         its account's orders (order_info()), or None."""
@@ -2951,6 +2967,8 @@ class AtmTrades(QObject):
             e = self.find(key)
             if e is None:
                 return
+            if e.get("sell_id") and e.get("sold"):        # an earlier sell's fills (Update Sell): counted on
+                e["sell_fills_prev"] = int(e.get("sell_fills_prev") or 0) + self.order_fills(e, e["sell_id"])
             e.update(state="sell_open", sell_price=pending.get("sell_price"), sell_id=order_id,
                      sell_time=now, sell_filled=0, note=message, sell_aon=bool(pending.get("aon")),
                      sell_shares=pending.get("shares"))
@@ -2978,6 +2996,7 @@ class AtmTrades(QObject):
             return
         if pending.get("old_id"):
             e.setdefault("replaced_ids", []).append(pending["old_id"])
+            e["fills_prev"] = int(e.get("fills_prev") or 0) + self.order_fills(e, pending["old_id"])
         # what was bought before: counted with the new order's fills (filled), its cost for the average entry
         e["cost_prev"] = round((e.get("cost_prev") or 0.0) + (bought - (e.get("filled_prev") or 0)) * e["entry"], 6)
         e["filled_prev"] = bought
@@ -4016,8 +4035,10 @@ class ChecklistPanel(QWidget):
             if state == "buy_open":
                 bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
                 # the shares still waiting in the order, and below: all those bought so far (earlier orders too)
+                times = self.atm.fills_count(e, "BUY")
+                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
                 text = (f"Buy order open{status}: {max(e['shares'] - bought, 0):,} @ {fmt_price(e['entry'])} GTC\n"
-                        f"Bought so far: {bought:,} of {e['shares']:,}")
+                        f"Bought so far{times}: {bought:,} of {e['shares']:,}")
                 # (new values typed: shown in the right column, sent with Update Buy; no line here)
             elif state == "bought":
                 text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
@@ -4026,8 +4047,10 @@ class ChecklistPanel(QWidget):
                 selling = min(e.get("sell_shares") or left, left)
                 # the shares still waiting in the order, and below: those sold so far (of this order, and before)
                 done = sold + int(e.get("sold") or 0)
+                times = self.atm.fills_count(e, "SELL")
+                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
                 text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
-                        f"Sold so far: {done:,} of {int(e.get('filled') or 0):,}")
+                        f"Sold so far{times}: {done:,} of {int(e.get('filled') or 0):,}")
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
             # (the trade's notes aren't shown here: they're in its history, on hover)

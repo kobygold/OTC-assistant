@@ -35,7 +35,7 @@ def order_info(o):
     """A Schwab order, short: {"id", "ticker", "side" ("BUY" or "SELL"), "shares" (left to fill),
     "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type", "aon",
     "fill_price" (the fills' average, None before any), "filled_at" (the last fill's time, ""), "closed" (when it
-    ended: filled, canceled..., "")};
+    ended: filled, canceled..., ""), "fills" (how many times it was filled)};
     None for an order that isn't a one-leg stock order."""
     try:
         legs = o.get("orderLegCollection") or []
@@ -50,8 +50,10 @@ def order_info(o):
         filled = int(o.get("filledQuantity") or 0)
         status = o.get("status", "")
         # the fills' average price (each execution's legs), None before any
-        done_shares, done_cost, last_fill = 0, 0.0, ""
+        done_shares, done_cost, last_fill, fills = 0, 0.0, "", 0
         for act in o.get("orderActivityCollection") or []:
+            if act.get("executionLegs"):
+                fills += 1          # (each execution: one fill)
             for ex in act.get("executionLegs") or []:
                 q, pr = ex.get("quantity") or 0, ex.get("price")
                 if q and pr is not None:
@@ -68,7 +70,7 @@ def order_info(o):
                 "aon": str(o.get("specialInstruction") or "").startswith("ALL_OR_NONE"),
                 "fill_price": round(done_cost / done_shares, 6) if done_shares else None,
                 "filled_at": last_fill or (o.get("closeTime", "") if status == "FILLED" else ""),
-                "closed": o.get("closeTime", "")}
+                "closed": o.get("closeTime", ""), "fills": fills}
     except (TypeError, ValueError, AttributeError):
         return None
 
