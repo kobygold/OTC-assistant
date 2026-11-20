@@ -88,6 +88,16 @@ def button(text, color, fg="#ffffff"):
     return b
 
 
+def compact_title(title):
+    """A column's title on two lines when it's of two or more words ("Value at bid" -> "Value\nat bid"): the column
+    as narrow as its numbers (the Monitor's tables size each column to its contents, the title too)."""
+    words = title.split(" ")
+    if len(words) < 2 or len(title) <= 6:
+        return title
+    best = min(range(1, len(words)), key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+    return " ".join(words[:best]) + "\n" + " ".join(words[best:])
+
+
 def centered(widget):
     """A cell widget in the middle of its cell."""
     box = QWidget()
@@ -205,7 +215,7 @@ class AtmTable(SortMixin, QTableWidget):
         self.new_prices = {}        # entry id -> a new price typed for its open order (not sent yet)
         self.signature = None       # what the rows were built from: rebuilt only when it changes
         self.dirty = set()          # tickers whose market changed since the last update
-        self.setHorizontalHeaderLabels([t for t, _ in COLUMNS])
+        self.setHorizontalHeaderLabels([compact_title(t) for t, _ in COLUMNS])
         for i, (_, tip) in enumerate(COLUMNS):
             self.horizontalHeaderItem(i).setToolTip(tip)
         self.steps_delegate = StepsDelegate(self)          # the 4 steps, drawn
@@ -216,6 +226,7 @@ class AtmTable(SortMixin, QTableWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
         self.mono = QFont("Consolas")
         self.mono.setPointSizeF(8.5)
         self.bold = QFont(self.font())
@@ -475,6 +486,16 @@ class AtmTable(SortMixin, QTableWidget):
                 self.fill_market(row, e)
                 self.fit_row(row)
 
+    def sizeHintForColumn(self, col):
+        """A column's width for the auto-sizing: its texts' (as Qt has it) and its buttons' / boxes' too (Qt
+        doesn't count the widgets in cells: a column as narrow as a short title would cut its buttons)."""
+        width = super().sizeHintForColumn(col)
+        for row in range(self.rowCount()):
+            w = self.cellWidget(row, col)
+            if w is not None:
+                width = max(width, w.sizeHint().width())
+        return width
+
     def sell_at_box(self, e, edit, editable):
         """The Sell at box, + above - beside it, and the reset to the exit plan."""
         box = QWidget()
@@ -710,7 +731,7 @@ class SchwabOrdersTable(AtmTable):
         self.edits = {}
         self.signature = None
         self.dirty = set()
-        self.setHorizontalHeaderLabels([t for t, _ in ORDER_COLUMNS])
+        self.setHorizontalHeaderLabels([compact_title(t) for t, _ in ORDER_COLUMNS])
         for i, (_, tip) in enumerate(ORDER_COLUMNS):
             self.horizontalHeaderItem(i).setToolTip(tip)
         self.verticalHeader().setVisible(False)
@@ -719,6 +740,7 @@ class SchwabOrdersTable(AtmTable):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
         self.bold = QFont(self.font())
         self.bold.setBold(True)
         self.market_timer = QTimer(self)
@@ -1024,7 +1046,7 @@ class PositionsTable(AtmTable):
         self.edits = {}
         self.signature = None
         self.dirty = set()
-        self.setHorizontalHeaderLabels([t for t, _ in POS_COLUMNS])
+        self.setHorizontalHeaderLabels([compact_title(t) for t, _ in POS_COLUMNS])
         for i, (_, tip) in enumerate(POS_COLUMNS):
             self.horizontalHeaderItem(i).setToolTip(tip)
         self.steps_delegate = StepsDelegate(self)          # an ATM trade's 4 steps, drawn
@@ -1035,6 +1057,7 @@ class PositionsTable(AtmTable):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
         self.bold = QFont(self.font())
         self.bold.setBold(True)
         self.market_timer = QTimer(self)
