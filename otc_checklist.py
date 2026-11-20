@@ -6,6 +6,7 @@ then a check, then an X, then empty again, and
 The position size and the entry, exit and stop prices can be typed over: the position size is kept
 for all tickers, the prices per ticker, and clearing a field brings back the automatic value."""
 
+import html
 import json
 import math
 import re
@@ -4061,7 +4062,11 @@ class ChecklistPanel(QWidget):
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
             # (the trade's notes aren't shown here: they're in its history, on hover)
-        self.order_label.setText(text)
+        self.order_text = text          # (as plain text)
+        # its lines as rich text: a line's check (all bought / sold) in green
+        self.order_label.setTextFormat(Qt.TextFormat.RichText)
+        self.order_label.setText(html.escape(text).replace("\n", "<br>").replace(
+            "✔", f"<span style='color: {MARKS[OK][1]}; font-weight: bold'>✔</span>"))
         self.order_label.setVisible(bool(text))
         history = self.atm.history_text(e) if e else ""
         self.order_label.setToolTip(f"{e['ticker']}'s history (newest first):\n\n{history}" if history else "")
