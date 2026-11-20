@@ -1913,6 +1913,24 @@ class AtmTrades(QObject):
             return
         me = socket.gethostname()
         for e in self.entries:
+            again = e.get("rebuy")
+            if again and again.get("by") == me and again.get("ready") and e.get("state") == "buy_open" \
+                    and not self.busy(e):
+                rest = int(again["shares"]) - int(e.get("filled") or 0)
+                if rest <= 0:           # (all were bought before the cancel)
+                    e.pop("rebuy", None)
+                    e.update(state="bought", note="Update Buy: all of them were bought before the cancel.")
+                    self.save()
+                    self.changed.emit()
+                    continue
+                self.sending.add(e["id"])
+                self.pending[e["id"]] = {"rebuy": True, "shares": int(again["shares"]), "price": float(again["price"]),
+                                         "size": again.get("size"), "aon": bool(again.get("aon")),
+                                         "old_id": str(e.get("order_id") or "")}
+                self.changed.emit()
+                self.trader.place(e["id"], e["ticker"], "BUY", rest, float(again["price"]), e.get("account"),
+                                  bool(again.get("aon")))
+                continue
             want = e.get("partial_sell")
             if not want or want.get("by") != me or e.get("state") == "buy_open":
                 continue
@@ -2023,6 +2041,31 @@ class AtmTrades(QObject):
                 if (ticker is None or o["ticker"] == ticker) and o["open"] and o["price"] and o["shares"] > 0
                 and o["id"] not in tracked]
 
+    def all_open_orders(self, account=None):
+        """Every open limit order of the account (the chosen one): the ATM trades' ones too, each with "key"
+        (its chart key: "atm:<trade id>:<side>" or "schwab:<id>"), "busy" (what sending / canceling hold while
+        it changes) and "atm" (the trade, or None)."""
+        account = account or self.chosen_account()
+        mine = {}
+        for e in self.entries:
+            if (e.get("account") or self.chosen_account()) != account:
+                continue
+            if e.get("state") == "buy_open" and e.get("order_id"):
+                mine[str(e["order_id"])] = (e, "BUY")
+            elif e.get("state") == "sell_open" and e.get("sell_id"):
+                mine[str(e["sell_id"])] = (e, "SELL")
+        out = []
+        for o in self.schwab_orders.get(account, []):
+            if not (o["open"] and o["price"] and o["shares"] > 0):
+                continue
+            e, side = mine.get(o["id"], (None, None))
+            if e is not None and side == o["side"]:
+                out.append(dict(o, key=f"atm:{e['id']}:{side}", busy=e["id"], atm=e))
+            else:
+                key = f"schwab:{o['id']}"
+                out.append(dict(o, key=key, busy=key, atm=None))
+        return out
+
     # ---- the stocks owned (the Monitor tab's list) ----
     def owned(self, account=None):
         """The stocks owned in the account (the chosen one), as last read: [position_info()]."""
@@ -2075,7 +2118,7 @@ class AtmTrades(QObject):
         in_orders = self.in_sell_orders(ticker)
         if in_orders >= pos["shares"]:
             QMessageBox.information(parent, f"Sell {ticker}", f"All {pos['shares']:,} {ticker} are in sell orders "
-                                    "already: change or cancel them in the Other Pending Orders list.")
+                                    "already: change or cancel them in the All Open Orders list.")
             return
         m = self.market.get(ticker, {})
         free = pos["shares"] - in_orders
@@ -2181,7 +2224,7 @@ class AtmTrades(QObject):
             side, _, ticker = key.partition(":")
             QMessageBox.warning(QApplication.activeWindow(), f"{ticker} {side} order not sent", message)
         self.changed.emit()
-        QTimer.singleShot(1500, self.check)     # the new order in the Other Pending Orders list
+        QTimer.singleShot(1500, self.check)     # the new order in the All Open Orders list
 
     def orders_read(self, account=None):
         """True once the account's (the chosen one's) orders were read from Schwab."""
@@ -2259,9 +2302,12 @@ class AtmTrades(QObject):
                 aon = bool(e.get("sell_aon"))
             else:
                 return
+            if done and side == "BUY":      # partly bought: the rest canceled, then a new buy at the new price
+                self.ask_rebuy(parent, e, shares, price, round(shares * price, 2))
+                return
             if done:
                 QMessageBox.warning(parent, "Change the order", f"{done:,} of the {shares:,} were already "
-                                    f"{'bought' if side == 'BUY' else 'sold'}: change it in thinkorswim.")
+                                    "sold: change it in thinkorswim.")
                 return
             ticker, account, fee, duration, session = e["ticker"], e.get("account"), e.get("fee"), None, None
             what = "an ATM trade"
@@ -2310,16 +2356,68 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session, aon)
 
+    def ask_rebuy(self, parent, e, shares, price, size):
+        """An open ATM buy partly bought, changed (the checklist's new values, a new limit in All Open Orders or on
+        the chart): after the dialog its rest is canceled; once Schwab says so, a new buy goes out for the shares
+        still to buy (`shares` in all, less those bought) at `price` (partial_followup). The trade keeps counting
+        what was bought before. True when it was asked for."""
+        if self.trader is None or self.busy(e) or e.get("state") != "buy_open" or e.get("rebuy") \
+                or e.get("partial_sell"):
+            return False
+        filled, shares = int(e.get("filled") or 0), int(shares)
+        if shares <= filled:
+            QMessageBox.warning(parent, "Change the buy order", f"{filled:,} are bought already: the amount in all "
+                                "must be more than that (or sell them: ! Sell Partial).")
+            return False
+        order_id = e.get("order_id")
+        if not order_id:
+            QMessageBox.warning(parent, "Change the buy order", "The order's number isn't known. Change it in Schwab.")
+            return False
+        ticker, account = e["ticker"], e.get("account")
+        read = self.fee_of(ticker)
+        fee = read if read is not None else e.get("fee")
+        estimated = fee is None
+        fee = FEE_USD if estimated else fee
+        rest = shares - filled
+
+        def row(label, old, new):
+            return (label, (f"{old} → {new}", CHANGED_COLOR)) if old != new else (label, new)
+        aon = aon_box()
+        aon.setChecked(bool(e.get("aon")))
+        rows = [("Ticker", ticker), ("Order", "BUY · Limit · GTC · an ATM trade, partly bought"),
+                ("Bought so far", f"{filled:,} of {e['shares']:,} @ {fmt_price(e['entry'])}"),
+                ("The rest of the order", (f"canceled first, then a new buy of {rest:,} @ {fmt_price(price)}",
+                                           "#f0a020")),
+                row("Amount of stocks (in all)", f"{e['shares']:,}", f"{shares:,}"),
+                row("Limit price", fmt_price(e["entry"]), fmt_price(price)), ("Fill", aon)
+                ] + fee_rows(None if estimated else fee, rest * price)
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        if not confirm_order(parent, self.account_name(account), f"Buy the rest of {ticker}: {rest:,} @ "
+                             f"{fmt_price(price)} (the old order's rest canceled first)?", rows,
+                             "Cancel the rest & BUY", BUY_COLOR):
+            return False
+        if self.busy(e) or e.get("state") != "buy_open":
+            return False
+        e["rebuy"] = {"shares": shares, "price": price, "size": round(float(size), 2), "aon": aon.isChecked(),
+                      "by": socket.gethostname()}
+        e["note"] = f"Update Buy: canceling the rest of the order, then buying {rest:,} @ {fmt_price(price)}..."
+        self.save()
+        self.canceling.add(e["id"])
+        self.cancel_ids[e["id"]] = str(order_id)
+        self.app_canceled.add(str(order_id))
+        self.changed.emit()
+        self.trader.cancel(e["id"], "BUY", order_id, account)
+        return True
+
     def ask_change_buy(self, parent, e, shares, price, size):
         """The checklist's boxes of an open buy (the position $, the entry, the amount of stocks) were
         changed: after the dialog, Schwab replaces the order with `shares` at `price`; atm.json gets
         the new values once it's done (_replaced)."""
         if self.trader is None or self.busy(e) or e.get("state") != "buy_open":
             return False
-        if e.get("filled"):
-            QMessageBox.warning(parent, "Change the buy order", f"{e['filled']:,} of the {e['shares']:,} were "
-                                "already bought: change it in thinkorswim.")
-            return False
+        if e.get("filled"):         # partly bought: the rest canceled, then a new buy for what's left to buy
+            return self.ask_rebuy(parent, e, shares, price, size)
         order_id = e.get("order_id")
         if not order_id:
             QMessageBox.warning(parent, "Change the buy order", "The order's number isn't known. Change it in Schwab.")
@@ -2595,6 +2693,9 @@ class AtmTrades(QObject):
     def _placed(self, key, side, order_id, message):
         self.sending.discard(key)
         pending = self.pending.pop(key, {})
+        if pending.get("rebuy"):
+            self._rebuy_placed(key, order_id, message, pending)
+            return
         if order_id is None and not message.startswith("Schwab took"):
             QMessageBox.warning(QApplication.activeWindow(), f"{side} order not sent",
                                 f"{pending.get('ticker') or (self.find(key) or {}).get('ticker', '')}: {message}")
@@ -2621,6 +2722,46 @@ class AtmTrades(QObject):
         if order_id:
             QTimer.singleShot(5000, self.check)
 
+    def _rebuy_placed(self, key, order_id, message, pending):
+        """Update Buy of a partly bought trade: its new buy for the rest went out (or not)."""
+        e = self.find(key)
+        if e is None:
+            return
+        e.pop("rebuy", None)
+        bought = int(e.get("filled") or 0)
+        if order_id is None and not message.startswith("Schwab took"):
+            e.update(state="bought", bought_time=datetime.now().isoformat(timespec="seconds"),
+                     note=f"Update Buy: the new buy wasn't sent ({message}). You own {bought:,}.")
+            e.pop("status", None)
+            self.save()
+            self.changed.emit()
+            QMessageBox.warning(QApplication.activeWindow(), "BUY order not sent", f"{e['ticker']}: {message}")
+            return
+        if pending.get("old_id"):
+            e.setdefault("replaced_ids", []).append(pending["old_id"])
+        # what was bought before: counted with the new order's fills (filled), its cost for the average entry
+        e["cost_prev"] = round((e.get("cost_prev") or 0.0) + (bought - (e.get("filled_prev") or 0)) * e["entry"], 6)
+        e["filled_prev"] = bought
+        e.setdefault("entry-original", e["entry"])
+        if pending["shares"] != e["shares"]:
+            e.setdefault("shares-original", e["shares"])
+        price, shares = pending["price"], pending["shares"]
+        e.update(order_id=order_id, entry=price, shares=shares, usd=round(shares * price, 2),
+                 size=pending.get("size") or round(shares * price, 2), aon=bool(pending.get("aon")),
+                 note=f"Update Buy: {bought:,} bought before; a new buy of {shares - bought:,} @ {fmt_price(price)}."
+                 + ("" if order_id else " " + message))
+        e.pop("status", None)
+        self.save()
+        self.update_live(e["ticker"])
+        net = e.get("safety-net-live")      # the plan's safety net: the live one for the new amount and price
+        if net is not None and net != e.get("safety-net"):
+            e.setdefault("safety-net-original", e.get("safety-net"))
+            e["safety-net"] = net
+            self.save()
+        self.changed.emit()
+        if order_id:
+            QTimer.singleShot(5000, self.check)
+
     def _canceled(self, key, side, error):
         self.canceling.discard(key)
         order_id = self.cancel_ids.pop(key, None)
@@ -2629,6 +2770,9 @@ class AtmTrades(QObject):
             e = self.find(key)
             if e is not None and e.pop("partial_sell", None):       # its sell isn't sent either
                 e["note"] = "Sell Partial stopped: the rest of the buy wasn't canceled."
+                self.save()
+            if e is not None and e.pop("rebuy", None):              # nor the new buy
+                e["note"] = "Update Buy stopped: the rest of the order wasn't canceled."
                 self.save()
             QMessageBox.warning(QApplication.activeWindow(), f"{side.title()} order not canceled", error)
         else:
@@ -2679,11 +2823,21 @@ class AtmTrades(QObject):
         now = datetime.now().isoformat(timespec="seconds")
         e["status"] = status
         if side == "BUY":
-            e["filled"] = filled
-            if status == "FILLED" or (status in ORDER_DONE and filled):
+            before = int(e.get("filled_prev") or 0)     # bought by the trade's orders before this one (Update Buy)
+            e["filled"] = before + filled
+            if e.get("rebuy") and status in ORDER_DONE and status != "FILLED":
+                e["rebuy"]["ready"] = True      # the rest canceled: the new buy goes out (partial_followup)
+                e["note"] = f"Update Buy: the rest canceled after {e['filled']:,}; sending the new buy..."
+                return
+            if status == "FILLED":
+                e.pop("rebuy", None)      # (the rest bought before the cancel)
+            if status == "FILLED" or (status in ORDER_DONE and e["filled"]):
+                if before and e["filled"]:      # the average price of all of them
+                    e.setdefault("entry-last", e["entry"])
+                    e["entry"] = round(((e.get("cost_prev") or 0.0) + filled * e["entry"]) / e["filled"], 6)
                 e.update(state="bought", bought_time=now,
                          note="" if status == "FILLED" else
-                         f"The buy order was {status.lower()} after {filled:,} of {e['shares']:,}.")
+                         f"The buy order was {status.lower()} after {e['filled']:,} of {e['shares']:,}.")
                 e.pop("status", None)
             elif status in ORDER_DONE:      # nothing bought
                 e.update(state="canceled", canceled_time=now,
@@ -3078,7 +3232,7 @@ class ChecklistPanel(QWidget):
         return edit
 
     def can_change_order(self, e):
-        return (e is not None and e.get("state") == "buy_open" and not e.get("filled")
+        return (e is not None and e.get("state") == "buy_open" and not e.get("rebuy") and not e.get("partial_sell")
                 and self.trader is not None and not self.atm.busy(e, self.ticker))
 
     @staticmethod

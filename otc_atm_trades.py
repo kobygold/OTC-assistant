@@ -683,11 +683,14 @@ def entered_text(iso):
 
 
 class SchwabOrdersTable(AtmTable):
-    """The chosen account's open orders that aren't ATM trades (sent from thinkorswim), as on the
-    chart: each can be changed to a new limit (Schwab replaces it, as thinkorswim does) or canceled."""
+    """All the chosen account's open orders (the Monitor tab's All Open Orders): the ATM trades' and the others
+    (sent from thinkorswim, the chart, the portfolio), as on the chart: each can be changed to a new limit
+    (Schwab replaces it, as thinkorswim does) or canceled. An ATM trade's order is changed / canceled as its
+    trade's (atm.json follows: the entry, the $, the safety net; a sell's exit); a partly bought ATM buy:
+    the rest canceled, then a new buy at the new limit."""
 
     def __init__(self, atm: AtmTrades, parent=None):
-        self.keys = []              # the orders' chart keys ("schwab:<id>"), in row order
+        self.keys = []              # the orders' chart keys ("schwab:<id>" / "atm:<trade id>:<side>"), in row order
         QTableWidget.__init__(self, 0, len(ORDER_COLUMNS), parent)
         self.atm = atm
         self.edits = {}
@@ -743,13 +746,15 @@ class SchwabOrdersTable(AtmTable):
                                       if col in (OCOL["Ticker"], OCOL["Side"], OCOL["Status"]) else None))
 
     def orders(self):
-        return self.sorted_rows(sorted(self.atm.other_orders(), key=lambda o: o.get("entered") or "", reverse=True))
+        return self.sorted_rows(sorted(self.atm.all_open_orders(), key=lambda o: o.get("entered") or "", reverse=True))
 
     def rebuild(self):
         orders = self.orders()
-        busy = sorted(k for k in self.atm.sending | self.atm.canceling if str(k).startswith("schwab:"))
-        signature = json.dumps([self.atm.chosen_account(), orders, busy, self.sort_state()], sort_keys=True,
-                               default=str)
+        mine = {o["busy"] for o in orders}
+        busy = sorted(str(k) for k in self.atm.sending | self.atm.canceling if k in mine)
+        signature = json.dumps([self.atm.chosen_account(), [{k: v for k, v in o.items() if k != "atm"} for o in orders],
+                                [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state()],
+                               sort_keys=True, default=str)
         if signature == self.signature:
             return
         focused = QApplication.focusWidget()
@@ -757,7 +762,7 @@ class SchwabOrdersTable(AtmTable):
             QTimer.singleShot(1000, self.rebuild)       # not while a price is being typed
             return
         self.signature = signature
-        self.keys = [f"schwab:{o['id']}" for o in orders]
+        self.keys = [o["key"] for o in orders]
         self.edits = {}
         self.setRowCount(len(orders))
         for row, o in enumerate(orders):
@@ -770,11 +775,14 @@ class SchwabOrdersTable(AtmTable):
         self.setRowHeight(row, self.rowHeight(row) + 6)
 
     def fill(self, row, o):
-        key = f"schwab:{o['id']}"
-        changing, canceling = key in self.atm.sending, key in self.atm.canceling
+        key, e = o["key"], o.get("atm")
+        changing, canceling = o["busy"] in self.atm.sending, o["busy"] in self.atm.canceling
         buy = o["side"] == "BUY"
-        self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff", bold=True)
-        self.cell(row, OCOL["Side"], o["side"], "#ffffff", bold=True, bg=BUY_COLOR if buy else SELL_COLOR)
+        self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff", bold=True,
+                  tip="An ATM trade's order: Change / Cancel act on the trade too" if e else "")
+        self.cell(row, OCOL["Side"], o["side"] + (" · ATM" if e else ""), "#ffffff", bold=True,
+                  bg=BUY_COLOR if buy else SELL_COLOR,
+                  tip="An ATM trade's order (the Monitor's ATM Trades)" if e else "Not an ATM trade")
         status = "Changing ..." if changing else "Canceling ..." if canceling else \
             (o.get("status") or "").replace("_", " ").title()
         self.cell(row, OCOL["Status"], status, YELLOW if changing or canceling else None)
@@ -794,8 +802,12 @@ class SchwabOrdersTable(AtmTable):
         edit.setText(limit_text(o["price"]))
         edit.setToolTip(ORDER_COLUMNS[OCOL["New limit"]][1])
         change = button("Change", BUY_COLOR if buy else SELL_COLOR)
+        rebuy = bool(e) and buy and bool(filled)        # a partly bought ATM buy: the rest canceled, then a new buy
         change.setToolTip("Change the order's limit to the New limit, after asking (Schwab replaces the order, "
-                          "as thinkorswim does)" + (". Partly filled: change it in thinkorswim." if filled else ""))
+                          "as thinkorswim does)" + (". The ATM trade follows (its entry, $ and safety net / its "
+                                                    "exit)." if e else "")
+                          + (" Partly bought: the rest is canceled, then a new buy at the New limit." if rebuy else
+                             ". Partly filled: change it in thinkorswim." if filled else ""))
         cancel = button("Cancel", CANCEL_COLOR, "#111111")
         cancel.setIcon(red_x_icon())
         cancel.setToolTip("Cancel the order, after asking")
@@ -809,7 +821,7 @@ class SchwabOrdersTable(AtmTable):
             same = new is not None and abs(new - o["price"]) < 1e-9
             edit.setStyleSheet(f"QLineEdit {{ background: #1b1e21; color: {ORDER_COLOR if same else CHANGED};"
                                " font-weight: bold; border: 1px solid #3a4046; }")
-            change.setEnabled(ready and not filled and bool(new) and not same)
+            change.setEnabled(ready and (not filled or rebuy) and bool(new) and not same)
             self.fill_dollars(row, o, self.box_price(edit))
         edit.textChanged.connect(tint)
         edit.editingFinished.connect(lambda w=edit: self.typed_price(w))
@@ -879,7 +891,7 @@ class SchwabOrdersTable(AtmTable):
         m = self.atm.market.get(o["ticker"], {})
         for k, col in (("bid", OCOL["Bid now"]), ("ask", OCOL["Ask now"])):
             self.cell(row, col, quote_text(m.get(k)), bold=True)
-        edit = self.edits.get(f"schwab:{o['id']}")      # the fee may have been read meanwhile
+        edit = self.edits.get(o["key"])      # the fee may have been read meanwhile
         self.fill_dollars(row, o, self.box_price(edit) if edit else None)
 
     @staticmethod
@@ -918,7 +930,7 @@ class SchwabOrdersTable(AtmTable):
         if self.sort_col is not None and ORDER_COLUMNS[self.sort_col][0] in self.MARKET_SORTS:
             self.rebuild()
         dirty, self.dirty = self.dirty, set()
-        orders = {f"schwab:{o['id']}": o for o in self.orders()}
+        orders = {o["key"]: o for o in self.orders()}
         for row, key in enumerate(self.keys):
             o = orders.get(key)
             if o is not None and o["ticker"] in dirty:

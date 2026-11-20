@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.37"
+APP_VERSION = "2.7.38"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -2976,8 +2976,8 @@ class MainWindow(QMainWindow):
         split = self.schwab_split = QSplitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
         split.addWidget(trades)
-        # the account's other orders (sent from thinkorswim): change or cancel them here too
-        others = self.orders_box = QGroupBox("Other Pending Orders")
+        # all the account's open orders (the ATM trades' too): change or cancel them here
+        others = self.orders_box = QGroupBox("All Open Orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
