@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.46"
+APP_VERSION = "2.7.47"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2997,8 +2997,8 @@ class MainWindow(QMainWindow):
         split = self.schwab_split = QSplitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
         split.addWidget(trades)
-        # all the account's open orders (the ATM trades' too): change or cancel them here
-        others = self.orders_box = QGroupBox("All Open Orders")
+        # all the account's orders (the ATM trades' too), working or not: change or cancel the working ones here
+        others = self.orders_box = QGroupBox("All Orders")
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
@@ -4871,25 +4871,27 @@ class MainWindow(QMainWindow):
 
     # ================================================== Order news ===
     def order_text(self, ev):
-        """An order event as a line: "BOUGHT 10,000 FOBIF @ 0.0161 (all 10,000) · ...159 · ATM"."""
-        kind, side, n = ev["kind"], ev["side"], ev.get("shares") or 0
+        """An order event as a line: "BTAIQ: You got +200 @ 0.0076 (partly: 3,700 of 19,737 so far) · ATM"."""
+        kind, side, n, t = ev["kind"], ev["side"], ev.get("shares") or 0, ev["ticker"]
         price = ev.get("fill_price") if kind in ("filled", "partial") and ev.get("fill_price") else ev.get("price")
         at = f" @ {fmt_price(price)}" if price else ""
-        done = "BOUGHT" if side == "BUY" else "SOLD"
+        got = f"You got +{n:,}" if side == "BUY" else f"You sold -{n:,}"
         if kind == "filled":
-            text = f"{done} {n:,} {ev['ticker']}{at} (the order filled: {ev['filled']:,} of {ev['quantity']:,})"
+            text = f"{t}: {got}{at} (the order filled: {ev['filled']:,} of {ev['quantity']:,})"
         elif kind == "partial":
-            text = f"{done} {n:,} {ev['ticker']}{at} (partly: {ev['filled']:,} of {ev['quantity']:,} so far)"
+            text = f"{t}: {got}{at} (partly: {ev['filled']:,} of {ev['quantity']:,} so far)"
         elif kind == "placed":
-            text = f"New {side} order: {n:,} {ev['ticker']}{at}"
+            text = f"{t}: New {side} order: {n:,}{at}"
         else:
-            text = (f"{kind.upper()}: {side} {ev['quantity']:,} {ev['ticker']}{at}"
+            text = (f"{t}: {kind.upper()} {side} order of {ev['quantity']:,}{at}"
                     + (f" ({ev['filled']:,} filled before)" if ev.get("filled") else ""))
-        return text + f" · ...{ev['account']}" + (" · ATM" if ev.get("atm") else "")
+        return text + (" · ATM" if ev.get("atm") else "")
 
     def on_order_event(self, ev):
         """Schwab's news of an order: in the Order Log (and its file); a fill or a cancel lights the chart's
-        Orders button."""
+        Orders button. Only the account chosen at the top's (as everything on the Monitor tab)."""
+        if ev.get("account") != self.checklist.atm.chosen_account():
+            return
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"{stamp}  {self.order_text(ev)}"
         self.order_log.appendPlainText(line)

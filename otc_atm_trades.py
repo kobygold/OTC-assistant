@@ -658,12 +658,14 @@ class AtmTable(SortMixin, QTableWidget):
 ORDER_COLUMNS = [
     ("Ticker", "Double-click: its chart"),
     ("Side", ""),
-    ("Status", "Schwab's status of the order"),
+    ("Status", "Working: open at Schwab (it can be changed or canceled). Else how it ended: Filled, Canceled, "
+               "Replaced (by a changed order), Rejected, Expired"),
     ("Entered", "When the order was placed"),
+    ("Filled", "When it was filled (its last fill)"),
     ("Duration", "GTC: good till canceled. Day: for the day only."),
-    ("Shares", "The shares left to fill (and those filled)"),
-    ("Limit", "The order's limit price"),
-    ("$", "Shares left x limit, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
+    ("Shares", "The order's shares (a working one: those still to fill)"),
+    ("Limit", "The order's limit price (MKT: a market order); filled: the fills' average price"),
+    ("$", "Shares x the price, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
           "get). Follows the New limit as it's changed (orange)."),
     ("Bid now", "Read every 15 seconds (live while Level II streams the ticker)"),
     ("Ask now", "Read every 15 seconds (live while Level II streams the ticker)"),
@@ -685,7 +687,8 @@ def entered_text(iso):
 
 
 class SchwabOrdersTable(AtmTable):
-    """All the chosen account's open orders (the Monitor tab's All Open Orders): the ATM trades' and the others
+    """All the chosen account's orders (the Monitor tab's All Orders), working or not, newest first (sortable by
+    every column): the ATM trades' and the others
     (sent from thinkorswim, the chart, the portfolio), as on the chart: each can be changed to a new limit
     (Schwab replaces it, as thinkorswim does) or canceled. An ATM trade's order is changed / canceled as its
     trade's (atm.json follows: the entry, the $, the safety net; a sell's exit); a partly bought ATM buy:
@@ -716,8 +719,8 @@ class SchwabOrdersTable(AtmTable):
         atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
-        self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Entered", "Duration", "Shares", "Limit", "$",
-                                              "Bid now", "Ask now")])
+        self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Entered", "Filled", "Duration", "Shares",
+                                              "Limit", "$", "Bid now", "Ask now")])
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now")
@@ -725,15 +728,18 @@ class SchwabOrdersTable(AtmTable):
     def sort_value(self, col, o):
         title = ORDER_COLUMNS[col][0]
         m = self.atm.market.get(o["ticker"], {})
-        if title in ("Ticker", "Side", "Status", "Entered", "Duration"):
-            return o.get({"Ticker": "ticker", "Side": "side", "Status": "status", "Entered": "entered",
-                          "Duration": "duration"}[title])
+        if title == "Status":
+            return (1 if o.get("open") else 0, o.get("status") or "")      # (the working ones first, highest first)
+        if title in ("Ticker", "Side", "Entered", "Duration"):
+            return o.get({"Ticker": "ticker", "Side": "side", "Entered": "entered", "Duration": "duration"}[title])
+        if title == "Filled":
+            return o.get("filled_at") or None
         if title == "Shares":
-            return o["shares"]
+            return self.order_shares(o)
         if title == "Limit":
-            return o["price"]
+            return self.order_price(o)
         if title == "$":
-            return o["shares"] * o["price"]
+            return self.order_shares(o) * (self.order_price(o) or 0)
         if title in ("Bid now", "Ask now"):
             return (list(m.get("bid" if title == "Bid now" else "ask") or []) + [None])[0]
         return None
@@ -748,7 +754,21 @@ class SchwabOrdersTable(AtmTable):
                                       if col in (OCOL["Ticker"], OCOL["Side"], OCOL["Status"]) else None))
 
     def orders(self):
-        return self.sorted_rows(sorted(self.atm.all_open_orders(), key=lambda o: o.get("entered") or "", reverse=True))
+        return self.sorted_rows(sorted(self.atm.all_orders(), key=lambda o: o.get("entered") or "", reverse=True))
+
+    @staticmethod
+    def order_shares(o):
+        """A working order's shares still to fill; else the order's (those filled, once filled)."""
+        if o.get("open"):
+            return o["shares"]
+        return o.get("filled") or o.get("quantity") or o["shares"]
+
+    @staticmethod
+    def order_price(o):
+        """A working order's limit; a filled one: its fills' average (else its limit)."""
+        if not o.get("open") and o.get("filled") and o.get("fill_price"):
+            return o["fill_price"]
+        return o.get("price")
 
     def rebuild(self):
         orders = self.orders()
@@ -779,22 +799,39 @@ class SchwabOrdersTable(AtmTable):
     def fill(self, row, o):
         key, e = o["key"], o.get("atm")
         changing, canceling = o["busy"] in self.atm.sending, o["busy"] in self.atm.canceling
-        buy = o["side"] == "BUY"
-        self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff", bold=True,
+        buy, working = o["side"] == "BUY", bool(o.get("open"))
+        atm_order = bool(e) or bool(o.get("atm_order"))
+        self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff" if working else DIM, bold=True,
                   tip="An ATM trade's order: Change / Cancel act on the trade too" if e else "")
-        self.cell(row, OCOL["Side"], o["side"] + (" · ATM" if e else ""), "#ffffff", bold=True,
-                  bg=BUY_COLOR if buy else SELL_COLOR,
-                  tip="An ATM trade's order (the Monitor's ATM Trades)" if e else "Not an ATM trade")
-        status = "Changing ..." if changing else "Canceling ..." if canceling else \
-            (o.get("status") or "").replace("_", " ").title()
-        self.cell(row, OCOL["Status"], status, YELLOW if changing or canceling else None)
+        self.cell(row, OCOL["Side"], o["side"] + (" · ATM" if atm_order else ""), "#ffffff", bold=True,
+                  bg=(BUY_COLOR if buy else SELL_COLOR) if working else "#2a2f34",
+                  tip="An ATM trade's order (the Monitor's ATM Trades)" if atm_order else "Not an ATM trade")
+        raw = o.get("status") or ""
+        if changing or canceling:
+            status, color = ("Changing ..." if changing else "Canceling ..."), YELLOW
+        elif working:
+            status = "Working" + ("" if raw in ("WORKING", "") else f" ({raw.replace('_', ' ').lower()})")
+            color = "#1db31d"
+        else:
+            status = raw.replace("_", " ").title()
+            color = {"FILLED": ORDER_COLOR, "CANCELED": DIM, "REPLACED": DIM, "EXPIRED": DIM}.get(raw, "#e0404f")
+        self.cell(row, OCOL["Status"], status, color, bold=working or raw == "FILLED")
         self.cell(row, OCOL["Entered"], entered_text(o.get("entered")), DIM, tip=o.get("entered") or "")
+        self.cell(row, OCOL["Filled"], entered_text(o.get("filled_at")) if o.get("filled_at") else "-",
+                  DIM if not o.get("filled_at") else None, tip=o.get("filled_at") or "")
         duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration") or "")
         self.cell(row, OCOL["Duration"], duration)
-        filled = o.get("filled") or 0
-        self.cell(row, OCOL["Shares"], f"{o['shares']:,}" + (f" ({filled:,} filled)" if filled else ""), bold=True)
-        self.cell(row, OCOL["Limit"], fmt_price(o["price"]), ORDER_COLOR, bold=True)
+        self.cell(row, OCOL["Shares"], f"{self.order_shares(o):,}", bold=True)
+        price = self.order_price(o)
+        self.cell(row, OCOL["Limit"], fmt_price(price) if price else "MKT", ORDER_COLOR if working else None, bold=True)
+        if not working:             # (an order that ended: nothing to change)
+            for col in (OCOL["New limit"], OCOL["Change"], OCOL["Cancel"]):
+                self.removeCellWidget(row, col)
+                self.cell(row, col, "")
+            self.fill_dollars(row, o)
+            return
         self.atm.read_fee(o["ticker"])      # Schwab's commission for it, once a session
+        filled = o.get("filled") or 0
 
         # the new limit: + / - and back to the order's limit, then Change
         edit = SelectAllEdit()
@@ -911,17 +948,20 @@ class SchwabOrdersTable(AtmTable):
     def fill_dollars(self, row, o, price=None):
         """Shares x the limit (the New limit, while changed) with the commission: "$101.00 + $6.95 =
         $107.95" for a buy, "$101.00 - $6.95 = $94.05" for a sell."""
-        price = price or o["price"]
+        price = price or self.order_price(o)
+        if not price:               # (a market order not filled: no price)
+            self.cell(row, OCOL["$"], "-", DIM)
+            return
         read = self.atm.fee_of(o["ticker"])
         fee = FEE_USD if read is None else read
-        total = o["shares"] * price
+        total = self.order_shares(o) * price
         if o["side"] == "BUY":
             text = f"${total:,.2f} + ${fee:.2f} = ${total + fee:,.2f}"
         else:
             net = total - fee
             text = f"${total:,.2f} - ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
-        changed = abs(price - o["price"]) > 1e-9
-        tip = (f"{o['shares']:,} x {fmt_price(price)}" + (" (the New limit)" if changed else "")
+        changed = bool(o.get("open")) and abs(price - (o.get("price") or 0)) > 1e-9
+        tip = (f"{self.order_shares(o):,} x {fmt_price(price)}" + (" (the New limit)" if changed else "")
                + (f", Schwab's commission ${fee:.2f}" if read is not None else
                   f", the usual commission ${fee:.2f} (Schwab's not read yet)")
                + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))

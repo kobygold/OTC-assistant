@@ -2118,11 +2118,13 @@ class AtmTrades(QObject):
                 if (ticker is None or o["ticker"] == ticker) and o["open"] and o["price"] and o["shares"] > 0
                 and o["id"] not in tracked]
 
-    def all_open_orders(self, account=None):
-        """Every open limit order of the account (the chosen one): the ATM trades' ones too, each with "key"
-        (its chart key: "atm:<trade id>:<side>" or "schwab:<id>"), "busy" (what sending / canceling hold while
-        it changes) and "atm" (the trade, or None)."""
+    def all_orders(self, account=None):
+        """Every order of the account (the chosen one) of the last ORDERS_BACK_DAYS days, open or not, the ATM
+        trades' too: each with "key" (its chart key: "atm:<trade id>:<side>" for an ATM trade's open order, else
+        "schwab:<id>"), "busy" (what sending / canceling hold while it changes), "atm" (its open trade, or None)
+        and "atm_order" (an ATM trade's, now or before)."""
         account = account or self.chosen_account()
+        mine_ever = self.tracked_ids()
         mine = {}
         for e in self.entries:
             if (e.get("account") or self.chosen_account()) != account:
@@ -2133,14 +2135,12 @@ class AtmTrades(QObject):
                 mine[str(e["sell_id"])] = (e, "SELL")
         out = []
         for o in self.schwab_orders.get(account, []):
-            if not (o["open"] and o["price"] and o["shares"] > 0):
-                continue
             e, side = mine.get(o["id"], (None, None))
-            if e is not None and side == o["side"]:
-                out.append(dict(o, key=f"atm:{e['id']}:{side}", busy=e["id"], atm=e))
+            if o["open"] and e is not None and side == o["side"]:
+                out.append(dict(o, key=f"atm:{e['id']}:{side}", busy=e["id"], atm=e, atm_order=True))
             else:
                 key = f"schwab:{o['id']}"
-                out.append(dict(o, key=key, busy=key, atm=None))
+                out.append(dict(o, key=key, busy=key, atm=None, atm_order=o["id"] in mine_ever))
         return out
 
     # ---- the stocks owned (the Monitor tab's list) ----
@@ -2195,7 +2195,7 @@ class AtmTrades(QObject):
         in_orders = self.in_sell_orders(ticker)
         if in_orders >= pos["shares"]:
             QMessageBox.information(parent, f"Sell {ticker}", f"All {pos['shares']:,} {ticker} are in sell orders "
-                                    "already: change or cancel them in the All Open Orders list.")
+                                    "already: change or cancel them in the All Orders list.")
             return
         m = self.market.get(ticker, {})
         free = pos["shares"] - in_orders
@@ -2301,7 +2301,7 @@ class AtmTrades(QObject):
             side, _, ticker = key.partition(":")
             QMessageBox.warning(QApplication.activeWindow(), f"{ticker} {side} order not sent", message)
         self.changed.emit()
-        QTimer.singleShot(1500, self.check)     # the new order in the All Open Orders list
+        QTimer.singleShot(1500, self.check)     # the new order in the All Orders list
 
     def order_events(self, account, before, now):
         """What changed between two reads of the account's orders: [{"kind": "filled" | "partial" | "canceled" |
@@ -2513,7 +2513,7 @@ class AtmTrades(QObject):
         return True
 
     def ask_rebuy(self, parent, e, shares, price, size):
-        """An open ATM buy partly bought, changed (the checklist's new values, a new limit in All Open Orders or on
+        """An open ATM buy partly bought, changed (the checklist's new values, a new limit in All Orders or on
         the chart): after the dialog its rest is canceled; once Schwab says so, a new buy goes out for the shares
         still to buy (`shares` in all, less those bought) at `price` (partial_followup). The trade keeps counting
         what was bought before. True when it was asked for."""
