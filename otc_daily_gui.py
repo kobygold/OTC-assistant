@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.58"
+APP_VERSION = "2.7.59"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1459,9 +1459,9 @@ class MainWindow(QMainWindow):
         if side is None:
             return
         rows = []
-        # the open ATM trades first, the furthest step first (sell sent, bought, buy sent and partly bought, buy
-        # sent), then by name; then the other favorites by group, then by name
-        step = {"sell_open": 4, "bought": 3, "buy_open": 1}
+        # the ATM trades first, the furthest step first (completed: sold, until cleared; sell sent; bought; buy
+        # sent and partly bought; buy sent), then by name; then the other favorites by group, then by name
+        step = {"sold": 5, "sell_open": 4, "bought": 3, "buy_open": 1}
 
         def order(t):
             e = self.fav_atm_trade(t) or {}
