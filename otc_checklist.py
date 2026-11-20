@@ -2161,6 +2161,53 @@ class AtmTrades(QObject):
             out += [p["ticker"] for p in self.positions[account]]
         return list(dict.fromkeys(t for t in out if t))
 
+    def adopt_outside_orders(self, account, orders):
+        """Orders of an open ATM trade's ticker placed outside it (thinkorswim, the chart's or the portfolio's
+        buttons), after it started, and no trade's: adopted, so the trade knows what it owns and sells.
+        A buy done with fills: its shares added (the entry: the average); an open sell while bought: the trade's
+        sell order (step 3); a sell done with fills: sold. Each one once (adopted_ids)."""
+        tracked = self.tracked_ids()
+        changed = False
+        for e in self.entries:
+            if (e.get("account") or self.chosen_account()) != account or e.get("state") not in ("bought", "sell_open"):
+                continue
+            start, _ = self.trade_window(e)
+            mine = []
+            for o in orders:
+                try:
+                    when = datetime.strptime(o.get("entered") or "", "%Y-%m-%dT%H:%M:%S%z")
+                except ValueError:
+                    continue
+                if o.get("ticker") == e.get("ticker") and o["id"] not in tracked and when >= start:
+                    mine.append(o)
+            for o in sorted(mine, key=lambda o: o.get("entered") or ""):
+                got, price = int(o.get("filled") or 0), o.get("fill_price") or o.get("price") or 0
+                what = None
+                if o["side"] == "BUY" and not o.get("open") and got:
+                    owned = int(e.get("filled") or 0)
+                    e["entry"] = round((owned * e["entry"] + got * price) / (owned + got), 6)    # the average
+                    e["filled"] = owned + got
+                    e["shares"] = max(int(e.get("shares") or 0), e["filled"])
+                    what = f"a buy of {got:,} @ {fmt_price(price)} placed outside the trade: added (the average entry)"
+                elif o["side"] == "SELL" and o.get("open") and e.get("state") == "bought":
+                    e.update(state="sell_open", sell_id=o["id"], sell_price=o.get("price"), sell_filled=got,
+                             sell_shares=int(o.get("quantity") or 0), sell_time=datetime.now().isoformat(timespec="seconds"))
+                    what = f"its sell order of {int(o.get('quantity') or 0):,} @ {fmt_price(o.get('price'))} " \
+                           "(placed outside the trade) followed"
+                elif o["side"] == "SELL" and not o.get("open") and got:
+                    e["sold"] = int(e.get("sold") or 0) + got
+                    e["proceeds"] = round((e.get("proceeds") or 0.0) + got * price, 6)
+                    if self.remaining(e) <= 0:
+                        e.update(state="sold", sold_time=datetime.now().isoformat(timespec="seconds"))
+                    what = f"a sell of {got:,} @ {fmt_price(price)} done outside the trade: counted"
+                if what:
+                    e.setdefault("adopted_ids", []).append(o["id"])
+                    tracked.add(o["id"])
+                    e["note"] = f"Adopted {what}."
+                    changed = True
+        if changed:
+            self.save()
+
     def tracked_ids(self):
         """The order ids the ATM trades follow, now or before."""
         ids = set()
@@ -2168,7 +2215,10 @@ class AtmTrades(QObject):
             for k in ("order_id", "sell_id"):
                 if e.get(k):
                     ids.add(str(e[k]))
+            if str(e.get("id", "")).isdigit():      # (a trade's id: its first buy order's)
+                ids.add(str(e["id"]))
             ids.update(str(x) for x in e.get("replaced_ids", []))
+            ids.update(str(x) for x in e.get("adopted_ids", []))
         return ids
 
     def other_orders(self, ticker=None, account=None):
@@ -2911,6 +2961,8 @@ class AtmTrades(QObject):
             new = sorted({o["ticker"] for o in self.other_orders()} - set(self.market))
             if new:
                 self.trader.read_quotes(new)
+        if self.decides():
+            self.adopt_outside_orders(account, orders)
         # trades whose order was canceled or replaced outside the app: follow the new one, or, once
         # the orders read after it show none, take it as canceled
         for e in list(self.entries) if self.decides() else []:
@@ -3075,6 +3127,8 @@ class AtmTrades(QObject):
                 return
             if e.get("sell_id") and e.get("sold"):        # an earlier sell's fills (Update Sell): counted on
                 e["sell_fills_prev"] = int(e.get("sell_fills_prev") or 0) + self.order_fills(e, e["sell_id"])
+            if e.get("sell_id") and str(e["sell_id"]) != str(order_id):     # (the old sell: still the trade's)
+                e.setdefault("replaced_ids", []).append(str(e["sell_id"]))
             e.update(state="sell_open", sell_price=pending.get("sell_price"), sell_id=order_id,
                      sell_time=now, sell_filled=0, note=message, sell_aon=bool(pending.get("aon")),
                      sell_shares=pending.get("shares"))
