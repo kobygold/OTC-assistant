@@ -4037,7 +4037,7 @@ class ChecklistPanel(QWidget):
                 """"Bought so far (2 times): 3,700 of 19,737" (the buy's fills, its earlier orders' too)."""
                 times = self.atm.fills_count(e, "BUY")
                 times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
-                return f"Bought so far{times}: {n:,} of {e['shares']:,}"
+                return f"Bought so far{times}: {n:,} of {e['shares']:,}" + (" ✔" if n >= e["shares"] else "")
             if state == "buy_open":
                 bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
                 # the shares still waiting in the order, and below: all those bought so far (earlier orders too)
@@ -4054,9 +4054,10 @@ class ChecklistPanel(QWidget):
                 done = sold + int(e.get("sold") or 0)
                 times = self.atm.fills_count(e, "SELL")
                 times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
+                owned = int(e.get("filled") or 0)
                 text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
-                        f"Sold so far{times}: {done:,} of {int(e.get('filled') or 0):,}\n"
-                        + bought_line(int(e.get("filled") or 0)))
+                        + bought_line(owned) + "\n"
+                        f"Sold so far{times}: {done:,} of {owned:,}" + (" ✔" if owned and done >= owned else ""))
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
             # (the trade's notes aren't shown here: they're in its history, on hover)
