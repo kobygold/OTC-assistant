@@ -68,12 +68,12 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.55"
+APP_VERSION = "2.7.56"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
 ORDER_LOG_LOAD = 500                    # its last lines shown at the start
-ORDER_TIP_LINES = 12                    # the chart's Orders button's tooltip: the latest fills / cancels
+ORDER_TIP_LINES = 10                    # the chart's Orders button's tooltip: the latest news (new, filled, ended)
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
 DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
@@ -1224,6 +1224,15 @@ class MainWindow(QMainWindow):
         self.order_news_ticker = ""     # the latest news' ticker (a click opens it)
         self.show_orders_btn(None)
         row.addWidget(self.orders_btn)
+        # beside it: seen (the color off, without opening anything)
+        self.orders_seen_btn = QToolButton()
+        self.orders_seen_btn.setText("✓")
+        self.orders_seen_btn.setToolTip("Seen: the Orders button back to plain (its news kept)")
+        self.orders_seen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.orders_seen_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.orders_seen_btn.setEnabled(False)
+        self.orders_seen_btn.clicked.connect(self.calm_orders_btn)
+        row.addWidget(self.orders_seen_btn)
         row.addStretch()
 
         root.addLayout(row)
@@ -4937,27 +4946,31 @@ class MainWindow(QMainWindow):
                 f.write(line + "\n")
         except OSError:
             pass
-        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):
+        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired", "placed"):
             self.order_news.insert(0, line)
             del self.order_news[ORDER_TIP_LINES:]
             self.order_news_ticker = ev["ticker"]
             self.show_orders_btn(ev)
 
     def show_orders_btn(self, ev):
-        """The chart's Orders button: the latest news in green (a fill) or amber (ended), else plain."""
+        """The chart's Orders button: the latest news in green (a fill), blue (a new order) or amber (ended),
+        else plain."""
         if ev is None:
             style = "QPushButton { padding: 3px 14px; }"
         else:
-            fill = ev["kind"] in ("filled", "partial")
-            self.orders_btn.setText(("✔ " if fill else "✘ ") + self.order_text(ev).split(" · ")[0])
-            bg, fg = ("#00a83c", "#ffffff") if fill else ("#e3b23c", "#111111")
+            kind = ev["kind"]
+            mark, bg, fg = (("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
+                            ("+ ", "#2f6fe0", "#ffffff") if kind == "placed" else ("✘ ", "#e3b23c", "#111111"))
+            self.orders_btn.setText(mark + self.order_text(ev).split(" · ")[0])
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
         self.orders_btn.setStyleSheet(style)
+        if hasattr(self, "orders_seen_btn"):
+            self.orders_seen_btn.setEnabled(ev is not None)
         how = "\n\nA click: its ticker on the chart. Right-click: the Monitor tab's Order Log."
-        self.orders_btn.setToolTip("The latest fills and cancels from Schwab (newest first):\n\n"
+        self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} from Schwab (newest first):\n\n"
                                    + "\n".join(self.order_news) + how if self.order_news else
-                                   "Fills and cancels from Schwab show here." + how)
+                                   "New orders, fills and cancels from Schwab show here." + how)
 
     def copy_chart_ticker(self):
         """The copy icon by the ticker box: the chart's ticker (else the box's) to the clipboard, "Copied: ABCD"
