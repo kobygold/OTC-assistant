@@ -84,6 +84,7 @@ ORDER_COLOR = "#4fc3f7"     # the plan's values once a BUY order was sent: fixed
 # What is read from Schwab, and when. While the stream's account activity is on, an order event
 # (placed, changed, canceled, filled) reads the orders and positions at once, and so does each
 # (re)connect of the stream; nothing else is read on a timer unless it is needed:
+FOLLOWUP_MAX_S = 180        # Update Buy / Sell Partial: their second order goes out only this soon after approved
 ORDER_CHECK_S = 15          # the timer's tick; the Monitor tab's quotes while it is open (not streamed tickers)
 POSITIONS_TAB_S = 60        # the positions while the Monitor tab is open (Schwab's Day P/L isn't streamed)
 SAFETY_CHECK_S = 300        # the orders, while an ATM trade has an order working (a fill's event missed)
@@ -1897,7 +1898,7 @@ class AtmTrades(QObject):
             return
         shares, price, aon = got
         e["partial_sell"] = {"shares": shares, "all": shares >= int(e.get("filled") or 0), "price": price,
-                             "aon": aon, "by": socket.gethostname()}
+                             "aon": aon, "by": socket.gethostname(), "at": time.time()}
         e["note"] = f"Sell Partial: canceling the rest of the buy, then selling {shares:,} @ {fmt_price(price)}..."
         self.save()
         self.canceling.add(e["id"])
@@ -1911,11 +1912,27 @@ class AtmTrades(QObject):
         "bought": its sell goes out (all the stocks bought, if all were chosen and more came meanwhile)."""
         if self.trader is None:
             return
-        me = socket.gethostname()
+        me, now = socket.gethostname(), time.time()
+
+        def stale(want):
+            """Approved too long ago (or before its time was kept): not sent at a price chosen then."""
+            return now - float(want.get("at") or 0) > FOLLOWUP_MAX_S
         for e in self.entries:
             again = e.get("rebuy")
-            if again and again.get("by") == me and again.get("ready") and e.get("state") == "buy_open" \
-                    and not self.busy(e):
+            # the rest canceled: "ready" (this version's decision), or "bought" (an app of an older version
+            # decided it, or a race): either way the new buy goes out
+            done = again and (again.get("ready") and e.get("state") == "buy_open" or e.get("state") == "bought")
+            if again and again.get("by") == me and done and not self.busy(e):
+                if stale(again):
+                    e.pop("rebuy", None)
+                    if e.get("state") == "buy_open":
+                        e["state"] = "bought"
+                    e["note"] = (f"Update Buy: the rest was canceled, but the new buy of {e['ticker']} wasn't sent "
+                                 f"(approved more than {FOLLOWUP_MAX_S // 60} minutes ago: its price may be old). "
+                                 f"You own {self.remaining(e):,}: buy more with a new order if you still want them.")
+                    self.save()
+                    self.changed.emit()
+                    continue
                 rest = int(again["shares"]) - int(e.get("filled") or 0)
                 if rest <= 0:           # (all were bought before the cancel)
                     e.pop("rebuy", None)
@@ -1935,6 +1952,12 @@ class AtmTrades(QObject):
             if not want or want.get("by") != me or e.get("state") == "buy_open":
                 continue
             e.pop("partial_sell", None)
+            if stale(want):
+                e["note"] = (f"Sell Partial: the rest of the buy was canceled, but the sell wasn't sent (approved more "
+                             f"than {FOLLOWUP_MAX_S // 60} minutes ago: its price may be old). Sell ATM sends it.")
+                self.save()
+                self.changed.emit()
+                continue
             left = self.remaining(e)
             if e.get("state") != "bought" or left <= 0 or self.busy(e):
                 e["note"] = "Sell Partial: not sent (the trade isn't waiting for a sell)."
@@ -2400,7 +2423,7 @@ class AtmTrades(QObject):
         if self.busy(e) or e.get("state") != "buy_open":
             return False
         e["rebuy"] = {"shares": shares, "price": price, "size": round(float(size), 2), "aon": aon.isChecked(),
-                      "by": socket.gethostname()}
+                      "by": socket.gethostname(), "at": time.time()}
         e["note"] = f"Update Buy: canceling the rest of the order, then buying {rest:,} @ {fmt_price(price)}..."
         self.save()
         self.canceling.add(e["id"])
@@ -2746,7 +2769,8 @@ class AtmTrades(QObject):
         if pending["shares"] != e["shares"]:
             e.setdefault("shares-original", e["shares"])
         price, shares = pending["price"], pending["shares"]
-        e.update(order_id=order_id, entry=price, shares=shares, usd=round(shares * price, 2),
+        e.pop("bought_time", None)
+        e.update(state="buy_open", order_id=order_id, entry=price, shares=shares, usd=round(shares * price, 2),
                  size=pending.get("size") or round(shares * price, 2), aon=bool(pending.get("aon")),
                  note=f"Update Buy: {bought:,} bought before; a new buy of {shares - bought:,} @ {fmt_price(price)}."
                  + ("" if order_id else " " + message))
