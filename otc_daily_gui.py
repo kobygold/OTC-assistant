@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.51"
+APP_VERSION = "2.7.52"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1217,8 +1217,11 @@ class MainWindow(QMainWindow):
         self.orders_btn = QPushButton("Orders: no news yet")
         self.orders_btn.setMinimumWidth(300)
         self.orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.orders_btn.clicked.connect(self.open_order_log)
+        self.orders_btn.clicked.connect(self.open_order_news)      # its ticker on the chart
+        self.orders_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.orders_btn.customContextMenuRequested.connect(lambda _p: self.open_order_log())    # right-click: the log
         self.order_news = []            # the latest fills / cancels, newest first (the tooltip)
+        self.order_news_ticker = ""     # the latest news' ticker (a click opens it)
         self.show_orders_btn(None)
         row.addWidget(self.orders_btn)
         row.addStretch()
@@ -4913,6 +4916,7 @@ class MainWindow(QMainWindow):
         if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):
             self.order_news.insert(0, line)
             del self.order_news[ORDER_TIP_LINES:]
+            self.order_news_ticker = ev["ticker"]
             self.show_orders_btn(ev)
 
     def show_orders_btn(self, ev):
@@ -4922,13 +4926,14 @@ class MainWindow(QMainWindow):
         else:
             fill = ev["kind"] in ("filled", "partial")
             self.orders_btn.setText(("✔ " if fill else "✘ ") + self.order_text(ev).split(" · ")[0])
-            bg, fg = ("#1c8a3e", "#ffffff") if fill else ("#e3b23c", "#111111")
+            bg, fg = ("#00a83c", "#ffffff") if fill else ("#e3b23c", "#111111")
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
         self.orders_btn.setStyleSheet(style)
+        how = "\n\nA click: its ticker on the chart. Right-click: the Monitor tab's Order Log."
         self.orders_btn.setToolTip("The latest fills and cancels from Schwab (newest first):\n\n"
-                                   + "\n".join(self.order_news) if self.order_news else
-                                   "Fills and cancels from Schwab show here. A click: the Monitor tab's Order Log.")
+                                   + "\n".join(self.order_news) + how if self.order_news else
+                                   "Fills and cancels from Schwab show here." + how)
 
     def copy_chart_ticker(self):
         """The copy icon by the ticker box: the chart's ticker (else the box's) to the clipboard, "Copied: ABCD"
@@ -4938,14 +4943,28 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(text)
             checklist.show_copied(f"Copied: {text}", 1000)
 
+    def open_order_news(self):
+        """The Orders button: the latest news' ticker on the chart (the button back to plain); none yet: the log."""
+        ticker = self.order_news_ticker
+        if not ticker:
+            self.open_order_log()
+            return
+        self.tabs.setCurrentIndex(1)
+        self.show_chart(ticker)
+        self.calm_orders_btn()
+
+    def calm_orders_btn(self):
+        """The Orders button back to plain, keeping its last news' text."""
+        text = self.orders_btn.text()
+        self.show_orders_btn(None)
+        self.orders_btn.setText(text if self.order_news else "Orders: no news yet")
+
     def open_order_log(self):
         """The Orders button: the Monitor tab's Order Log at its newest line (the button back to plain)."""
         self.tabs.setCurrentIndex(self.schwab_tab_index)
         bar = self.order_log.verticalScrollBar()
         bar.setValue(bar.maximum())
-        text = self.orders_btn.text()
-        self.show_orders_btn(None)
-        self.orders_btn.setText(text if self.order_news else "Orders: no news yet")
+        self.calm_orders_btn()
 
     def fav_atm_trade(self, ticker):
         """The ticker's ATM trade in the chosen account: the open one, else the last one in the list."""
