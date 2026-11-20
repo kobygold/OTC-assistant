@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.50"
+APP_VERSION = "2.7.51"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1033,6 +1033,15 @@ class MainWindow(QMainWindow):
                                                                      self.ticker_label),
                                        "Click: copy the chart's ticker")
         row.addWidget(self.ticker_label)
+        # a copy icon: the ticker copied ("Copied: ABCD" by the mouse for a second)
+        self.ticker_copy_btn = QToolButton()
+        self.ticker_copy_btn.setIcon(checklist.copy_icon())
+        self.ticker_copy_btn.setToolTip("Copy the chart's ticker")
+        self.ticker_copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ticker_copy_btn.setAutoRaise(True)
+        self.ticker_copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.ticker_copy_btn.clicked.connect(lambda: self.copy_chart_ticker())
+        row.addWidget(self.ticker_copy_btn)
         self.chart_ticker = SelectAllLineEdit()
         self.chart_ticker.setPlaceholderText("e.g. CVAT")
         self.chart_ticker.setValidator(UpperValidator(self.chart_ticker))
@@ -1099,7 +1108,8 @@ class MainWindow(QMainWindow):
         self.checklist_btn.setToolTip("Show or hide the trade checklist on the right of the chart "
                                       "(its items are in checklist.txt)")
         row.addWidget(self.checklist_btn)
-        self.reload_btn = QPushButton("Reload History")
+        self.reload_btn = QToolButton()         # (as Checklist beside it: the same height)
+        self.reload_btn.setText("Reload History")
         self.reload_btn.setToolTip(
             "Re-downloads this ticker's full history in one API call, split-adjusted as of "
             "today. Use it after a split or reverse split. Stored prices stay where the new ones "
@@ -4919,6 +4929,14 @@ class MainWindow(QMainWindow):
         self.orders_btn.setToolTip("The latest fills and cancels from Schwab (newest first):\n\n"
                                    + "\n".join(self.order_news) if self.order_news else
                                    "Fills and cancels from Schwab show here. A click: the Monitor tab's Order Log.")
+
+    def copy_chart_ticker(self):
+        """The copy icon by the ticker box: the chart's ticker (else the box's) to the clipboard, "Copied: ABCD"
+        shown by the mouse for a second."""
+        text = (self.chart.ticker or self.chart_ticker.text()).strip()
+        if text:
+            QApplication.clipboard().setText(text)
+            checklist.show_copied(f"Copied: {text}", 1000)
 
     def open_order_log(self):
         """The Orders button: the Monitor tab's Order Log at its newest line (the button back to plain)."""
