@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.60"
+APP_VERSION = "2.7.61"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5019,7 +5019,8 @@ class MainWindow(QMainWindow):
         self.calm_orders_btn()
 
     def fav_atm_trade(self, ticker):
-        """The ticker's ATM trade in the chosen account: the open one, else the last one in the list."""
+        """The ticker's ATM trade in the chosen account: the open one, else the last one sold (a canceled one:
+        none, as on the checklist)."""
         checklist_panel = getattr(self, "checklist", None)
         if checklist_panel is None:       # (not made yet, at the start)
             return None
@@ -5028,7 +5029,8 @@ class MainWindow(QMainWindow):
         mine = [e for e in atm_trades.entries
                 if e.get("ticker") == ticker and (e.get("account") or chosen) == chosen]
         open_ = [e for e in mine if e.get("state") not in ("sold", "canceled")]
-        e = (open_ or mine or [None])[-1]
+        done = [e for e in mine if e.get("state") == "sold"]     # (a canceled one: nothing bought, no circles)
+        e = (open_ or done or [None])[-1]
         return atm_trades.live_view(e) if e else None      # (filled / canceled at Schwab: shown at once)
 
     def fav_atm_item(self, ticker):
