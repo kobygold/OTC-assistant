@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.41"
+APP_VERSION = "2.7.42"
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -1424,12 +1424,13 @@ class MainWindow(QMainWindow):
         if side is None:
             return
         rows = []
-        # the open ATM trades first, the furthest step first (sell sent, bought, buy sent), then by name; then the
-        # other favorites by group, then by name
-        step = {"sell_open": 3, "bought": 2, "buy_open": 1}
+        # the open ATM trades first, the furthest step first (sell sent, bought, buy sent and partly bought, buy
+        # sent), then by name; then the other favorites by group, then by name
+        step = {"sell_open": 4, "bought": 3, "buy_open": 1}
 
         def order(t):
-            rank = step.get((self.fav_atm_trade(t) or {}).get("state"), 0)
+            e = self.fav_atm_trade(t) or {}
+            rank = step.get(e.get("state"), 0) + (1 if e.get("state") == "buy_open" and e.get("filled") else 0)
             return (0, -rank, t) if rank else (1, self.favs[t]["group"], t)
         for t in sorted(self.favs, key=order):
             fav = self.favs[t]
