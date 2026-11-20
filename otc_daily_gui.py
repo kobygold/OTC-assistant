@@ -43,7 +43,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
+    QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
     QPushButton, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
     QWidget,
 )
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.56"
+APP_VERSION = "2.7.57"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1212,10 +1212,12 @@ class MainWindow(QMainWindow):
         row.addWidget(self.avg_period)
         row.addStretch()
         row = main_row
-        row.addStretch()
-        # the latest order news from Schwab: green on a fill, amber on a cancel; a click: the Monitor tab's log
+        row.addSpacing(12)
+        # the latest order news from Schwab: green on a fill, amber on a cancel; a click: its ticker on the chart.
+        # It takes all the room left to the right (its text never widens the window: a long one is cut)
         self.orders_btn = QPushButton("Orders: no news yet")
-        self.orders_btn.setMinimumWidth(300)
+        self.orders_btn.setMinimumWidth(200)
+        self.orders_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.orders_btn.clicked.connect(self.open_order_news)      # its ticker on the chart
         self.orders_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1223,7 +1225,7 @@ class MainWindow(QMainWindow):
         self.order_news = []            # the latest fills / cancels, newest first (the tooltip)
         self.order_news_ticker = ""     # the latest news' ticker (a click opens it)
         self.show_orders_btn(None)
-        row.addWidget(self.orders_btn)
+        row.addWidget(self.orders_btn, 1)
         # beside it: seen (the color off, without opening anything)
         self.orders_seen_btn = QToolButton()
         self.orders_seen_btn.setText("✓")
@@ -1233,7 +1235,6 @@ class MainWindow(QMainWindow):
         self.orders_seen_btn.setEnabled(False)
         self.orders_seen_btn.clicked.connect(self.calm_orders_btn)
         row.addWidget(self.orders_seen_btn)
-        row.addStretch()
 
         root.addLayout(row)
         root.addWidget(self.chart_opts)
