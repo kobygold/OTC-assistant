@@ -1341,7 +1341,7 @@ def partial_sell_dialog(parent, account_name, e, start, fee):
         rows += [("Profit after both fees", usd_signed(gain)), ("Fill", aon)]
         return f"Sell {shares:,} {e['ticker']} at {fmt_price(price)} (partly bought)?", rows
     title, rows = make(filled, box.price())
-    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, "Cancel the rest & SELL",
+    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, "Cancel the rest + SELL",
                                                    SELL_COLOR, box)
 
     def changed(*_):
@@ -2302,6 +2302,16 @@ class AtmTrades(QObject):
         self.changed.emit()
         QTimer.singleShot(1500, self.check)     # the new order in the All Open Orders list
 
+    def live_order(self, e):
+        """The trade's open order (its buy while buy_open, its sell while sell_open) in Schwab's latest list of
+        its account's orders (order_info()), or None."""
+        field = {"buy_open": "order_id", "sell_open": "sell_id"}.get(e.get("state"))
+        oid = str(e.get(field) or "") if field else ""
+        if not oid:
+            return None
+        return next((o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
+                     if o["id"] == oid), None)
+
     def orders_read(self, account=None):
         """True once the account's (the chosen one's) orders were read from Schwab."""
         return (account or self.chosen_account()) in self.schwab_orders
@@ -2495,7 +2505,7 @@ class AtmTrades(QObject):
             self.fee_reader.load_accounts()
         if not confirm_order(parent, self.account_name(account), f"Buy the rest of {ticker}: {rest:,} @ "
                              f"{fmt_price(price)} (the old order's rest canceled first)?", rows,
-                             "Cancel the rest & BUY", BUY_COLOR):
+                             "Cancel the rest + BUY new", BUY_COLOR):
             return False
         if self.busy(e) or e.get("state") != "buy_open":
             return False
@@ -3866,19 +3876,27 @@ class ChecklistPanel(QWidget):
         elif e and e["id"] in self.atm.canceling:
             text = "Canceling the order..."
         elif e:
-            status = e.get("status", "")
-            status = f" ({status})" if status else ""
+            # the trade's order as Schwab's latest list of the account's orders has it (every app gets that list
+            # at once; the trade itself is updated by the main server's app, a moment later): its status and fills
+            o = self.atm.live_order(e)
+            status = (o or {}).get("status") or e.get("status", "")
+            status = f" ({status.replace('_', ' ')})" if status else ""
             left = self.atm.remaining(e)
             if state == "buy_open":
-                text = (f"Buy order open{status}: {e['shares']:,} @ {fmt_price(e['entry'])} GTC"
-                        + (f" · {e['filled']:,} bought so far" if e.get("filled") else ""))
+                bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
+                # the shares still waiting in the order, and below: all those bought so far (earlier orders too)
+                text = (f"Buy order open{status}: {max(e['shares'] - bought, 0):,} @ {fmt_price(e['entry'])} GTC\n"
+                        f"Bought so far: {bought:,} of {e['shares']:,}")
                 # (new values typed: shown in the right column, sent with Update Buy; no line here)
             elif state == "bought":
                 text = f"You own {left:,} @ {fmt_price(e['entry'])}. Sell ATM sells them all at the exit price."
             elif state == "sell_open":
-                text = (f"Sell order open{status}: {min(e.get('sell_shares') or left, left):,} @ "
-                        f"{fmt_price(e['sell_price'])} GTC"
-                        + (f" · {e['sell_filled']:,} sold so far" if e.get("sell_filled") else ""))
+                sold = max(int(e.get("sell_filled") or 0), int((o or {}).get("filled") or 0))
+                selling = min(e.get("sell_shares") or left, left)
+                # the shares still waiting in the order, and below: those sold so far (of this order, and before)
+                done = sold + int(e.get("sold") or 0)
+                text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
+                        f"Sold so far: {done:,} of {int(e.get('filled') or 0):,}")
             elif state == "sold":
                 text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
             if e.get("note") and state != "sold":

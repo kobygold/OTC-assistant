@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHead
                              QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 import otc_news_db
+from otc_level2 import ElidedLabel     # (a long text ends in "...": never wider than the screen)
 
 WARN, INFO, DIM = "#ff6060", "#d8d8d8", "#8a8a8a"
 GOLD = "#e3b23c"
@@ -237,10 +238,12 @@ class NewsPanel(QWidget):
         root.setSpacing(3)
         top = QHBoxLayout()
         top.setSpacing(4)
-        self.summary = QLabel("")
+        # (ends in "..." when short of room, the full text on hover: a long months list or "Reading..." line
+        # would otherwise make the window wider than the screen, pushing the checklist off its right edge)
+        self.summary = ElidedLabel("")
         self.summary.setStyleSheet(f"color: {GOLD}; font-weight: bold;")
         top.addWidget(self.summary, 1)
-        self.reading = QLabel("")           # the main server's reading of the channel
+        self.reading = ElidedLabel("")      # the main server's reading of the channel
         self.reading.setStyleSheet(f"color: {DIM};")
         top.addWidget(self.reading)
         top.addSpacing(8)
