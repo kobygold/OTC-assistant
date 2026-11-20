@@ -1368,6 +1368,59 @@ def partial_sell_dialog(parent, account_name, e, start, fee):
     return (shares, price, aon.isChecked()) if price > 0 and 0 < shares <= filled else None
 
 
+def buy_more_dialog(parent, account_name, e, start, default_shares, fee):
+    """Buy More: an ATM trade bought, more of it bought (the same trade). The amount (default_shares), the limit
+    price (from `start`: the bid + 1 tick; the reset goes back to it), +/- and the reset by each, white while
+    they show the default and yellow once changed, All or none (unchecked). (shares, price, aon) or None."""
+    owned, entry = int(e.get("filled") or 0) - int(e.get("sold") or 0), e["entry"]
+    box = PriceBox(start, reset_tip=f"Back to {fmt_price(start)}, the bid + 1 tick")
+    amount = AmountBox("shares", lambda: default_shares, lambda: 1000 if box.price() < 1 else 10,
+                       f"Back to {default_shares:,}", "Up / down 1,000 shares under $1, else 10")
+    amount.setToolTip("The shares to buy now (added to the trade)")
+    aon = aon_box()
+    usual = fee is None
+    fee = FEE_USD if usual else fee
+
+    def make(shares, price):
+        total = shares * price
+        after = owned + shares
+        avg = (owned * entry + total) / after if after else price
+        exit_ = e.get("exit") or 0
+        rows = [("Ticker", e["ticker"]), ("Order", "BUY · Limit · GTC · more for the ATM trade"),
+                ("Own now", f"{owned:,} @ {fmt_price(entry)}"),
+                ("Amount of stocks", amount), ("Limit price", PRICE_ROW)] + fee_rows(fee, total)
+        rows.append(("Once bought", f"{after:,} @ {fmt_price(round(avg, 6))} (the average)"))
+        if exit_:
+            rows.append((f"Profit at the exit {fmt_price(exit_)}",
+                         usd_signed(after * (exit_ - avg) - 3 * fee)))      # (this buy's fee, the first, the sell)
+        rows.append(("Fill", aon))
+        return f"Buy {shares:,} more {e['ticker']} at {fmt_price(price)}?", rows
+    title, rows = make(default_shares, box.price())
+    dlg, title_label, values, send = _order_dialog(parent, account_name, title, rows, "Send BUY order", BUY_COLOR, box)
+
+    def changed(*_):
+        price, shares = box.price(), int(amount.value())
+        ok = price > 0 and shares > 0
+        send.setEnabled(ok)
+        if not ok:
+            return
+        t, new_rows = make(shares, price)
+        title_label.setText(f"<b>{t}</b>")
+        dlg.setWindowTitle(t)
+        for label, (_k, v) in zip(values, new_rows):
+            if label is not None:
+                label.setText(f"<b{tint(v)}>{v[0] if isinstance(v, tuple) else v}</b>")
+    box.price_changed.connect(changed)
+    amount.value_changed.connect(changed)
+    changed()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    box._steps()
+    amount._steps()
+    price, shares = box.price(), int(amount.value())
+    return (shares, price, aon.isChecked()) if price > 0 and shares > 0 else None
+
+
 def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_orders=0, note="", usd_start=0.0,
                  remember_usd=None, quotes=None):
     """The chart's BUY / SELL (not an ATM trade): Limit (the default) or Market, GTC (the default)
@@ -2379,6 +2432,30 @@ class AtmTrades(QObject):
         self.changed.emit()
         self.trader.replace(busy_key, ticker, side, order_id, shares, price, account, duration, session, aon)
 
+    def ask_buy_more(self, parent, e, start, default_shares, fee=None):
+        """Buy More (the trade bought): after the dialog, a new buy for the same trade; once out the trade waits
+        for the buy again (step 1), counting what it owns; bought: the average entry (_rebuy_placed, _done)."""
+        if self.trader is None or self.busy(e) or e.get("state") != "bought" or e.get("rebuy") \
+                or e.get("partial_sell"):
+            return False
+        if self.fee_reader:
+            self.fee_reader.load_accounts()
+        got = buy_more_dialog(parent, self.account_name(e.get("account")), e, start, default_shares,
+                              e.get("fee") if fee is None else fee)
+        if got is None or e.get("state") != "bought" or self.busy(e):
+            return False
+        shares, price, aon = got
+        owned = self.remaining(e)
+        total = int(e.get("filled") or 0) + shares
+        self.sending.add(e["id"])
+        self.pending[e["id"]] = {"rebuy": True, "shares": total, "price": price, "aon": aon,
+                                 "size": round((owned + shares) * price, 2), "old_id": str(e.get("order_id") or ""),
+                                 "more": shares}
+        e["note"] = f"Buy More: sending a buy of {shares:,} @ {fmt_price(price)}..."
+        self.changed.emit()
+        self.trader.place(e["id"], e["ticker"], "BUY", shares, price, e.get("account"), aon)
+        return True
+
     def ask_rebuy(self, parent, e, shares, price, size):
         """An open ATM buy partly bought, changed (the checklist's new values, a new limit in All Open Orders or on
         the chart): after the dialog its rest is canceled; once Schwab says so, a new buy goes out for the shares
@@ -2754,7 +2831,8 @@ class AtmTrades(QObject):
         bought = int(e.get("filled") or 0)
         if order_id is None and not message.startswith("Schwab took"):
             e.update(state="bought", bought_time=datetime.now().isoformat(timespec="seconds"),
-                     note=f"Update Buy: the new buy wasn't sent ({message}). You own {bought:,}.")
+                     note=f"{'Buy More' if pending.get('more') else 'Update Buy'}: the new buy wasn't sent ({message}). "
+                          f"You own {self.remaining(e):,}.")
             e.pop("status", None)
             self.save()
             self.changed.emit()
@@ -2772,7 +2850,9 @@ class AtmTrades(QObject):
         e.pop("bought_time", None)
         e.update(state="buy_open", order_id=order_id, entry=price, shares=shares, usd=round(shares * price, 2),
                  size=pending.get("size") or round(shares * price, 2), aon=bool(pending.get("aon")),
-                 note=f"Update Buy: {bought:,} bought before; a new buy of {shares - bought:,} @ {fmt_price(price)}."
+                 note=(f"Buy More: {pending['more']:,} more @ {fmt_price(price)} ({bought:,} owned before)."
+                       if pending.get("more") else
+                       f"Update Buy: {bought:,} bought before; a new buy of {shares - bought:,} @ {fmt_price(price)}.")
                  + ("" if order_id else " " + message))
         e.pop("status", None)
         self.save()
@@ -3715,6 +3795,9 @@ class ChecklistPanel(QWidget):
         if state == "buy_open":
             self.style_button(self.buy_btn, "cl_cancel", "Cancel Buy")
             self.buy_btn.setEnabled(can)
+        elif state == "bought":         # more of it, for the same trade
+            self.style_button(self.buy_btn, "cl_buy", "Buy More")
+            self.buy_btn.setEnabled(can and not e.get("rebuy") and not e.get("partial_sell"))
         else:
             self.style_button(self.buy_btn, "cl_buy", "Buy ATM")
             self.buy_btn.setEnabled(can and state is None)
@@ -3755,6 +3838,8 @@ class ChecklistPanel(QWidget):
         else:
             self.buy_btn.setToolTip(
                 "Cancel the buy order (after you approve it)" if state == "buy_open" else
+                "Buy more of it for this ATM trade (after you approve it): the trade waits for the buy again, "
+                "then owns all of them at the average price" if state == "bought" else
                 "Send a GTC limit buy at the entry price for the amount of stocks, after you approve it"
                 if state is None else "There is an ATM trade for this ticker (Monitor tab)")
             self.sell_btn.setToolTip(
@@ -3797,6 +3882,8 @@ class ChecklistPanel(QWidget):
         e = self.order()
         if e and e.get("state") == "buy_open":
             self.atm.ask_cancel(self, e, "BUY")
+        elif e and e.get("state") == "bought":
+            self.buy_more()
         else:
             self.buy()
 
@@ -3878,6 +3965,19 @@ class ChecklistPanel(QWidget):
         self.evaluate()
         p, _ = self.last_plan
         self.atm.ask_sell(self, e, p["exit"] or e.get("sell_at"), self.fees.get(self.ticker, (None, ""))[0])
+
+    def buy_more(self):
+        """Buy More: at the bid + 1 tick now (else the trade's entry); the shares: those the plan left unbought,
+        else as many as the position $ buys."""
+        e = self.order()
+        if not e or e.get("state") != "bought":
+            return
+        self.evaluate()
+        p, usd = self.last_plan
+        start = (p.get("auto") or {}).get("entry") or e["entry"]
+        left = int(e.get("shares") or 0) - int(e.get("filled") or 0)
+        default = left if left > 0 else max(1, round((self.default_usd() or POSITION_USD) / start))
+        self.atm.ask_buy_more(self, e, start, default, self.fees.get(self.ticker, (None, ""))[0])
 
     def sell_partial(self):
         """! Sell Partial: the stocks bought so far, at the exit now (the plan's, or changed here)."""
