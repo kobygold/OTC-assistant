@@ -3268,7 +3268,8 @@ class ChecklistPanel(QWidget):
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                if item.key == "shares":        # the amounts ($, stocks) over the prices: a thin line between
+                if item.key in ("ticker", "shares", "stop"):    # the ticker | the amounts | the prices | the results:
+                    # a thin line between them
                     line = QWidget()
                     line.setObjectName("cl_split")
                     line.setFixedHeight(1)
