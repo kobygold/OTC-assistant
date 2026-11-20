@@ -68,11 +68,12 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.63"
+APP_VERSION = "2.7.64"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
 ORDER_LOG_LOAD = 500                    # its last lines shown at the start
+MONITOR_PERIODS = (("Last day", 1), ("Last 2 days", 2), ("Last week", 7), ("All", 0))     # the Monitor tab's Show
 ORDER_TIP_LINES = 10                    # the chart's Orders button's tooltip: the latest news (new, filled, ended)
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
@@ -504,6 +505,21 @@ class ProgressButton(QPushButton):
         p.setBrush(QColor("#1db31d"))   # and a solid line along the bottom
         p.drawRect(r.left(), r.bottom() - 2, int(r.width() * self.fraction), 3)
         p.end()
+
+
+class BoxTitleClicks(QObject):
+    """A click on a group box's title (its top line): fn(box)."""
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.MouseButtonPress and e.button() == Qt.MouseButton.LeftButton \
+                and e.position().y() <= obj.fontMetrics().height() + 12:
+            self.fn(obj)
+            return True
+        return False
 
 
 class OnResize(QObject):
@@ -3006,6 +3022,22 @@ class MainWindow(QMainWindow):
         self.renew_timer.timeout.connect(self.check_login_age)
         self.renew_timer.start()
         QTimer.singleShot(5000, self.check_login_age)
+        # Show: the period of ATM Trades, All Orders and the Order Log (open trades / working orders always)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Show:"))
+        self.monitor_period = QComboBox()
+        for name, days in MONITOR_PERIODS:
+            self.monitor_period.addItem(name, days)
+        saved = int(self.settings.get("monitor_period", 0) or 0)
+        self.monitor_period.setCurrentIndex(max(0, [d for _, d in MONITOR_PERIODS].index(saved)
+                                                if saved in [d for _, d in MONITOR_PERIODS] else 3))
+        self.monitor_period.setToolTip("What ATM Trades, All Orders and the Order Log show: what happened in the "
+                                       "last day (24 hours), 2 days, week, or all. Open trades and working orders "
+                                       "always show.")
+        self.monitor_period.currentIndexChanged.connect(self.on_monitor_period)
+        prow.addWidget(self.monitor_period)
+        prow.addStretch()
+        root.addLayout(prow)
         trades = self.atm_box = QGroupBox("ATM Trades")
         tlay = QVBoxLayout(trades)
         self.trades_table = AtmTable(self.checklist.atm)
@@ -3048,8 +3080,7 @@ class MainWindow(QMainWindow):
             lines = ORDER_LOG.read_text(encoding="utf-8").splitlines()[-ORDER_LOG_LOAD:] if ORDER_LOG.exists() else []
         except OSError:
             lines = []
-        for line in lines:
-            self.order_log.appendPlainText(line)
+        self.order_log_lines = list(lines)      # all of them (the period shows some)
         self.checklist.atm.order_news.connect(self.on_order_event)
         self.checklist.atm.order_news.connect(self.on_order_filled)     # (a buy done: its Bid alert away)
         # the heights, in the order shown (saved before as ATM trades, other orders, portfolio)
@@ -3067,6 +3098,16 @@ class MainWindow(QMainWindow):
                                  (owned, "owned_box", "#1db31d"), (log_box, "order_log_box", "#c8c8c8")):
             box.setObjectName(name)
             box.setStyleSheet(f"QGroupBox#{name} {{ font-size: 13pt; font-weight: bold; color: {color}; }}")
+        # a click on a section's title folds it (only the title left) or opens it again
+        self.monitor_boxes = {"owned_box": (owned, "Portfolio"), "atm_box": (trades, "ATM Trades"),
+                              "orders_box": (others, "All Orders"), "order_log_box": (log_box, "Order Log")}
+        self.box_filter = BoxTitleClicks(self.toggle_monitor_box)
+        folded = set(self.settings.get("monitor_folded") or [])
+        for name, (box, _title) in self.monitor_boxes.items():
+            box.installEventFilter(self.box_filter)
+            box.setToolTip("Click the title: fold it / open it")
+            self.fold_monitor_box(name, name in folded, save=False)
+        self.on_monitor_period(save=False)
         self.schwab_accounts_read = False
         reader = self.checklist.fee_reader
         if reader:
@@ -4955,7 +4996,9 @@ class MainWindow(QMainWindow):
             return
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"{stamp}  {self.order_text(ev)}"
-        self.order_log.appendPlainText(line)
+        self.order_log_lines.append(line)
+        del self.order_log_lines[:-ORDER_LOG_LOAD * 4]
+        self.order_log.appendPlainText(line)        # (new: in every period)
         try:
             with open(ORDER_LOG, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -4986,6 +5029,54 @@ class MainWindow(QMainWindow):
         self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} from Schwab (newest first):\n\n"
                                    + "\n".join(self.order_news) + how if self.order_news else
                                    "New orders, fills and cancels from Schwab show here." + how)
+
+    # ---- the Monitor tab: its period, its sections folded ----
+    def on_monitor_period(self, *_args, save=True):
+        """Show: the period of ATM Trades, All Orders and the Order Log."""
+        days = self.monitor_period.currentData() or 0
+        for table in (self.trades_table, self.orders_table):
+            table.period_days = days
+            table.signature = None
+            table.rebuild()
+        cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
+        self.order_log.setPlainText("\n".join(x for x in self.order_log_lines if cutoff is None or x[:19] >= cutoff))
+        bar = self.order_log.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        if save:
+            self.settings["monitor_period"] = days
+            save_settings(self.settings)
+
+    def toggle_monitor_box(self, box):
+        name = box.objectName()
+        if name in self.monitor_boxes:
+            self.fold_monitor_box(name, not getattr(box, "folded", False))
+
+    def fold_monitor_box(self, name, folded, save=True):
+        """A section folded to its title (its lists hidden) or opened again."""
+        box, title = self.monitor_boxes[name]
+        box.folded = folded
+        lay = box.layout()
+        for i in range(lay.count()):
+            w = lay.itemAt(i).widget()
+            if w is not None:
+                w.setVisible(not folded)
+        box.setTitle(("▸ " if folded else "▾ ") + title)
+        if folded:
+            box.setMaximumHeight(box.minimumSizeHint().height())
+        else:
+            box.setMaximumHeight(16777215)
+            split = self.schwab_split
+            sizes, i = split.sizes(), split.indexOf(box)
+            if i >= 0 and sizes[i] < 120:          # (opened: some room again, from the largest)
+                big = max(range(len(sizes)), key=lambda k: sizes[k])
+                give = min(200, max(sizes[big] - 120, 0))
+                sizes[i] += give
+                sizes[big] -= give
+                split.setSizes(sizes)
+        if save:
+            self.settings["monitor_folded"] = sorted(n for n, (b, _t) in self.monitor_boxes.items()
+                                                     if getattr(b, "folded", False))
+            save_settings(self.settings)
 
     def copy_chart_ticker(self):
         """The copy icon by the ticker box: the chart's ticker (else the box's) to the clipboard, "Copied: ABCD"

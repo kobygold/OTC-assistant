@@ -42,7 +42,6 @@ COLUMNS = [
               " · Transaction Canceled: the buy was canceled before anything was bought"),
     ("Sent", "When the Buy ATM was sent"),
     ("Shares", "Step 1: the amount ordered. Steps 2-3: the amount owned. Step 4: the amount sold."),
-    ("$", "Amount of stocks x entry, + the buy's commission = what the buy costs"),
     ("Entry", "The buy order's limit price"),
     ("Exit plan", "The exit price planned at the buy"),
     ("Safety Net", "The safety net (stop) planned at the buy"),
@@ -86,6 +85,36 @@ def button(text, color, fg="#ffffff"):
     b.setStyleSheet(BUTTON.format(color, QColor(color).lighter(120).name(), fg))
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     return b
+
+
+OPEN_STATES = ("buy_open", "bought", "sell_open")
+
+
+def period_cutoff(days):
+    """The Monitor tab's period ("Show": the last `days` days, 0: all): the moment it starts, as a timestamp
+    rounded to the minute (None: all)."""
+    import time as _time
+    if not days:
+        return None
+    return int((_time.time() - days * 86400) // 60 * 60)
+
+
+def trade_recent(e, cutoff):
+    """An ATM trade to show in the period: an open one always, else when something happened in it since."""
+    if cutoff is None or e.get("state") in OPEN_STATES:
+        return True
+    from datetime import datetime as _dt
+    since = _dt.fromtimestamp(cutoff).isoformat(timespec="seconds")
+    return max(str(e.get(k) or "") for k in ("time", "bought_time", "sell_time", "sold_time", "canceled_time")) >= since
+
+
+def order_recent(o, cutoff):
+    """An order to show in the period: a working one always, else when placed, filled or ended since."""
+    if cutoff is None or o.get("open"):
+        return True
+    from datetime import datetime as _dt, timezone as _tz
+    since = _dt.fromtimestamp(cutoff, _tz.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
+    return max(str(o.get(k) or "") for k in ("entered", "filled_at", "closed")) >= since
 
 
 def compact_title(title):
@@ -260,8 +289,6 @@ class AtmTable(SortMixin, QTableWidget):
             return e.get("time")
         if title == "Shares":
             return e.get("shares")
-        if title == "$":
-            return e.get("usd")
         if title in ("Entry", "Exit plan", "Safety Net", "Fee"):
             return e.get({"Entry": "entry", "Exit plan": "exit", "Safety Net": "safety-net", "Fee": "fee"}[title])
         if title in ("Bid then", "Ask then"):
@@ -297,12 +324,14 @@ class AtmTable(SortMixin, QTableWidget):
     def rebuild(self):
         # only the trades of the account chosen at the top of the Monitor tab (all while none is)
         account = self.atm.settings.get("schwab_account", "")
-        entries = self.sorted_rows(e for e in reversed(self.atm.entries) if not account or e.get("account") == account)
+        cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: open trades always)
+        entries = self.sorted_rows(e for e in reversed(self.atm.entries)
+                                   if (not account or e.get("account") == account) and trade_recent(e, cutoff))
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries],
                                 [trade_steps(self.atm.live_view(e)) for e in entries],     # (Schwab's fills, at once)
-                                sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state()],
+                                sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state(), cutoff],
                                sort_keys=True, default=str)
         if signature == self.signature:
             self.sync_sell_at()
@@ -357,14 +386,6 @@ class AtmTable(SortMixin, QTableWidget):
         aon = e.get("sell_aon") if state in ("sell_open", "sold") else e.get("aon")
         self.cell(row, COL["Shares"], shares + (" AON" if aon else ""), bold=True,
                   tip="All or none: filled all at once, or not at all" if aon else "")
-        if e.get("usd"):        # as the other orders': amount + commission = total
-            fee = FEE_USD if e.get("fee") is None else e["fee"]
-            self.cell(row, COL["$"], f"${e['usd']:,.2f} + ${fee:.2f} = ${e['usd'] + fee:,.2f}", YELLOW, bold=True,
-                      tip=f"{e['shares']:,} x {fmt_price(e.get('entry'))} + "
-                          + (f"Schwab's commission ${fee:.2f}" if e.get("fee") is not None else
-                             f"the usual commission ${fee:.2f} (Schwab's wasn't read at the buy)"))
-        else:
-            self.cell(row, COL["$"], "-", bold=True)
         self.cell(row, COL["Entry"], fmt_price(e.get("entry")), ORDER_COLOR, bold=True)
         self.cell(row, COL["Exit plan"], fmt_price(e.get("exit")), GREEN, bold=True)
         self.cell(row, COL["Safety Net"], fmt_price(e.get("safety-net")), RED, bold=True)
@@ -785,7 +806,9 @@ class SchwabOrdersTable(AtmTable):
                                       if col in (OCOL["Ticker"], OCOL["Side"], OCOL["Status"]) else None))
 
     def orders(self):
-        return self.sorted_rows(sorted(self.atm.all_orders(), key=lambda o: o.get("entered") or "", reverse=True))
+        cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: working orders always)
+        return self.sorted_rows(sorted((o for o in self.atm.all_orders() if order_recent(o, cutoff)),
+                                       key=lambda o: o.get("entered") or "", reverse=True))
 
     @staticmethod
     def order_shares(o):
@@ -805,7 +828,8 @@ class SchwabOrdersTable(AtmTable):
         orders = self.orders()
         mine = {o["busy"] for o in orders}
         busy = sorted(str(k) for k in self.atm.sending | self.atm.canceling if k in mine)
-        signature = json.dumps([self.atm.chosen_account(), [{k: v for k, v in o.items() if k != "atm"} for o in orders],
+        signature = json.dumps([self.atm.chosen_account(), period_cutoff(getattr(self, "period_days", 0)),
+                                [{k: v for k, v in o.items() if k != "atm"} for o in orders],
                                 [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state()],
                                sort_keys=True, default=str)
         if signature == self.signature:
