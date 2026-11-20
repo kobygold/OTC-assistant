@@ -4060,13 +4060,20 @@ class ChecklistPanel(QWidget):
                         + bought_line(owned) + "\n"
                         f"Sold so far{times}: {done:,} of {owned:,}" + (" ✔" if owned and done >= owned else ""))
             elif state == "sold":
-                text = f"Sold {e.get('filled', 0):,}: {usd_signed(self.atm.profit(e))} after both fees."
+                total = self.atm.profit(e)
+                money = usd_signed(total)
+                text = f"Sold {e.get('filled', 0):,}: {money} after both fees."
             # (the trade's notes aren't shown here: they're in its history, on hover)
         self.order_text = text          # (as plain text)
         # its lines as rich text: a line's check (all bought / sold) in green
         self.order_label.setTextFormat(Qt.TextFormat.RichText)
-        self.order_label.setText(html.escape(text).replace("\n", "<br>").replace(
-            "✔", f"<span style='color: {MARKS[OK][1]}; font-weight: bold'>✔</span>"))
+        rich = html.escape(text).replace("\n", "<br>").replace(
+            "✔", f"<span style='color: {MARKS[OK][1]}; font-weight: bold'>✔</span>")
+        if e and state == "sold":       # the result: green when a gain, red when a loss
+            color = MARKS[OK][1] if total >= 0 else MARKS[BAD][1]
+            rich = rich.replace(html.escape(money), f"<span style='color: {color}; font-weight: bold'>"
+                                                    f"{html.escape(money)}</span>", 1)
+        self.order_label.setText(rich)
         self.order_label.setVisible(bool(text))
         history = self.atm.history_text(e) if e else ""
         self.order_label.setToolTip(f"{e['ticker']}'s history (newest first):\n\n{history}" if history else "")
