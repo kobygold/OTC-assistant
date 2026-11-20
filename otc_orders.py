@@ -33,7 +33,8 @@ def position_info(p):
 
 def order_info(o):
     """A Schwab order, short: {"id", "ticker", "side" ("BUY" or "SELL"), "shares" (left to fill),
-    "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type"};
+    "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type", "aon",
+    "fill_price" (the fills' average, None before any)};
     None for an order that isn't a one-leg stock order."""
     try:
         legs = o.get("orderLegCollection") or []
@@ -47,6 +48,14 @@ def order_info(o):
         quantity = int(o.get("quantity") or leg.get("quantity") or 0)
         filled = int(o.get("filledQuantity") or 0)
         status = o.get("status", "")
+        # the fills' average price (each execution's legs), None before any
+        done_shares, done_cost = 0, 0.0
+        for act in o.get("orderActivityCollection") or []:
+            for ex in act.get("executionLegs") or []:
+                q, pr = ex.get("quantity") or 0, ex.get("price")
+                if q and pr is not None:
+                    done_shares += q
+                    done_cost += q * float(pr)
         return {"id": str(o.get("orderId")), "ticker": leg.get("instrument", {}).get("symbol", ""),
                 "side": side, "quantity": quantity, "filled": filled,
                 "shares": int(o.get("remainingQuantity") or (quantity - filled)),
@@ -54,7 +63,8 @@ def order_info(o):
                 "open": status not in ORDER_DONE and status not in ("PENDING_CANCEL", "PENDING_REPLACE"),
                 "entered": o.get("enteredTime", ""), "duration": o.get("duration"),
                 "session": o.get("session"), "type": o.get("orderType"),
-                "aon": str(o.get("specialInstruction") or "").startswith("ALL_OR_NONE")}
+                "aon": str(o.get("specialInstruction") or "").startswith("ALL_OR_NONE"),
+                "fill_price": round(done_cost / done_shares, 6) if done_shares else None}
     except (TypeError, ValueError, AttributeError):
         return None
 

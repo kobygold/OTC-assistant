@@ -65,7 +65,7 @@ COL = {title: i for i, (title, _) in enumerate(COLUMNS)}
 COL["Clear"] = len(COLUMNS) - 1
 
 BUTTON = ("QPushButton {{ background: {0}; color: {2}; font-weight: bold; border: 1px solid {0};"
-          " border-radius: 4px; padding: 2px 10px; }} QPushButton:hover {{ background: {1}; }}"
+          " border-radius: 4px; padding: 1px 10px; }} QPushButton:hover {{ background: {1}; }}"
           " QPushButton:disabled {{ background: #1d2125; color: #5c6268; border-color: #2c3136; }}")
 
 
@@ -92,7 +92,7 @@ def centered(widget):
     """A cell widget in the middle of its cell."""
     box = QWidget()
     lay = QHBoxLayout(box)
-    lay.setContentsMargins(4, 2, 4, 2)
+    lay.setContentsMargins(4, 0, 4, 0)
     lay.addWidget(widget)
     return box
 
@@ -290,6 +290,7 @@ class AtmTable(SortMixin, QTableWidget):
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries],
+                                [trade_steps(self.atm.live_view(e)) for e in entries],     # (Schwab's fills, at once)
                                 sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state()],
                                sort_keys=True, default=str)
         if signature == self.signature:
@@ -313,7 +314,7 @@ class AtmTable(SortMixin, QTableWidget):
 
     def fit_row(self, row):
         self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 8)     # room around the Level II lines
+        self.setRowHeight(row, self.rowHeight(row) + 2)     # (condensed: little room around the lines)
 
     def fill(self, row, e):
         state = e.get("state", "buy_open")
@@ -322,8 +323,9 @@ class AtmTable(SortMixin, QTableWidget):
         top = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         self.cell(row, COL["Ticker"], e["ticker"], "#ffffff", bold=True, align=top)
         busy = self.atm.busy(e) or (state == "buy_open" and e["ticker"] in self.atm.sending)
-        steps = trade_steps(e)
-        item = self.cell(row, COL["Steps"], "", tip=steps_tip(e, steps))
+        live = self.atm.live_view(e)        # (the circles: as Schwab's latest orders show it, at once)
+        steps = trade_steps(live)
+        item = self.cell(row, COL["Steps"], "", tip=steps_tip(live, steps))
         item.setData(Qt.ItemDataRole.UserRole, steps)
         # the words only: the Steps column beside it shows which step it is
         short = name.split(": ", 1)[1] if name.startswith("Step ") and ": " in name else name
@@ -468,7 +470,7 @@ class AtmTable(SortMixin, QTableWidget):
         """The Sell at box, + above - beside it, and the reset to the exit plan."""
         box = QWidget()
         lay = QHBoxLayout(box)
-        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setContentsMargins(4, 0, 4, 0)
         lay.setSpacing(2)
         lay.addWidget(edit)
         steps = QVBoxLayout()
@@ -772,7 +774,7 @@ class SchwabOrdersTable(AtmTable):
 
     def fit_row(self, row):
         self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 6)
+        self.setRowHeight(row, self.rowHeight(row) + 1)     # (condensed)
 
     def fill(self, row, o):
         key, e = o["key"], o.get("atm")
@@ -839,7 +841,7 @@ class SchwabOrdersTable(AtmTable):
         """The New limit box, + above - beside it, and back to the order's limit."""
         box = QWidget()
         lay = QHBoxLayout(box)
-        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setContentsMargins(4, 0, 4, 0)
         lay.setSpacing(2)
         lay.addWidget(edit)
         steps = QVBoxLayout()
@@ -1040,7 +1042,9 @@ class PositionsTable(AtmTable):
         busy = sorted(k for k in self.atm.sending if str(k).startswith("sell:"))
         in_orders = [self.atm.in_sell_orders(p["ticker"]) for p in rows]
         atm = [(self.atm_entry(p["ticker"]) or {}).get("state") for p in rows]
-        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, atm, busy, self.sort_state()],
+        atm_steps = [trade_steps(self.atm.live_view(self.atm_entry(p["ticker"]))) if self.atm_entry(p["ticker"]) else None
+                     for p in rows]         # (the circles: Schwab's fills, at once)
+        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, atm, atm_steps, busy, self.sort_state()],
                                sort_keys=True, default=str)
         if signature == self.signature:
             return
@@ -1054,7 +1058,7 @@ class PositionsTable(AtmTable):
 
     def fit_row(self, row):
         self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 6)
+        self.setRowHeight(row, self.rowHeight(row) + 1)     # (condensed)
 
     def fill(self, row, p):
         ticker = p["ticker"]
@@ -1065,7 +1069,7 @@ class PositionsTable(AtmTable):
         e = self.atm_entry(ticker)
         if e is not None:       # an ATM trade's: in its state's colours
             name = STATES.get(e["state"], (e["state"],))[0]
-            steps = trade_steps(e)
+            steps = trade_steps(self.atm.live_view(e))      # (as Schwab's latest orders show it)
             item = self.cell(row, PCOL["ATM"], "", align=Qt.AlignmentFlag.AlignCenter,
                              tip=f"An ATM trade: {name}\n" + steps_tip(e, steps))
             item.setData(Qt.ItemDataRole.UserRole, steps)

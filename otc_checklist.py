@@ -1746,6 +1746,7 @@ class AtmTrades(QObject):
     at Schwab every ORDER_CHECK_S seconds. Also keeps the latest market of the trades' tickers."""
     changed = pyqtSignal()          # the trades, or their states
     market_changed = pyqtSignal(str)    # a ticker's bid / ask / Level II
+    order_news = pyqtSignal(dict)   # an order of an account filled (partly), canceled, placed...: see order_events
     buy_sent = pyqtSignal(str)      # a Buy ATM went out for this ticker
 
     def __init__(self, path: Path, settings: dict, save_settings, fee_reader=None, trader=None):
@@ -2302,6 +2303,51 @@ class AtmTrades(QObject):
         self.changed.emit()
         QTimer.singleShot(1500, self.check)     # the new order in the All Open Orders list
 
+    def order_events(self, account, before, now):
+        """What changed between two reads of the account's orders: [{"kind": "filled" | "partial" | "canceled" |
+        "rejected" | "expired" | "replaced" | "placed", "account", "id", "ticker", "side", "shares" (this time's),
+        "filled", "quantity", "price" (the limit), "fill_price", "atm" (an ATM trade's order)}]."""
+        old = {o["id"]: o for o in before}
+        mine = self.tracked_ids()
+        out = []
+        for o in now:
+            p = old.get(o["id"])
+            base = {"account": account, "id": o["id"], "ticker": o["ticker"], "side": o["side"],
+                    "filled": o.get("filled") or 0, "quantity": o.get("quantity") or 0, "price": o.get("price"),
+                    "fill_price": o.get("fill_price"), "atm": o["id"] in mine}
+            was = (p or {}).get("filled") or 0
+            if (o.get("filled") or 0) > was:
+                out.append(dict(base, kind="filled" if o.get("status") == "FILLED" else "partial",
+                                shares=(o.get("filled") or 0) - was))
+            status, old_status = o.get("status"), (p or {}).get("status")
+            if p is None and o.get("open"):
+                out.append(dict(base, kind="placed", shares=o.get("shares") or 0))
+            elif status != old_status and status in ("CANCELED", "REJECTED", "EXPIRED", "REPLACED") \
+                    and (p is None or p.get("open")):
+                out.append(dict(base, kind=status.lower(), shares=o.get("shares") or 0))
+        return out
+
+    def live_view(self, e):
+        """The trade as Schwab's latest list of its account's orders shows it, before the main server's app
+        has updated it: the shares bought / sold so far, and its step once the order is filled or ended (for
+        the step circles). The trade itself (atm.json) isn't changed."""
+        o = self.live_order(e) if e else None
+        if o is None:
+            return e
+        v, status = dict(e), o.get("status")
+        if e.get("state") == "buy_open":
+            v["filled"] = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int(o.get("filled") or 0))
+            if status == "FILLED" or (status in ORDER_DONE and v["filled"]):
+                v["state"] = "bought"
+            elif status in ORDER_DONE:
+                v["state"] = "canceled"
+        elif e.get("state") == "sell_open":
+            v["sell_filled"] = max(int(e.get("sell_filled") or 0), int(o.get("filled") or 0))
+            if status in ORDER_DONE:
+                v["sold"] = int(e.get("sold") or 0) + v["sell_filled"]
+                v["state"] = "sold" if self.remaining(v) <= 0 else "bought"
+        return v
+
     def live_order(self, e):
         """The trade's open order (its buy while buy_open, its sell while sell_open) in Schwab's latest list of
         its account's orders (order_info()), or None."""
@@ -2644,7 +2690,11 @@ class AtmTrades(QObject):
     def _orders(self, account, orders, error):
         if orders is None:
             return                  # tried again at the next check
+        before = self.schwab_orders.get(account)
         self.schwab_orders[account] = orders
+        if before is not None:      # (not the first read: its orders are old news)
+            for ev in self.order_events(account, before, orders):
+                self.order_news.emit(ev)
         self.orders_time[account] = time.time()
         # the trades' own orders: their status from the list (as a check of each would say)
         by_id = {o["id"]: o for o in orders}
@@ -4254,7 +4304,8 @@ class ChecklistPanel(QWidget):
                 "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
 
     def refresh(self):
-        self.steps_view.set_trade(self.order() if self.ticker else None)
+        # (the step circles: as Schwab's latest orders show it, at once)
+        self.steps_view.set_trade(self.atm.live_view(self.order()) if self.ticker else None)
         if not self.widgets:
             return
         results = self.evaluate()

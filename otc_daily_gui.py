@@ -68,9 +68,12 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.45"
+APP_VERSION = "2.7.46"
 
 APP_DIR = Path(__file__).resolve().parent
+ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
+ORDER_LOG_LOAD = 500                    # its last lines shown at the start
+ORDER_TIP_LINES = 12                    # the chart's Orders button's tooltip: the latest fills / cancels
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
 DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
@@ -1191,6 +1194,15 @@ class MainWindow(QMainWindow):
         row.addWidget(self.avg_period)
         row.addStretch()
         row = main_row
+        row.addStretch()
+        # the latest order news from Schwab: green on a fill, amber on a cancel; a click: the Monitor tab's log
+        self.orders_btn = QPushButton("Orders: no news yet")
+        self.orders_btn.setMinimumWidth(300)
+        self.orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.orders_btn.clicked.connect(self.open_order_log)
+        self.order_news = []            # the latest fills / cancels, newest first (the tooltip)
+        self.show_orders_btn(None)
+        row.addWidget(self.orders_btn)
         row.addStretch()
 
         self.reload_btn = QPushButton("Reload History")
@@ -2999,16 +3011,36 @@ class MainWindow(QMainWindow):
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         play.addWidget(self.owned_table)
         split.insertWidget(0, owned)        # the portfolio first
+        # the Order Log: what Schwab said of the orders (filled, partly, canceled, placed), newest at the bottom
+        log_box = self.order_log_box = QGroupBox("Order Log")
+        llay = QVBoxLayout(log_box)
+        self.order_log = QPlainTextEdit()
+        self.order_log.setReadOnly(True)
+        self.order_log.setMaximumBlockCount(5000)
+        self.order_log.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.order_log.setStyleSheet("QPlainTextEdit { background: #0d1014; color: #d8d8d8; }")
+        llay.addWidget(self.order_log)
+        split.addWidget(log_box)
+        try:
+            lines = ORDER_LOG.read_text(encoding="utf-8").splitlines()[-ORDER_LOG_LOAD:] if ORDER_LOG.exists() else []
+        except OSError:
+            lines = []
+        for line in lines:
+            self.order_log.appendPlainText(line)
+        self.checklist.atm.order_news.connect(self.on_order_event)
         # the heights, in the order shown (saved before as ATM trades, other orders, portfolio)
         sizes = self.settings.get("schwab_sizes")
         if not sizes and len(self.settings.get("schwab_split") or []) == 3:
             old = self.settings["schwab_split"]
             sizes = [old[2], old[0], old[1]]
-        split.setSizes(sizes or [200, 300, 200])
+        sizes = list(sizes or [200, 300, 200])
+        if len(sizes) == 3:             # (saved before the Order Log)
+            sizes.append(140)
+        split.setSizes(sizes)
         root.addWidget(split, 1)
         # the three titles: larger, in colour (the account is the one chosen at the top)
         for box, name, color in ((trades, "atm_box", "#e3b23c"), (others, "orders_box", "#4fc3f7"),
-                                 (owned, "owned_box", "#1db31d")):
+                                 (owned, "owned_box", "#1db31d"), (log_box, "order_log_box", "#c8c8c8")):
             box.setObjectName(name)
             box.setStyleSheet(f"QGroupBox#{name} {{ font-size: 13pt; font-weight: bold; color: {color}; }}")
         self.schwab_accounts_read = False
@@ -4837,6 +4869,64 @@ class MainWindow(QMainWindow):
             f"{len(tickers)} favorites: {', '.join(counts)}.   Double-click a ticker, or press Enter, to open its chart."
             if tickers else "No favorites yet. Add a ticker here, or click a star on the Zones or Chart tab.")
 
+    # ================================================== Order news ===
+    def order_text(self, ev):
+        """An order event as a line: "BOUGHT 10,000 FOBIF @ 0.0161 (all 10,000) · ...159 · ATM"."""
+        kind, side, n = ev["kind"], ev["side"], ev.get("shares") or 0
+        price = ev.get("fill_price") if kind in ("filled", "partial") and ev.get("fill_price") else ev.get("price")
+        at = f" @ {fmt_price(price)}" if price else ""
+        done = "BOUGHT" if side == "BUY" else "SOLD"
+        if kind == "filled":
+            text = f"{done} {n:,} {ev['ticker']}{at} (the order filled: {ev['filled']:,} of {ev['quantity']:,})"
+        elif kind == "partial":
+            text = f"{done} {n:,} {ev['ticker']}{at} (partly: {ev['filled']:,} of {ev['quantity']:,} so far)"
+        elif kind == "placed":
+            text = f"New {side} order: {n:,} {ev['ticker']}{at}"
+        else:
+            text = (f"{kind.upper()}: {side} {ev['quantity']:,} {ev['ticker']}{at}"
+                    + (f" ({ev['filled']:,} filled before)" if ev.get("filled") else ""))
+        return text + f" · ...{ev['account']}" + (" · ATM" if ev.get("atm") else "")
+
+    def on_order_event(self, ev):
+        """Schwab's news of an order: in the Order Log (and its file); a fill or a cancel lights the chart's
+        Orders button."""
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{stamp}  {self.order_text(ev)}"
+        self.order_log.appendPlainText(line)
+        try:
+            with open(ORDER_LOG, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):
+            self.order_news.insert(0, line)
+            del self.order_news[ORDER_TIP_LINES:]
+            self.show_orders_btn(ev)
+
+    def show_orders_btn(self, ev):
+        """The chart's Orders button: the latest news in green (a fill) or amber (ended), else plain."""
+        if ev is None:
+            style = "QPushButton { padding: 3px 14px; }"
+        else:
+            fill = ev["kind"] in ("filled", "partial")
+            self.orders_btn.setText(("✔ " if fill else "✘ ") + self.order_text(ev).split(" · ")[0])
+            bg, fg = ("#1c8a3e", "#ffffff") if fill else ("#e3b23c", "#111111")
+            style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
+                     f" border-radius: 4px; padding: 3px 14px; }}")
+        self.orders_btn.setStyleSheet(style)
+        self.orders_btn.setToolTip("The latest fills and cancels from Schwab (newest first):\n\n"
+                                   + "\n".join(self.order_news) if self.order_news else
+                                   "Fills and cancels from Schwab show here. A click: the Monitor tab's Order Log.")
+
+    def open_order_log(self):
+        """The Orders button: the Monitor tab's Order Log at its newest line (the button back to plain)."""
+        self.tabs.setCurrentIndex(self.schwab_tab_index)
+        bar = self.order_log.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        text = self.orders_btn.text()
+        self.show_orders_btn(None)
+        self.orders_btn.setText(text if self.order_news else "Orders: no news yet")
+
     def fav_atm_trade(self, ticker):
         """The ticker's ATM trade in the chosen account: the open one, else the last one in the list."""
         checklist_panel = getattr(self, "checklist", None)
@@ -4847,7 +4937,8 @@ class MainWindow(QMainWindow):
         mine = [e for e in atm_trades.entries
                 if e.get("ticker") == ticker and (e.get("account") or chosen) == chosen]
         open_ = [e for e in mine if e.get("state") not in ("sold", "canceled")]
-        return (open_ or mine or [None])[-1]
+        e = (open_ or mine or [None])[-1]
+        return atm_trades.live_view(e) if e else None      # (filled / canceled at Schwab: shown at once)
 
     def fav_atm_item(self, ticker):
         item = NumItem("", -1)
