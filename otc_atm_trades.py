@@ -60,6 +60,7 @@ COLUMNS = [
     ("Order", ""),
     ("", ""),
 ]
+ROW_H = 20      # every row of the Monitor tab's tables (condensed)
 COL = {title: i for i, (title, _) in enumerate(COLUMNS)}
 COL["Clear"] = len(COLUMNS) - 1
 
@@ -361,9 +362,9 @@ class AtmTable(SortMixin, QTableWidget):
             self.fit_row(row)
 
     def fit_row(self, row):
-        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
-        # header's default size (~33 px, which made every row a third taller than its contents)
-        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
+        # condensed: every row ROW_H (its buttons and boxes made to fit it), not the hidden row header's
+        # default size (~33 px)
+        self.setRowHeight(row, ROW_H)
 
     def fill(self, row, e):
         state = e.get("state", "buy_open")
@@ -556,7 +557,7 @@ class AtmTable(SortMixin, QTableWidget):
         for sign, step in (("+", 1), ("−", -1)):
             b = QToolButton()
             b.setText(sign)
-            b.setFixedSize(18, 10)          # (condensed rows: + and − together 21 px)
+            b.setFixedSize(18, 9)           # (condensed rows: + and − together 19 px)
             b.setStyleSheet(TOOL.format(""))
             b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
             b.setAutoRepeat(True)
@@ -569,7 +570,7 @@ class AtmTable(SortMixin, QTableWidget):
         reset = QToolButton()
         reset.setIcon(reset_icon())
         reset.setIconSize(QSize(14, 14))
-        reset.setFixedSize(18, 21)
+        reset.setFixedSize(18, 19)
         reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
             "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
             "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
@@ -880,9 +881,9 @@ class SchwabOrdersTable(AtmTable):
             self.fit_row(row)
 
     def fit_row(self, row):
-        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
-        # header's default size (~33 px, which made every row a third taller than its contents)
-        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
+        # condensed: every row ROW_H (its buttons and boxes made to fit it), not the hidden row header's
+        # default size (~33 px)
+        self.setRowHeight(row, ROW_H)
 
     def fill(self, row, o):
         key, e = o["key"], o.get("atm")
@@ -979,7 +980,7 @@ class SchwabOrdersTable(AtmTable):
         for sign, step in (("+", 1), ("−", -1)):
             b = QToolButton()
             b.setText(sign)
-            b.setFixedSize(18, 10)          # (condensed rows: + and − together 21 px)
+            b.setFixedSize(18, 9)           # (condensed rows: + and − together 19 px)
             b.setStyleSheet(TOOL.format(""))
             b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
             b.setAutoRepeat(True)
@@ -992,7 +993,7 @@ class SchwabOrdersTable(AtmTable):
         reset = QToolButton()
         reset.setIcon(reset_icon())
         reset.setIconSize(QSize(14, 14))
-        reset.setFixedSize(18, 21)
+        reset.setFixedSize(18, 19)
         reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
             "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
             "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
@@ -1194,9 +1195,9 @@ class PositionsTable(AtmTable):
             self.fit_row(row)
 
     def fit_row(self, row):
-        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
-        # header's default size (~33 px, which made every row a third taller than its contents)
-        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
+        # condensed: every row ROW_H (its buttons and boxes made to fit it), not the hidden row header's
+        # default size (~33 px)
+        self.setRowHeight(row, ROW_H)
 
     def fill(self, row, p):
         ticker = p["ticker"]
