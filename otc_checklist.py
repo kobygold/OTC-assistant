@@ -800,6 +800,7 @@ class SchwabTrader(QObject):
     positions = pyqtSignal(str, object, str)    # account tail, [position_info()] or None, error
     sent = pyqtSignal(str, object, str)         # a sell from the stocks owned: key, order id or None, message
     transactions = pyqtSignal(str, object, str)     # key, [transaction_fills()] or None, error
+    order_quote = pyqtSignal(str, str, object)      # account tail, order id, the market when it was sent
 
     def __init__(self, session: FeeReader):
         super().__init__()
@@ -809,6 +810,19 @@ class SchwabTrader(QObject):
         self.blocked = lambda: ""
         self.link = None            # the server (use_server): it reads the orders and positions
         self.checks = {}            # (account, order id) -> [(key, side)]: checks waiting for the orders
+        # the market now for a ticker (Bid / Ask and Level II), taken as each order goes out (AtmTrades sets it)
+        self.snapshot_of = lambda ticker: None
+
+    def _snap(self, ticker):
+        try:
+            return self.snapshot_of(ticker)
+        except Exception:
+            return None             # (never stops an order)
+
+    def _keep_quote(self, account_tail, order_id, snap):
+        """(worker thread) The order's market when it was sent, once Schwab gave its number."""
+        if snap is not None and order_id:
+            self.order_quote.emit(str(account_tail or self.session.chosen_tail() or ""), str(order_id), snap)
 
     def use_server(self, link):
         """From now on the orders and positions are read by the main server, once for all my
@@ -862,7 +876,7 @@ class SchwabTrader(QObject):
         """account: the last 3 digits of the account to send it to. aon: All or none."""
         if self._refused(lambda why: self.placed.emit(key, side, None, why)):
             return
-        self._start(self._place, key, ticker, side, shares, price, account, aon)
+        self._start(self._place, key, ticker, side, shares, price, account, aon, self._snap(ticker))
 
     def check(self, key, side, order_id, account=None):
         if self.link is not None and self.link.is_connected:
@@ -892,7 +906,8 @@ class SchwabTrader(QObject):
         not All or none when not given)."""
         if self._refused(lambda why: self.replaced.emit(key, side, None, price, why)):
             return
-        self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session, aon)
+        self._start(self._replace, key, ticker, side, order_id, shares, price, account, duration, session, aon,
+                    self._snap(ticker))
 
     def read_transactions(self, key, account, ticker, start, end):
         """The ticker's TRADE transactions in the account between two datetimes (UTC): transactions(key, fills)."""
@@ -923,7 +938,8 @@ class SchwabTrader(QObject):
         as sent()."""
         if self._refused(lambda why: self.sent.emit(key, None, why)):
             return
-        self._start(self._send, key, ticker, side, shares, price, account, duration, order_type, aon)
+        self._start(self._send, key, ticker, side, shares, price, account, duration, order_type, aon,
+                    self._snap(ticker))
 
     def _positions(self, account_tail):
         try:
@@ -938,7 +954,7 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.positions.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
-    def _send(self, key, ticker, side, shares, price, account_tail, duration, order_type="LIMIT", aon=False):
+    def _send(self, key, ticker, side, shares, price, account_tail, duration, order_type="LIMIT", aon=False, snap=None):
         try:
             from schwab.utils import Utils
             order = (self._market_order(ticker, side, shares) if order_type == "MARKET"
@@ -955,6 +971,7 @@ class SchwabTrader(QObject):
                     order_id = None
             if order_type != "MARKET":
                 self._taken(ticker, side, price, account_tail)
+            self._keep_quote(account_tail, order_id, snap)
             self.sent.emit(key, order_id, "")
         except Exception as e:
             self.sent.emit(key, None, f"{type(e).__name__}: {e}")
@@ -971,7 +988,7 @@ class SchwabTrader(QObject):
     def _limit_order(ticker, side, shares, price, duration=None, session=None, aon=False):
         return limit_order(ticker, side, shares, price, duration, session, aon)  # (otc_orders: the server's too)
 
-    def _place(self, key, ticker, side, shares, price, account_tail, aon=False):
+    def _place(self, key, ticker, side, shares, price, account_tail, aon=False, snap=None):
         try:
             from schwab.utils import Utils
             with self.session._lock:
@@ -986,6 +1003,7 @@ class SchwabTrader(QObject):
                 except ValueError:
                     order_id = None
             self._taken(ticker, side, price, account_tail)
+            self._keep_quote(account_tail, order_id, snap)
             self.placed.emit(key, side, order_id,
                              "" if order_id else "Schwab took the order but didn't say its number. "
                                                  "Check it in Schwab; the app can't follow it.")
@@ -1031,7 +1049,8 @@ class SchwabTrader(QObject):
         except Exception as e:
             self.orders.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
-    def _replace(self, key, ticker, side, order_id, shares, price, account_tail, duration, session, aon=False):
+    def _replace(self, key, ticker, side, order_id, shares, price, account_tail, duration, session, aon=False,
+                 snap=None):
         try:
             from schwab.utils import Utils
             with self.session._lock:
@@ -1047,6 +1066,7 @@ class SchwabTrader(QObject):
                 except ValueError:
                     new_id = None       # found among the account's orders at the next check
             self._taken(ticker, side, price, account_tail)
+            self._keep_quote(account_tail, new_id, snap)
             self.replaced.emit(key, side, new_id, price, "")
         except Exception as e:
             self.replaced.emit(key, side, None, price, f"{type(e).__name__}: {e}")
@@ -1062,7 +1082,8 @@ class SchwabTrader(QObject):
             pass        # the next check tries again
 
 
-OPEN_GONE = {"CANCELED", "REPLACED"}     # an open order that may have been changed in thinkorswim
+OPEN_GONE = {"CANCELED", "REPLACED"}
+ORDER_QUOTES_DAYS = 180     # the orders' Bid / Ask then (and Level II then) are kept this long     # an open order that may have been changed in thinkorswim
 
 
 def tint(value) -> str:
@@ -1784,6 +1805,10 @@ class AtmTrades(QObject):
         self.pending = {}           # the same keys -> what was sent
         self.canceling = set()      # entry ids whose order is being canceled
         self.market = {}            # ticker -> {"bid": [price, size], "ask": [...], "bids": [[mm, price, size]], "asks"}
+        # the chart's live Bid / Ask and Level II, when it shows that ticker (the panel sets it): {"bid", "ask",
+        # "bids", "asks"} or None
+        self.chart_quote = lambda ticker: None
+        self.local_quotes = self._read_quotes()     # order quotes without the shared data (order_quotes.json)
         self.schwab_orders = {}     # account tail -> its orders of the last 60 days, as order_info()
         self.orders_time = {}       # account tail -> when they were read (time.time())
         self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
@@ -1804,6 +1829,8 @@ class AtmTrades(QObject):
             trader.replaced.connect(self._replaced)
             trader.positions.connect(self._positions)
             trader.sent.connect(self._sent)
+            trader.order_quote.connect(self.keep_order_quote)
+            trader.snapshot_of = self.snapshot_now
         # The timer ticks every ORDER_CHECK_S; tick() reads only what is due (see ORDER_CHECK_S)
         self.activity_live = False
         self.tab_open = False       # the Monitor tab is shown
@@ -2416,6 +2443,58 @@ class AtmTrades(QObject):
         self.changed.emit()
         QTimer.singleShot(1500, self.check)     # the new order in the All Orders list
 
+    # ---- the market when each order was sent (Bid / Ask then, and the Level II then) ----
+    def snapshot_now(self, ticker):
+        """{"time", "bid": [price, size], "ask": [...], "level2": {"bids": [[mm, price, size]], "asks"}}: the chart's
+        live quote when it shows the ticker (the fullest), else the trades' stream / last read."""
+        chart = self.chart_quote(ticker) or {}
+        m = self.market.get(ticker, {})
+        pair = lambda v: list(v) if v and v[0] else [None, None]
+        return {"time": datetime.now().isoformat(timespec="seconds"), "ticker": ticker,
+                "bid": pair(chart.get("bid") or m.get("bid")), "ask": pair(chart.get("ask") or m.get("ask")),
+                "level2": {"bids": [list(r[:3]) for r in (chart.get("bids") or m.get("bids") or [])],
+                           "asks": [list(r[:3]) for r in (chart.get("asks") or m.get("asks") or [])]}}
+
+    def _quotes_path(self):
+        return self.path.with_name("order_quotes.json")
+
+    def _read_quotes(self):
+        try:
+            return json.loads(self._quotes_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def order_quote(self, account, order_id):
+        """The market when the order was sent (snapshot_now()), or None (sent before they were kept)."""
+        key = f"{account}/{order_id}"
+        if getattr(self, "shared", None) is not None:
+            item = self.shared.items.get("order_quotes/" + key)       # (direct: per row, at each rebuild)
+            return item[1] if item else None
+        return self.local_quotes.get(key)
+
+    def keep_order_quote(self, account, order_id, snap, seen=False):
+        """Keeps an order's market when it was sent (seen: first seen in the account's orders, a few seconds after it
+        was placed outside the app); once per order. Those older than ORDER_QUOTES_DAYS go."""
+        if not account or not order_id or snap is None or self.order_quote(account, order_id) is not None:
+            return
+        snap = dict(snap, seen=True) if seen else snap
+        cutoff = (datetime.now() - timedelta(days=ORDER_QUOTES_DAYS)).isoformat()
+        if getattr(self, "shared", None) is not None:
+            self.shared.put(f"order_quotes/{account}/{order_id}", snap)
+            old = [k for k, v in self.shared.get("order_quotes/").items() if (v or {}).get("time", "") < cutoff]
+            if old:
+                self.shared.sync_items({}, ["order_quotes/" + k for k in old])
+        else:
+            self.local_quotes[f"{account}/{order_id}"] = snap
+            self.local_quotes = {k: v for k, v in self.local_quotes.items() if v.get("time", "") >= cutoff}
+            try:
+                tmp = self._quotes_path().with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.local_quotes), encoding="utf-8")
+                tmp.replace(self._quotes_path())
+            except OSError:
+                pass
+        self.changed.emit()
+
     def order_events(self, account, before, now):
         """What changed between two reads of the account's orders: [{"kind": "filled" | "partial" | "canceled" |
         "rejected" | "expired" | "replaced" | "placed", "account", "id", "ticker", "side", "shares" (this time's),
@@ -2967,6 +3046,10 @@ class AtmTrades(QObject):
         if before is not None:      # (not the first read: its orders are old news)
             for ev in self.order_events(account, before, orders):
                 self.order_news.emit(ev)
+                if ev["kind"] == "placed" and self.decides():
+                    # (placed outside the app: its market when first seen; the app's own have theirs already)
+                    QTimer.singleShot(3000, lambda a=account, i=ev["id"], t=ev["ticker"]:
+                                      self.keep_order_quote(a, i, self.snapshot_now(t), seen=True))
         self.orders_time[account] = time.time()
         # the trades' own orders: their status from the list (as a check of each would say)
         by_id = {o["id"]: o for o in orders}
@@ -3396,6 +3479,9 @@ class ChecklistPanel(QWidget):
         self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
         self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
         self.atm.read_fee = self.read_fee
+        self.atm.chart_quote = lambda ticker: ({"bid": (self.bid, self.bid_size), "ask": (self.ask, self.ask_size),
+                                                "bids": self.bids, "asks": self.asks}
+                                               if ticker and ticker == self.ticker else None)
         self.atm.changed.connect(self.refresh)
         self.price_tools = {}   # price key -> (its +/- buttons, its reset button)
         if self.fee_reader:

@@ -775,6 +775,10 @@ ORDER_COLUMNS = [
     ("Limit", "The order's limit price (MKT: a market order); filled: the fills' average price"),
     ("$", "Shares x the price, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
           "get). Follows the New limit as it's changed (orange)."),
+    ("Bid then", "The bid when the order was sent (or changed). Hover: its size, and the Level II then. "
+                 "Gray: first seen a few seconds after it was placed (outside the app)"),
+    ("Ask then", "The ask when the order was sent (or changed). Hover: its size, and the Level II then. "
+                 "Gray: first seen a few seconds after it was placed (outside the app)"),
     ("Bid now", "Read every 15 seconds (live while Level II streams the ticker)"),
     ("Ask now", "Read every 15 seconds (live while Level II streams the ticker)"),
     ("New limit", "A new limit price for Change: typed, or +/- (0.0001 up / down). A whole number is a count "
@@ -830,7 +834,7 @@ class SchwabOrdersTable(AtmTable):
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
         self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Entered", "Filled", "Duration", "Shares",
-                                              "Limit", "$", "Bid now", "Ask now")])
+                                              "Limit", "$", "Bid then", "Ask then", "Bid now", "Ask now")])
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now")
@@ -852,6 +856,9 @@ class SchwabOrdersTable(AtmTable):
             return self.order_shares(o) * (self.order_price(o) or 0)
         if title in ("Bid now", "Ask now"):
             return (list(m.get("bid" if title == "Bid now" else "ask") or []) + [None])[0]
+        if title in ("Bid then", "Ask then"):
+            q = self.atm.order_quote(o.get("account") or self.atm.chosen_account(), o["id"]) or {}
+            return (list(q.get("bid" if title == "Bid then" else "ask") or []) + [None])[0]
         return None
 
     def double_clicked(self, row, col):
@@ -893,7 +900,9 @@ class SchwabOrdersTable(AtmTable):
         signature = json.dumps([self.atm.chosen_account(), period_cutoff(getattr(self, "period_days", 0)),
                                 getattr(self, "ticker_filter", ""), getattr(self, "status_show", "All"),
                                 [{k: v for k, v in o.items() if k != "atm"} for o in orders],
-                                [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state()],
+                                [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state(),
+                                [bool(self.atm.order_quote(o.get("account") or self.atm.chosen_account(), o["id"]))
+                                 for o in orders]],
                                sort_keys=True, default=str)
         if signature == self.signature:
             return
@@ -948,6 +957,19 @@ class SchwabOrdersTable(AtmTable):
                       f" ({asked - got:,} still to fill)" if working and asked > got else ""))
         price = self.order_price(o)
         self.cell(row, OCOL["Limit"], fmt_price(price) if price else "MKT", ORDER_COLOR if working else None, bold=True)
+        # the market when it was sent: the price (narrow); hover: its size and the Level II then
+        q = self.atm.order_quote(o.get("account") or self.atm.chosen_account(), o["id"])
+        if q is None:
+            for col in (OCOL["Bid then"], OCOL["Ask then"]):
+                self.cell(row, col, "-", DIM, tip="Not kept: sent before the app kept the market of each order")
+        else:
+            when = str(q.get("time", "")).replace("T", " ")[:19]
+            how = "first seen" if q.get("seen") else "sent"
+            then = book_html(f"{o['ticker']} Level II when the order was {how} ({when})",
+                             q.get("level2", {}).get("bids", []), q.get("level2", {}).get("asks", []))
+            for col, k, what in ((OCOL["Bid then"], "bid", "Bid then"), (OCOL["Ask then"], "ask", "Ask then")):
+                self.cell(row, col, price_text(q.get(k)), DIM if q.get("seen") else None,
+                          tip=quote_line(what, q.get(k)) + then)
         if not working:             # (an order that ended: nothing to change)
             for col in (OCOL["New limit"], OCOL["Change"], OCOL["Cancel"]):
                 self.removeCellWidget(row, col)
