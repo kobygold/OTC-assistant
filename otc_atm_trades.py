@@ -25,6 +25,26 @@ def fmt_price(v) -> str:
     return "-" if v is None else f"{v:,.4f}"
 
 
+def fill_text(v) -> str:
+    """A fill's price as Schwab has it: at least 4 decimals, up to 6 (0.0070, 0.00802, 0.001234)."""
+    if v is None:
+        return "-"
+    text = f"{v:,.6f}".rstrip("0")
+    decimals = len(text.split(".")[1]) if "." in text else 0
+    return text + "0" * max(0, 4 - decimals)
+
+
+# an opened trade's orders: their own titles, on a title row above them (the table's columns they use)
+ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "State": ("Status", "Schwab's status of the order"),
+                    "Sent": ("Placed", "When the order was placed"),
+                    "Shares": ("Filled / Ordered", "The shares filled of those the order asked for"),
+                    "Entry": ("Limit", "The order's limit price (a buy's or a sell's)"),
+                    "Exit plan": ("Filled at", "The price Schwab filled it at (the fills' average), as Schwab has "
+                                               "it: up to 6 decimals"),
+                    "Bid then": ("Bid then", "The bid when the order was sent. Hover: the Level II then"),
+                    "Ask then": ("Ask then", "The ask when the order was sent. Hover: the Level II then")}
+
+
 def limit_text(v) -> str:
     """A price in a New Price box: 0.0350."""
     return f"{v:.4f}"
@@ -403,8 +423,8 @@ class AtmTable(SortMixin, QTableWidget):
         rows = []
         for e in entries:
             rows.append((e, None))
-            if e["id"] in self.expanded:
-                rows += [(e, o) for o in children[e["id"]]]
+            if e["id"] in self.expanded and children[e["id"]]:
+                rows += [(e, "titles")] + [(e, o) for o in children[e["id"]]]
         self.ids = [e["id"] if o is None else None for e, o in rows]
         self.edits = {}
         self.order_boxes = {}
@@ -422,9 +442,20 @@ class AtmTable(SortMixin, QTableWidget):
                           bold=True, align=Qt.AlignmentFlag.AlignCenter,
                           tip=(f"Click: {'hide' if e['id'] in self.expanded else 'show'} the trade's orders "
                                f"({len(children[e['id']])})") if has else "")
+            elif o == "titles":
+                self.fill_order_titles(row)
             else:
                 self.fill_order(row, e, o)
             self.fit_row(row)
+
+    def fill_order_titles(self, row):
+        """The title row above an opened trade's orders: their own column names."""
+        head = "#1d2125"
+        for col in range(len(COLUMNS)):
+            self.cell(row, col, "", bg=head)
+        for title, (name, tip) in ORDER_SUB_TITLES.items():
+            self.cell(row, COL[title], name, "#a8a8a8", bold=True, bg=head, tip=tip,
+                      align=Qt.AlignmentFlag.AlignCenter)
 
     def fill_order(self, row, e, o):
         """An order's row under its trade: its side, status, when it was placed, filled / ordered, its limit (and
@@ -444,11 +475,14 @@ class AtmTable(SortMixin, QTableWidget):
         got, asked = int(o.get("filled") or 0), int(o.get("quantity") or 0)
         self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", GREEN if asked and got >= asked else TEXT, bold=True,
                   bg=sub, tip=f"Filled {got:,} of the {asked:,} ordered")
-        price = o.get("fill_price") if got and o.get("fill_price") else o.get("price")
-        tip = (f"Limit {fmt_price(o.get('price'))}" + (f" · filled at {fmt_price(o['fill_price'])} on average"
-                                                       if got and o.get("fill_price") else ""))
-        self.cell(row, COL["Entry" if buy else "Exit plan"], fmt_price(price) if price else "MKT",
-                  ORDER_COLOR if o.get("open") else TEXT, bold=True, bg=sub, tip=tip)
+        # Limit: the order's (a buy's or a sell's); Filled at: Schwab's fills' average, up to 6 decimals
+        self.cell(row, COL["Entry"], fmt_price(o.get("price")) if o.get("price") else "MKT",
+                  ORDER_COLOR if o.get("open") else TEXT, bold=True, bg=sub, tip="The order's limit price")
+        if got and o.get("fill_price"):
+            better = o.get("price") and (o["fill_price"] < o["price"] if buy else o["fill_price"] > o["price"])
+            self.cell(row, COL["Exit plan"], fill_text(o["fill_price"]), GREEN if better else TEXT, bold=True, bg=sub,
+                      tip=f"Filled at {fill_text(o['fill_price'])} on average ({got:,} shares)" + (
+                          f": better than the limit {fmt_price(o['price'])}" if better else ""))
         q = self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])
         if q is None:
             for col in (COL["Bid then"], COL["Ask then"]):
