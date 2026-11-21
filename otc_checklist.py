@@ -76,7 +76,8 @@ def min_shares_check(shares, entry):
 # Once Buy ATM was pressed these show the plan sent, fixed, in a cell of their own. Entry and size
 # show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
 # the buy; the gains and losses worked out from them)
-LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_usd", "loss_usd", "ratio")
+LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_gross", "loss_gross", "profit_usd", "loss_usd",
+          "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
 ORDER_EDITS = ("size", "entry", "shares")   # an open buy's values that can be changed (the order is replaced)
 CHANGED_COLOR = "#f0a020"   # a changed value in the change-order dialog
@@ -220,10 +221,12 @@ def is_trips(price: float) -> bool:
 
 def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee=FEE_USD, shares=None):
     """The trade from the quote and the Level II bids [(mm, price, size, level)], highest first:
-    {entry, exit, shares, stop, profit, loss, ratio, profit_usd, loss_usd, auto}; parts that can't be worked out are None.
+    {entry, exit, shares, stop, profit, loss, ratio, profit_gross, loss_gross (in $, without the fees), profit_usd,
+    loss_usd (with them), auto}; parts that can't be worked out are None.
     A given entry, exit, stop or amount of stocks (an order's) is used instead of the automatic one;
     "auto" holds the automatic {entry, exit, stop} (the stop for the amount of stocks actually used)."""
-    out = dict.fromkeys(("entry", "exit", "shares", "stop", "profit", "loss", "ratio", "profit_usd", "loss_usd"))
+    out = dict.fromkeys(("entry", "exit", "shares", "stop", "profit", "loss", "ratio", "profit_gross", "loss_gross",
+                         "profit_usd", "loss_usd"))
     auto = out["auto"] = dict.fromkeys(("entry", "exit", "stop"))
     if bid:
         auto["entry"] = round(bid if is_trips(bid) else bid + tick(bid), 6)
@@ -254,9 +257,11 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
         out["loss"] = (out["entry"] - out["stop"]) / out["entry"] * 100
     fees = 2 * fee          # one buy and one sell
     if out["shares"] and out["entry"] and out["exit"]:
-        out["profit_usd"] = out["shares"] * (out["exit"] - out["entry"]) - fees
+        out["profit_gross"] = out["shares"] * (out["exit"] - out["entry"])
+        out["profit_usd"] = out["profit_gross"] - fees
     if out["shares"] and out["entry"] and out["stop"] is not None:
-        out["loss_usd"] = -out["shares"] * (out["entry"] - out["stop"]) - fees
+        out["loss_gross"] = -out["shares"] * (out["entry"] - out["stop"])
+        out["loss_usd"] = out["loss_gross"] - fees
     if out["profit"] is not None and out["loss"]:
         out["ratio"] = out["profit"] / out["loss"]
     return out
@@ -4633,6 +4638,8 @@ class ChecklistPanel(QWidget):
                     if fee is None else
                     (OK if fee <= FEE_USD + 0.001 else BAD, f"${fee:.2f}",
                      fee_details + ("" if fee <= FEE_USD + 0.001 else f" More than ${FEE_USD:.2f}!"))),
+            "profit_gross": (INFO, usd_text(p["profit_gross"]), "amount of stocks x (exit - entry), without the fees"),
+            "loss_gross": (INFO, usd_text(p["loss_gross"]), "-amount of stocks x (entry - stop), without the fees"),
             "profit_usd": (INFO, usd_text(p["profit_usd"]),
                            f"amount of stocks x (exit - entry) - 2 x ${fee_used:.2f} fees (buy and sell)"),
             "loss_usd": (INFO, usd_text(p["loss_usd"]),
@@ -4723,6 +4730,7 @@ class ChecklistPanel(QWidget):
         return {"size": NA if size is None else f"${size:,.2f}".replace(".00", ""),
                 "entry": price(p["entry"]), "exit": price(p["exit"]), "stop": price(p["stop"]),
                 "profit": pct(p["profit"]), "loss": pct(-p["loss"]) if p["loss"] is not None else NA,
+                "profit_gross": usd(p["profit_gross"]), "loss_gross": usd(p["loss_gross"]),
                 "profit_usd": usd(p["profit_usd"]), "loss_usd": usd(p["loss_usd"]),
                 "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
 
@@ -4927,7 +4935,7 @@ class ChecklistPanel(QWidget):
                 value.setToolTip(tip)
                 if item.key == "shares":
                     value.setStyleSheet(f"color: {ORDER_COLOR};" if order else "")
-                if item.key in ("profit", "profit_usd", "loss_usd"):
+                if item.key in ("profit", "profit_gross", "loss_gross", "profit_usd", "loss_usd"):
                     value.setStyleSheet("" if val in ("", NA) else
                                         f"color: {MARKS[OK if val.startswith('+') else BAD][1]};")
                 elif item.key in ("loss", "ratio"):
