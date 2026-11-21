@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.102"
+APP_VERSION = "2.7.103"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -891,11 +891,13 @@ class MainWindow(QMainWindow):
         self.restart_btn.setToolTip("Closes the app and starts it again (its server too)")
         self.restart_btn.clicked.connect(self.restart_app)
         right_row.addWidget(self.restart_btn)
-        # Ctrl+U: Check for update; Ctrl+R: Restart (Qt's "Ctrl" is Cmd on a Mac); as a click (nothing while disabled)
+        # Ctrl+U: update at once (no question; none: "No new update" by the button); Ctrl+R: Restart (as a click).
+        # Qt's "Ctrl" is Cmd on a Mac. Nothing while the button is disabled (checking / updating)
         mod = "⌘" if sys.platform == "darwin" else "Ctrl+"
-        for key, btn in (("U", self.update_btn), ("R", self.restart_btn)):
-            QShortcut(QKeySequence(f"Ctrl+{key}"), self, btn.click)
-            btn.setToolTip(f"{btn.toolTip()} ({mod}{key})")
+        QShortcut(QKeySequence("Ctrl+U"), self, lambda: self.update_btn.isEnabled() and self.check_update(quick=True))
+        QShortcut(QKeySequence("Ctrl+R"), self, self.restart_btn.click)
+        self.update_btn.setToolTip(f"{self.update_btn.toolTip()} {mod}U: updates at once, without asking")
+        self.restart_btn.setToolTip(f"{self.restart_btn.toolTip()} ({mod}R)")
         self.tabs.setCornerWidget(right, Qt.Corner.TopRightCorner)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
@@ -3405,7 +3407,9 @@ class MainWindow(QMainWindow):
         self.clock_timer.start(1000 - now.microsecond // 1000 + 5)
 
     # ---- Check for update ----
-    def check_update(self):
+    def check_update(self, quick=False):
+        """quick (Ctrl+U): a newer version is updated to at once (not asked), and none is told by the button only."""
+        self.update_quick = bool(quick)
         self.update_btn.setEnabled(False)
         self.update_btn.setText("Checking...")
         self.updater.check()
@@ -3417,6 +3421,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Check for update", r["error"])
             return
         if r["step"] == "check":
+            if not r["behind"] and getattr(self, "update_quick", False):
+                self.update_btn.setText("No new update")
+                self.notify(f"No new update: {APP_VERSION} is the newest version"
+                            + (f" (this copy has {r['ahead']} change(s) not on GitHub yet)" if r["ahead"] else "")
+                            + ".", 5000)
+                QTimer.singleShot(4000, lambda: self.update_btn.isEnabled()
+                                  and self.update_btn.setText("Check for update"))
+                return
             if not r["behind"]:
                 extra = (f"\n\n(This copy has {r['ahead']} change{'s' if r['ahead'] != 1 else ''} that "
                          f"aren't on GitHub yet.)" if r["ahead"] else "")
@@ -3430,6 +3442,12 @@ class MainWindow(QMainWindow):
                 return
             changes = "\n".join(f"  \u2022 {line}" for line in r["log"]) or "  (no details)"
             more = r.get("changes", len(r["log"])) - len(r["log"])
+            if getattr(self, "update_quick", False):       # Ctrl+U: no question
+                self.notify(f"Updating to {r['version']}...", 0)
+                self.update_btn.setEnabled(False)
+                self.update_btn.setText("Updating...")
+                self.updater.update()
+                return
             answer = QMessageBox.question(
                 self, "Update available",
                 f"Version {r['version']} is available (this is {APP_VERSION}). What's new:\n\n{changes}"
