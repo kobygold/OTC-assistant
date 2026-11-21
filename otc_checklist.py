@@ -4703,17 +4703,18 @@ class ChecklistPanel(QWidget):
         passed = total = 0
 
         def ticker_mark(mark, text):
-            """The ticker's mark: ✔ when not a risky kind (its 5th letter), a red ✘ when dangerous (bankruptcy,
-            delinquent...), a yellow ! when risky (foreign); its sign beside its name, as the chart's."""
+            """The ticker's mark: a red ✘ when dangerous (its 5th letter: bankruptcy, delinquent...), with the chart's
+            red sign beside its name; else ✔ (a risky one, foreign: a pass, no sign here: shown elsewhere)."""
             nonlocal passed, total
             risk = self.risk_of(self.ticker) if self.ticker else None     # (level, case, what it means)
+            if risk and risk[0] < 2:
+                risk = None         # (only the dangerous ones here)
             if not self.ticker:
                 st, why = UNKNOWN, "No ticker"
             elif not risk:
-                st, why = OK, "Not one of the risky kinds (by its 5th letter)"
+                st, why = OK, "Not one of the dangerous kinds (by its 5th letter)"
             else:
-                st = BAD if risk[0] >= 2 else WARN
-                why = f"{'DANGEROUS' if risk[0] >= 2 else 'Risky'}: {self.ticker[-1]} = {risk[1]}: {risk[2]}"
+                st, why = BAD, f"DANGEROUS: {self.ticker[-1]} = {risk[1]}: {risk[2]}"
             set_mark(mark, st)
             for w in (mark, text):
                 w.setToolTip(why)
@@ -4725,7 +4726,7 @@ class ChecklistPanel(QWidget):
                     sign.setPixmap(icon.pixmap(16, 16))
                     sign.setToolTip(why)
             total += 1
-            passed += st in (OK, WARN)          # (a yellow one is a warning: not counted against it)
+            passed += st == OK
 
         def shares_mark(mark, text):
             """The amount of stocks' mark: at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
