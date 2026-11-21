@@ -2438,10 +2438,30 @@ class AtmTrades(QObject):
                 out.append(dict(base, kind=status.lower(), shares=o.get("shares") or 0))
         return out
 
+    def outside_sell(self, e):
+        """A bought trade's ticker's open sell order, placed after it started and no trade's (outside it), or None."""
+        start, _ = self.trade_window(e)
+        tracked = self.tracked_ids()
+        for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), []):
+            if o.get("ticker") != e.get("ticker") or o.get("side") != "SELL" or not o.get("open") or o["id"] in tracked:
+                continue
+            try:
+                if datetime.strptime(o.get("entered") or "", "%Y-%m-%dT%H:%M:%S%z") >= start:
+                    return o
+            except ValueError:
+                continue
+        return None
+
     def live_view(self, e):
         """The trade as Schwab's latest list of its account's orders shows it, before the main server's app
         has updated it: the shares bought / sold so far, and its step once the order is filled or ended (for
         the step circles). The trade itself (atm.json) isn't changed."""
+        if e and e.get("state") == "bought":
+            # its ticker's sell order placed outside it (the main server's app adopts it: shown so at once)
+            outside = self.outside_sell(e)
+            if outside is not None:
+                return dict(e, state="sell_open", sell_id=outside["id"], sell_price=outside.get("price"),
+                            sell_filled=int(outside.get("filled") or 0))
         o = self.live_order(e) if e else None
         if o is None:
             return e
