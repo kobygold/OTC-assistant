@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (
 import otc_alerts
 import otc_atm as atm
 from otc_alert_dialog import AlertDialog, AlertsDialog
-from otc_atm_trades import AtmTable, PositionsTable, SchwabOrdersTable
+from otc_atm_trades import ORDER_SHOW, AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
 from otc_trade import STEP_NAMES, trade_steps
 import otc_daily as core
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.78"
+APP_VERSION = "2.7.79"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1481,6 +1481,14 @@ class MainWindow(QMainWindow):
             self.fee_bar.setStyleSheet("QLabel { background: #e3b23c; color: #111111; font-weight: bold; padding: 3px; }")
             self.fee_bar.setToolTip(details)
         self.fee_bar.setVisible(danger or high)
+
+    def on_orders_show(self, show):
+        """All Orders' Show: choice (kept for the next start)."""
+        self.orders_table.status_show = show
+        self.orders_table.signature = None
+        self.orders_table.rebuild()
+        self.settings["orders_show"] = show
+        save_settings(self.settings)
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
@@ -3090,6 +3098,22 @@ class MainWindow(QMainWindow):
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
+        # Show: only the orders of one status (Schwab's): Pending = still open (Working or Pending activation)
+        show_row = QWidget()        # (a widget: folded with the section)
+        srow = QHBoxLayout(show_row)
+        srow.setContentsMargins(0, 0, 0, 0)
+        srow.addWidget(QLabel("Show:"))
+        self.orders_show = QComboBox()
+        self.orders_show.addItems(ORDER_SHOW)
+        self.orders_show.setToolTip("All: every order. Pending: the open ones (Working, or Pending: placed while "
+                                    "the market is closed). The others: Schwab's status")
+        shown = self.settings.get("orders_show", "All")
+        self.orders_show.setCurrentText(shown if shown in ORDER_SHOW else "All")
+        self.orders_table.status_show = self.orders_show.currentText()
+        self.orders_show.currentTextChanged.connect(self.on_orders_show)
+        srow.addWidget(self.orders_show)
+        srow.addStretch()
+        olay.addWidget(show_row)
         olay.addWidget(self.orders_table)
         sections.append(others)
         # the stocks owned in the account: sell them on the bid or the ask

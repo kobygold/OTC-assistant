@@ -105,6 +105,19 @@ def ticker_match(ticker, text):
     return not text or text.upper() in str(ticker or "").upper()
 
 
+# All Orders' "Show:" choice -> the orders shown (by Schwab's status). Pending: still open (Working, or Pending
+# activation: placed while the market is closed)
+ORDER_SHOW = ["All", "Pending", "Filled", "Replaced", "Canceled", "Rejected", "Expired"]
+
+
+def order_shown(o, show):
+    if not show or show == "All":
+        return True
+    if show == "Pending":
+        return bool(o.get("open"))
+    return str(o.get("status") or "").upper() == show.upper()
+
+
 def trade_recent(e, cutoff):
     """An ATM trade to show in the period: an open one always, else when something happened in it since."""
     if cutoff is None or e.get("state") in OPEN_STATES:
@@ -211,16 +224,23 @@ class SortMixin:
         head.sectionClicked.connect(self.header_clicked)
         for col in self.sortable:
             item = self.horizontalHeaderItem(col)
-            item.setToolTip((item.toolTip() + "\n" if item.toolTip() else "") + "Click: sort by it (highest first)")
+            item.setToolTip((item.toolTip() + "\n" if item.toolTip() else "") + "Click: sort by it (highest first); again: lowest first; a third time: the usual order")
 
     def header_clicked(self, col):
         if col not in self.sortable:
+            return
+        head = self.horizontalHeader()
+        if col == self.sort_col and not self.sort_desc:
+            # a third click: back to the table's own order
+            self.sort_col, self.sort_desc = None, True
+            head.setSortIndicatorShown(False)
+            self.signature = None
+            self.rebuild()
             return
         if col == self.sort_col:
             self.sort_desc = not self.sort_desc
         else:
             self.sort_col, self.sort_desc = col, True
-        head = self.horizontalHeader()
         head.setSortIndicatorShown(True)
         head.setSortIndicator(col, Qt.SortOrder.DescendingOrder if self.sort_desc else Qt.SortOrder.AscendingOrder)
         self.signature = None
@@ -328,14 +348,27 @@ class AtmTable(SortMixin, QTableWidget):
         self.setItem(row, col, item)
         return item
 
+    # the usual order, as the Mini Favorites': the furthest step first (sold, sell sent, bought, buy sent and partly
+    # bought, buy sent), then canceled; by ticker within each
+    STEP_RANK = {"sold": 5, "sell_open": 4, "bought": 3, "buy_open": 1}
+
+    def usual_order(self, e):
+        live = self.atm.live_view(e)        # (Schwab's fills and cancels, at once)
+        state = live.get("state")
+        rank = self.STEP_RANK.get(state, 0) + (1 if state == "buy_open" and live.get("filled") else 0)
+        return (-rank, str(e.get("ticker") or ""))      # (stable: the newest first stays first)
+
     def rebuild(self):
         # only the trades of the account chosen at the top of the Monitor tab (all while none is)
         account = self.atm.settings.get("schwab_account", "")
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: open trades always)
         flt = getattr(self, "ticker_filter", "")
-        entries = self.sorted_rows(e for e in reversed(self.atm.entries)
-                                   if (not account or e.get("account") == account) and trade_recent(e, cutoff)
-                                   and ticker_match(e.get("ticker"), flt))
+        entries = [e for e in reversed(self.atm.entries)
+                   if (not account or e.get("account") == account) and trade_recent(e, cutoff)
+                   and ticker_match(e.get("ticker"), flt)]
+        if self.sort_col is None:       # the Mini Favorites' order (the newest first within the same rank/ticker)
+            entries.sort(key=self.usual_order)
+        entries = self.sorted_rows(entries)
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries],
@@ -838,8 +871,10 @@ class SchwabOrdersTable(AtmTable):
     def orders(self):
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: working orders always)
         flt = getattr(self, "ticker_filter", "")
+        show = getattr(self, "status_show", "All")      # (the section's Show: choice)
         return self.sorted_rows(sorted((o for o in self.atm.all_orders()
-                                        if order_recent(o, cutoff) and ticker_match(o.get("ticker"), flt)),
+                                        if order_recent(o, cutoff) and ticker_match(o.get("ticker"), flt)
+                                        and order_shown(o, show)),
                                        key=lambda o: o.get("entered") or "", reverse=True))
 
     @staticmethod
@@ -861,7 +896,7 @@ class SchwabOrdersTable(AtmTable):
         mine = {o["busy"] for o in orders}
         busy = sorted(str(k) for k in self.atm.sending | self.atm.canceling if k in mine)
         signature = json.dumps([self.atm.chosen_account(), period_cutoff(getattr(self, "period_days", 0)),
-                                getattr(self, "ticker_filter", ""),
+                                getattr(self, "ticker_filter", ""), getattr(self, "status_show", "All"),
                                 [{k: v for k, v in o.items() if k != "atm"} for o in orders],
                                 [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state()],
                                sort_keys=True, default=str)
