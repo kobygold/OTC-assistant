@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.73"
+APP_VERSION = "2.7.74"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1049,6 +1049,10 @@ class MainWindow(QMainWindow):
                                                                      self.ticker_label),
                                        "Click: copy the chart's ticker")
         row.addWidget(self.ticker_label)
+        # the ticker's risk sign (its 5th letter), as on the chart
+        self.ticker_risk_sign = QLabel()
+        self.ticker_risk_sign.hide()
+        row.addWidget(self.ticker_risk_sign)
         # a copy icon: the ticker copied ("Copied: ABCD" by the mouse for a second)
         self.ticker_copy_btn = QToolButton()
         self.ticker_copy_btn.setIcon(checklist.copy_icon())
@@ -1317,6 +1321,10 @@ class MainWindow(QMainWindow):
         self.checklist = ChecklistPanel(APP_DIR / "checklist.txt", self.settings, save_settings,
                                         APP_DIR / "schwab_token.json")
         self.checklist.default_usd = self.position_default_now      # the chosen account's (shared)
+        # the ticker's risk (its 5th letter): the checklist's mark and sign, as the chart's
+        self.checklist.risk_of = lambda t: (lambda r: (r[2], r[0], r[1]) if r else None)(
+            TICKER_RISKS.get(t[-1]) if len(t or "") == 5 else None)
+        self.checklist.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
         # the pinned prices (checklist_prices): kept in the shared data too, for every computer
         self.checklist.save_settings = self.checklist.atm.save_settings = self.save_checklist_settings
         self.show_position_default()
@@ -1454,15 +1462,25 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def show_fee_bar(self):
-        """The yellow bar over the chart: its ticker's fee, when more than checklist.FEE_HIGH."""
+        """The bar over the chart: a dangerous ticker (its 5th letter: bankruptcy, delinquent...) in red, with its
+        fee when high; else a high fee (more than checklist.FEE_HIGH) in yellow."""
         ticker = self.chart.ticker or ""
         fee, details = self.checklist.fees.get(ticker, (None, ""))
         high = fee is not None and fee > checklist.FEE_HIGH + 1e-9
-        if high:
-            self.fee_bar.setText(f"⚠ {ticker}: fee = ${fee:.2f}   (more than ${checklist.FEE_HIGH:.2f}, "
-                                 f"on the buy and again on the sell: ${2 * fee:.2f} in all)")
+        risk = TICKER_RISKS.get(ticker[-1]) if len(ticker) == 5 else None
+        danger = risk is not None and risk[2] >= 2
+        fee_text = (f"fee = ${fee:.2f}   (more than ${checklist.FEE_HIGH:.2f}, on the buy and again on the sell: "
+                    f"${2 * fee:.2f} in all)") if high else ""
+        if danger:
+            self.fee_bar.setText(f"⚠ DANGEROUS Stock: {risk[0]}!   {ticker[-1]}: {risk[1]}"
+                                 + (f"   ·   {fee_text}" if fee_text else ""))
+            self.fee_bar.setStyleSheet("QLabel { background: #d32f2f; color: #ffffff; font-weight: bold; padding: 3px; }")
+            self.fee_bar.setToolTip(details if high else "")
+        elif high:
+            self.fee_bar.setText(f"⚠ {ticker}: {fee_text}")
+            self.fee_bar.setStyleSheet("QLabel { background: #e3b23c; color: #111111; font-weight: bold; padding: 3px; }")
             self.fee_bar.setToolTip(details)
-        self.fee_bar.setVisible(high)
+        self.fee_bar.setVisible(danger or high)
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
@@ -2531,12 +2549,16 @@ class MainWindow(QMainWindow):
         if rows:        # every chart opened, from anywhere: first in the box's Down-arrow history
             self.add_ticker_history(ticker)
         self.checklist.read_fee(ticker)     # (the checklist hidden too: the fee bar over the chart)
-        self.show_fee_bar()
         risk = ticker_risk(ticker)
         if risk:
             self.chart.set_risk(self.risk_icons[risk[0]], risk[1])
         else:
             self.chart.set_risk()
+        self.ticker_risk_sign.setVisible(bool(risk))      # (after "Ticker:" too)
+        if risk:
+            self.ticker_risk_sign.setPixmap(self.risk_icons[risk[0]].pixmap(18, 18))
+            self.ticker_risk_sign.setToolTip(risk[1])
+        self.show_fee_bar()
         self.chart_analysis = zones.analyze(rows)
         if channel is not None and self.chart_analysis is not None:
             # The scan's copy of a channel; find the same one in this fresh analysis

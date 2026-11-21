@@ -3524,7 +3524,7 @@ class ChecklistPanel(QWidget):
                     mark.mousePressEvent = lambda _e, it=item: self.toggle(it)
                     text.setCursor(Qt.CursorShape.PointingHandCursor)
                     text.mousePressEvent = lambda _e, it=item: self.toggle(it)
-                if item.kind == "info" and item.key not in TARGETS and item.key != "shares":
+                if item.kind == "info" and item.key not in TARGETS and item.key not in ("shares", "ticker"):
                     mark.setFixedWidth(4)       # (the amount of stocks: its minimum's mark)
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
@@ -3541,6 +3541,10 @@ class ChecklistPanel(QWidget):
                     shown = value.shown if isinstance(value, CopyLineEdit) else value.text
                     if item.key == "ticker":        # the ticker copies the whole trade plan
                         box = CopyBox(value, shown, copy_text=self.plan_text)
+                        # beside the name: the ticker's risk sign (its last letter), as the chart's
+                        self.ticker_risk_sign = QLabel()
+                        self.ticker_risk_sign.hide()
+                        box.layout().addWidget(self.ticker_risk_sign)
                         value.setCursor(Qt.CursorShape.PointingHandCursor)
                         value.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
                         value.mousePressEvent = lambda e, b=box: b.copy() if e.button() == Qt.MouseButton.LeftButton else None
@@ -4555,6 +4559,14 @@ class ChecklistPanel(QWidget):
             r["no_dilution"] = (OK, "", "")
         return r
 
+    @staticmethod
+    def risk_of(ticker):
+        """The ticker's risk by its last letter: (level: 1 risky / 2 dangerous, case, what it means) or None. The
+        app sets it (its TICKER_RISKS), and risk_icons (level -> the chart's sign)."""
+        return None
+
+    risk_icons = {}
+
     def plan_text(self):
         """The trade plan, as text to paste: the values the checklist shows now."""
         if not self.ticker:
@@ -4690,6 +4702,31 @@ class ChecklistPanel(QWidget):
                 solvers[item.key] = item.text
         passed = total = 0
 
+        def ticker_mark(mark, text):
+            """The ticker's mark: ✔ when not a risky kind (its 5th letter), a red ✘ when dangerous (bankruptcy,
+            delinquent...), a yellow ! when risky (foreign); its sign beside its name, as the chart's."""
+            nonlocal passed, total
+            risk = self.risk_of(self.ticker) if self.ticker else None     # (level, case, what it means)
+            if not self.ticker:
+                st, why = UNKNOWN, "No ticker"
+            elif not risk:
+                st, why = OK, "Not one of the risky kinds (by its 5th letter)"
+            else:
+                st = BAD if risk[0] >= 2 else WARN
+                why = f"{'DANGEROUS' if risk[0] >= 2 else 'Risky'}: {self.ticker[-1]} = {risk[1]}: {risk[2]}"
+            set_mark(mark, st)
+            for w in (mark, text):
+                w.setToolTip(why)
+            sign = getattr(self, "ticker_risk_sign", None)
+            if sign is not None:
+                icon = (self.risk_icons or {}).get(risk[0]) if risk else None
+                sign.setVisible(icon is not None)
+                if icon is not None:
+                    sign.setPixmap(icon.pixmap(16, 16))
+                    sign.setToolTip(why)
+            total += 1
+            passed += st in (OK, WARN)          # (a yellow one is a warning: not counted against it)
+
         def shares_mark(mark, text):
             """The amount of stocks' mark: at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
             nonlocal passed, total
@@ -4798,6 +4835,9 @@ class ChecklistPanel(QWidget):
                         good = OK           # (no loss at all, and a profit)
                     value.setStyleSheet("" if val in ("", NA) or good == UNKNOWN else
                                         f"color: {MARKS[OK if good == OK else BAD][1]};")
+                if item.key == "ticker":
+                    ticker_mark(mark, text)
+                    continue
                 if item.key not in TARGETS:
                     continue
                 # ✔ once it reaches its target, else ✘ (? while unknown)
