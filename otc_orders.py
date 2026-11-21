@@ -95,20 +95,21 @@ def order_info(o):
         return None
 
 
-def transaction_fills(rows, ticker):
-    """Schwab's TRADE transactions of a ticker as fills: [{"order", "side", "time" (ISO, UTC), "shares", "price",
-    "value" (shares x price), "fee" (what Schwab took besides: its commission and fees)}]."""
+def transaction_fills(rows, ticker=None):
+    """Schwab's TRADE transactions of a ticker (None: of every one) as fills: [{"order", "ticker", "side", "time" (ISO,
+    UTC), "shares", "price", "value" (shares x price), "fee" (what Schwab took besides: its commission and fees)}]."""
     out = []
     for x in rows or []:
         for it in x.get("transferItems") or []:
             ins = it.get("instrument") or {}
-            if ins.get("symbol") != ticker or it.get("feeType"):
+            if (ticker is not None and ins.get("symbol") != ticker) or not ins.get("symbol") or it.get("feeType"):
                 continue
             amount, cost = float(it.get("amount") or 0), float(it.get("cost") or 0)
             if not amount:
                 continue
             net = float(x.get("netAmount") or 0)
-            out.append({"order": str(x.get("orderId") or ""), "side": "BUY" if amount > 0 else "SELL",
+            out.append({"order": str(x.get("orderId") or ""), "ticker": ins.get("symbol"),
+                        "side": "BUY" if amount > 0 else "SELL",
                         "time": str(x.get("time") or x.get("tradeDate") or ""), "shares": int(abs(amount)),
                         "price": float(it.get("price") or 0), "value": round(abs(cost), 4),
                         "fee": round(abs(net - cost), 2)})

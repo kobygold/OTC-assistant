@@ -52,6 +52,24 @@ ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "Steps": ("Order #", "Schw
                     "Ask then": ("Ask then", "The ask when the order was sent. Hover: the Level II then")}
 
 
+def actual_text(a, side) -> str:
+    """An order's Actual$ (order_actual()): "$101.00 + $6.95 = $107.95" (a buy), "$101.00 - $6.95 = $94.05" (a sell)."""
+    if side == "BUY":
+        return f"${a['value']:,.2f} + ${a['fee']:.2f} = ${a['value'] + a['fee']:,.2f}"
+    net = a["value"] - a["fee"]
+    return f"${a['value']:,.2f} - ${a['fee']:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
+
+
+def actual_tip(a, filled=None) -> str:
+    charged = a.get("charged", a.get("fills"))
+    days = a.get("days") or []
+    return (f"Schwab's: {a['shares']:,} shares for ${a['value']:,.2f}; fees ${a['fee']:.2f} "
+            f"({a.get('fills', 0)} fill{'s' if a.get('fills', 0) != 1 else ''}, {charged} charged"
+            + (f", on {', '.join(days)}" if days else "") + ")"
+            + (f". So far: {filled - a['shares']:,} more filled since, not read yet" if filled and filled > a["shares"]
+               else ""))
+
+
 def limit_text(v) -> str:
     """A price in a New Price box: 0.0350."""
     return f"{v:.4f}"
@@ -409,7 +427,8 @@ class AtmTable(SortMixin, QTableWidget):
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         # the orders of the trades opened (▾), each as a row under its trade
         children = {e["id"]: self.atm.trade_orders(e) for e in entries}
-        quotes = {o["id"]: bool(self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"]))
+        quotes = {o["id"]: (bool(self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])),
+                            self.atm.order_actual(e.get("account") or self.atm.chosen_account(), o["id"]))
                   for e in entries if e["id"] in self.expanded for o in children[e["id"]]}
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries], sorted(self.expanded & set(children)),
@@ -478,6 +497,9 @@ class AtmTable(SortMixin, QTableWidget):
         """(value filled, commission, from Schwab) of the trade's order, or None when nothing filled: Schwab's own
         (the trade's P/L read from its transactions) when it has the order's fills, else its shares x their price
         and the fee rule (once an order; a sell's never more than it got)."""
+        a = self.atm.order_actual(e.get("account") or self.atm.chosen_account(), o["id"])
+        if a and a.get("shares"):
+            return a["value"], a["fee"], True
         fills = [f for f in (e.get("pl") or {}).get("fills") or [] if str(f.get("order")) == o["id"]]
         if fills and (e.get("pl") or {}).get("source") == "schwab":
             return sum(f.get("value") or 0 for f in fills), sum(f.get("fee") or 0 for f in fills), True
@@ -939,8 +961,11 @@ ORDER_COLUMNS = [
     ("Duration", "GTC: good till canceled. Day: for the day only."),
     ("Shares", "Filled / ordered: the shares filled of those the order asked for (Schwab's)"),
     ("Limit", "The order's limit price (MKT: a market order); filled: the fills' average price"),
-    ("$", "Shares x the price, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
-          "get). Follows the New limit as it's changed (orange)."),
+    ("Estimate$", "The estimate: shares x the price, with the commission (Schwab's preview of one, else the usual): "
+                  "+ for a buy (what it costs), - for a sell (what you get). Follows the New limit as it's changed "
+                  "(orange)"),
+    ("Actual$", "What Schwab actually charged (its transactions, read by the main server and kept): the fills' value "
+                "and Schwab's fees. -: nothing filled. …: filled, not read from Schwab yet"),
     ("Bid then", "The bid when the order was sent (or changed). Hover: its size, and the Level II then. "
                  "Gray: first seen a few seconds after it was placed (outside the app)"),
     ("Ask then", "The ask when the order was sent (or changed). Hover: its size, and the Level II then. "
@@ -1000,7 +1025,7 @@ class SchwabOrdersTable(AtmTable):
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
         self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Order #", "Entered", "Filled", "Duration", "Shares",
-                                              "Limit", "$", "Bid then", "Ask then", "Bid now", "Ask now")])
+                                              "Limit", "Estimate$", "Actual$", "Bid then", "Ask then", "Bid now", "Ask now")])
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now")
@@ -1020,8 +1045,11 @@ class SchwabOrdersTable(AtmTable):
             return (int(o.get("quantity") or 0), int(o.get("filled") or 0))
         if title == "Limit":
             return self.order_price(o)
-        if title == "$":
+        if title == "Estimate$":
             return self.order_shares(o) * (self.order_price(o) or 0)
+        if title == "Actual$":
+            a = self.atm.order_actual(o.get("account") or self.atm.chosen_account(), o["id"])
+            return (a["value"] + a["fee"] if o["side"] == "BUY" else a["value"] - a["fee"]) if a else None
         if title in ("Bid now", "Ask now"):
             return (list(m.get("bid" if title == "Bid now" else "ask") or []) + [None])[0]
         if title in ("Bid then", "Ask then"):
@@ -1071,6 +1099,8 @@ class SchwabOrdersTable(AtmTable):
                                 [{k: v for k, v in o.items() if k != "atm"} for o in orders],
                                 [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state(),
                                 [bool(self.atm.order_quote(o.get("account") or self.atm.chosen_account(), o["id"]))
+                                 for o in orders],
+                                [self.atm.order_actual(o.get("account") or self.atm.chosen_account(), o["id"])
                                  for o in orders]],
                                sort_keys=True, default=str)
         if signature == self.signature:
@@ -1248,6 +1278,7 @@ class SchwabOrdersTable(AtmTable):
             self.cell(row, col, quote_text(m.get(k)), bold=True)
         edit = self.edits.get(o["key"])      # the fee may have been read meanwhile
         self.fill_dollars(row, o, self.box_price(edit) if edit else None)
+        self.fill_actual(row, o)
 
     @staticmethod
     def box_price(edit):
@@ -1267,10 +1298,10 @@ class SchwabOrdersTable(AtmTable):
         price = price or self.order_price(o)
         if not o.get("open") and not int(o.get("filled") or 0):
             # ended without a fill (canceled, replaced, expired, rejected): nothing paid, no commission
-            self.cell(row, OCOL["$"], "-", DIM, tip="Nothing filled: nothing paid, no commission")
+            self.cell(row, OCOL["Estimate$"], "-", DIM, tip="Nothing filled: nothing paid, no commission")
             return
         if not price:               # (a market order not filled: no price)
-            self.cell(row, OCOL["$"], "-", DIM)
+            self.cell(row, OCOL["Estimate$"], "-", DIM)
             return
         read = self.atm.fee_of(o["ticker"])
         fee = FEE_USD if read is None else read
@@ -1285,8 +1316,23 @@ class SchwabOrdersTable(AtmTable):
                + (f", Schwab's commission ${fee:.2f}" if read is not None else
                   f", the usual commission ${fee:.2f} (Schwab's not read yet)")
                + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))
-        self.cell(row, OCOL["$"], text, CHANGED if changed else (GREEN if o["side"] == "BUY" else RED),
+        self.cell(row, OCOL["Estimate$"], text, CHANGED if changed else (GREEN if o["side"] == "BUY" else RED),
                   bold=True, tip=tip)
+
+    def fill_actual(self, row, o):
+        """Actual$: what Schwab charged (its transactions): "$101.00 + $6.95 = $107.95" for a buy, "$101.00 - $6.95 =
+        $94.05" for a sell; - when nothing filled; … while not read yet."""
+        got = int(o.get("filled") or 0)
+        a = self.atm.order_actual(o.get("account") or self.atm.chosen_account(), o["id"])
+        if not got and not a:
+            self.cell(row, OCOL["Actual$"], "-", DIM, tip="Nothing filled: nothing paid, no commission")
+            return
+        if not a:
+            self.cell(row, OCOL["Actual$"], "…", DIM, align=Qt.AlignmentFlag.AlignCenter,
+                      tip="Filled: Schwab's transactions not read yet (the main server reads them a little after a fill)")
+            return
+        self.cell(row, OCOL["Actual$"], actual_text(a, o["side"]), GREEN if o["side"] == "BUY" else RED, bold=True,
+                  tip=actual_tip(a, got))
 
     def update_market(self):
         if self.sort_col is not None and ORDER_COLUMNS[self.sort_col][0] in self.MARKET_SORTS:

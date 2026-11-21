@@ -915,14 +915,15 @@ class SchwabTrader(QObject):
                     self._snap(ticker))
 
     def read_transactions(self, key, account, ticker, start, end):
-        """The ticker's TRADE transactions in the account between two datetimes (UTC): transactions(key, fills)."""
+        """The ticker's (None: every ticker's) TRADE transactions in the account between two datetimes (UTC):
+        transactions(key, fills)."""
         self._start(self._transactions, key, account, ticker, start, end)
 
     def _transactions(self, key, account_tail, ticker, start, end):
         try:
             with self.session._lock:
                 client, account = self.session.connect(account_tail)
-                r = client.get_transactions(account, start_date=start, end_date=end, symbol=ticker,
+                r = client.get_transactions(account, start_date=start, end_date=end, symbol=ticker or None,
                                             transaction_types=[client.Transactions.TransactionType.TRADE])
             if r.status_code != 200:
                 self.transactions.emit(key, None, f"HTTP {r.status_code}")
@@ -1088,7 +1089,9 @@ class SchwabTrader(QObject):
 
 
 OPEN_GONE = {"CANCELED", "REPLACED"}
-ORDER_QUOTES_DAYS = 180     # the orders' Bid / Ask then (and Level II then) are kept this long     # an open order that may have been changed in thinkorswim
+ORDER_QUOTES_DAYS = 180     # the orders' Bid / Ask then (and Level II then) are kept this long; their Actual$ too
+ACTUALS_READ_S = 120        # the main server's app reads the fills' transactions at most this often an account...
+ACTUALS_AGAIN_S = 900       # ...and again for the same orders not found yet (a fill shows a little later)     # an open order that may have been changed in thinkorswim
 
 
 def tint(value) -> str:
@@ -1814,6 +1817,8 @@ class AtmTrades(QObject):
         # "bids", "asks"} or None
         self.chart_quote = lambda ticker: None
         self.local_quotes = self._read_quotes()     # order quotes without the shared data (order_quotes.json)
+        self.local_actuals = self._read_json("order_actuals.json")      # ...and the orders' Actual$
+        self.actuals_asked = {}     # account -> (time.time(), the order ids asked for): the transactions read
         self.schwab_orders = {}     # account tail -> its orders of the last 60 days, as order_info()
         self.orders_time = {}       # account tail -> when they were read (time.time())
         self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
@@ -2480,6 +2485,85 @@ class AtmTrades(QObject):
     def _quotes_path(self):
         return self.path.with_name("order_quotes.json")
 
+    def _read_json(self, name):
+        try:
+            return json.loads(self.path.with_name(name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    # ---- the orders' Actual$: Schwab's own (its transactions), kept once read ----
+    def order_actual(self, account, order_id):
+        """What Schwab charged for the order's fills: {"shares", "value", "fee", "fills", "days", "time"}, or None
+        (not read yet)."""
+        key = f"{account}/{order_id}"
+        if getattr(self, "shared", None) is not None:
+            item = self.shared.items.get("order_actuals/" + key)
+            return item[1] if item else None
+        return self.local_actuals.get(key)
+
+    def want_actuals(self, account, orders):
+        """(the main server's app) The filled orders whose Actual$ isn't kept yet (or has fewer shares than filled
+        now): the account's transactions read for them, from the oldest one's day; not again too soon."""
+        if self.trader is None or not self.decides():
+            return
+        need = [o for o in orders if int(o.get("filled") or 0)
+                and int((self.order_actual(account, o["id"]) or {}).get("shares") or 0) < int(o["filled"])]
+        if not need:
+            return
+        ids = sorted(o["id"] for o in need)
+        at, asked = self.actuals_asked.get(account, (0.0, []))
+        wait = ACTUALS_AGAIN_S if ids == asked else ACTUALS_READ_S
+        if time.time() - at < wait:
+            return
+        self.actuals_asked[account] = (time.time(), ids)
+        days = [datetime.strptime(o["entered"][:19], "%Y-%m-%dT%H:%M:%S") for o in need if o.get("entered")]
+        now = datetime.now(timezone.utc)
+        start = (min(days).replace(tzinfo=timezone.utc) - timedelta(days=1)) if days else now - timedelta(days=30)
+        start = max(start, now - timedelta(days=ORDER_QUOTES_DAYS))
+        self.trader.read_transactions("actuals:" + account, account, None, start, now)
+
+    def keep_actuals(self, account, fills):
+        """Schwab's fills of the account as each order's Actual$ (its shares, their value, the fees), kept for
+        every computer (the shared data), ORDER_QUOTES_DAYS days."""
+        by_order = {}
+        for f in fills:
+            if f.get("order"):
+                by_order.setdefault(f["order"], []).append(f)
+        from otc_orders import market_day
+        cutoff = (datetime.now() - timedelta(days=ORDER_QUOTES_DAYS)).isoformat()
+        now = datetime.now().isoformat(timespec="seconds")
+        changed = False
+        for oid, fs in by_order.items():
+            actual = {"ticker": fs[0].get("ticker"), "side": fs[0].get("side"),
+                      "shares": sum(int(f.get("shares") or 0) for f in fs),
+                      "value": round(sum(f.get("value") or 0 for f in fs), 4),
+                      "fee": round(sum(f.get("fee") or 0 for f in fs), 2), "fills": len(fs),
+                      "charged": sum(1 for f in fs if (f.get("fee") or 0) > 0.0049),
+                      "days": sorted({market_day(f.get("time")) for f in fs} - {""}), "time": now}
+            old = self.order_actual(account, oid)
+            if old and {k: v for k, v in old.items() if k != "time"} == {k: v for k, v in actual.items() if k != "time"}:
+                continue
+            changed = True
+            if getattr(self, "shared", None) is not None:
+                self.shared.put(f"order_actuals/{account}/{oid}", actual)
+            else:
+                self.local_actuals[f"{account}/{oid}"] = actual
+        if getattr(self, "shared", None) is not None:
+            old = [k for k, v in self.shared.get("order_actuals/").items() if (v or {}).get("time", "") < cutoff]
+            if old:
+                self.shared.sync_items({}, ["order_actuals/" + k for k in old])
+        elif changed:
+            self.local_actuals = {k: v for k, v in self.local_actuals.items() if v.get("time", "") >= cutoff}
+            try:
+                path = self.path.with_name("order_actuals.json")
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.local_actuals), encoding="utf-8")
+                tmp.replace(path)
+            except OSError:
+                pass
+        if changed:
+            self.changed.emit()
+
     def _read_quotes(self):
         try:
             return json.loads(self._quotes_path().read_text(encoding="utf-8"))
@@ -2642,6 +2726,10 @@ class AtmTrades(QObject):
             self.trader.read_transactions(e["id"], e.get("account") or self.chosen_account(), e["ticker"], start, end)
 
     def _transactions_read(self, key, fills, error):
+        if str(key).startswith("actuals:"):          # the orders' Actual$ (every ticker of the account)
+            if fills is not None:
+                self.keep_actuals(key[len("actuals:"):], fills)
+            return
         e = self.find(key)
         if e is None or fills is None:
             return
@@ -3099,6 +3187,7 @@ class AtmTrades(QObject):
                 self.trader.read_quotes(new)
         if self.decides():
             self.adopt_outside_orders(account, orders)
+            self.want_actuals(account, orders)      # the filled orders' Actual$ (Schwab's transactions)
         # trades whose order was canceled or replaced outside the app: follow the new one, or, once
         # the orders read after it show none, take it as canceled
         for e in list(self.entries) if self.decides() else []:
