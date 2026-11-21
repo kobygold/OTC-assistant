@@ -740,7 +740,7 @@ ORDER_COLUMNS = [
     ("Entered", "When the order was placed"),
     ("Filled", "When it was filled (its last fill)"),
     ("Duration", "GTC: good till canceled. Day: for the day only."),
-    ("Shares", "The order's shares (a working one: those still to fill)"),
+    ("Shares", "Filled / ordered: the shares filled of those the order asked for (Schwab's)"),
     ("Limit", "The order's limit price (MKT: a market order); filled: the fills' average price"),
     ("$", "Shares x the price, with Schwab's commission: + for a buy (what it costs), - for a sell (what you "
           "get). Follows the New limit as it's changed (orange)."),
@@ -813,7 +813,7 @@ class SchwabOrdersTable(AtmTable):
         if title == "Filled":
             return o.get("filled_at") or None
         if title == "Shares":
-            return self.order_shares(o)
+            return (int(o.get("quantity") or 0), int(o.get("filled") or 0))
         if title == "Limit":
             return self.order_price(o)
         if title == "$":
@@ -905,7 +905,12 @@ class SchwabOrdersTable(AtmTable):
                   DIM if not o.get("filled_at") else None, tip=o.get("filled_at") or "")
         duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration") or "")
         self.cell(row, OCOL["Duration"], duration)
-        self.cell(row, OCOL["Shares"], f"{self.order_shares(o):,}", bold=True)
+        # filled / ordered (Schwab's): "200 / 19,350"; all of it: in green, with a check
+        got, asked = int(o.get("filled") or 0), int(o.get("quantity") or o.get("shares") or 0)
+        whole = asked and got >= asked
+        self.cell(row, OCOL["Shares"], f"{got:,} / {asked:,}" + (" ✔" if whole else ""), GREEN if whole else None,
+                  bold=True, tip=f"Filled {got:,} of the {asked:,} ordered" + (
+                      f" ({asked - got:,} still to fill)" if working and asked > got else ""))
         price = self.order_price(o)
         self.cell(row, OCOL["Limit"], fmt_price(price) if price else "MKT", ORDER_COLOR if working else None, bold=True)
         if not working:             # (an order that ended: nothing to change)
