@@ -19,10 +19,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from otc_intraday import israel_time
 
-# distinct colors on black, none of them the candles' green / red first
-PALETTE = ["#4fc3f7", "#ff9800", "#e040fb", "#ffeb3b", "#00e5ff", "#ff80ab", "#b2ff59", "#7c4dff",
-           "#ffab40", "#18ffff", "#f06292", "#c6ff00", "#b388ff", "#ffd180", "#64ffda", "#ff5252",
-           "#80d8ff", "#eeff41", "#ea80fc", "#a7ffeb"]
+# distinct colors on black (one blue, one cyan: not two alike), none of them the candles' green / red first
+PALETTE = ["#2979ff", "#ff9800", "#e040fb", "#ffeb3b", "#00e5ff", "#ff80ab", "#b2ff59", "#7c4dff",
+           "#ffffff", "#a1887f", "#ff5252", "#1de9b6", "#bdbdbd", "#ffd180", "#c51162", "#9e9d24",
+           "#8c9eff", "#ff6e40", "#00c853", "#8d6e63"]
 
 
 def ask_events(folder, ticker, day):
