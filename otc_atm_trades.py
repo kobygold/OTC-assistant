@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            STEP_GAP, STEP_R, AtmTrades, paint_steps, red_x_icon, reset_icon, usd_signed)
-from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, trade_steps
+from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, status_word, trade_steps
 
 
 
@@ -97,6 +97,11 @@ def period_cutoff(days):
     if not days:
         return None
     return int((_time.time() - days * 86400) // 60 * 60)
+
+
+def ticker_match(ticker, text):
+    """The Monitor tab's ticker filter: the tickers holding its text (any case); all while it's empty."""
+    return not text or text.upper() in str(ticker or "").upper()
 
 
 def trade_recent(e, cutoff):
@@ -325,13 +330,15 @@ class AtmTable(SortMixin, QTableWidget):
         # only the trades of the account chosen at the top of the Monitor tab (all while none is)
         account = self.atm.settings.get("schwab_account", "")
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: open trades always)
+        flt = getattr(self, "ticker_filter", "")
         entries = self.sorted_rows(e for e in reversed(self.atm.entries)
-                                   if (not account or e.get("account") == account) and trade_recent(e, cutoff))
+                                   if (not account or e.get("account") == account) and trade_recent(e, cutoff)
+                                   and ticker_match(e.get("ticker"), flt))
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
                                           for e in entries],
                                 [trade_steps(self.atm.live_view(e)) for e in entries],     # (Schwab's fills, at once)
-                                sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state(), cutoff],
+                                sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state(), cutoff, flt],
                                sort_keys=True, default=str)
         if signature == self.signature:
             self.sync_sell_at()
@@ -727,8 +734,9 @@ class AtmTable(SortMixin, QTableWidget):
 ORDER_COLUMNS = [
     ("Ticker", "Double-click: its chart"),
     ("Side", ""),
-    ("Status", "Working: open at Schwab (it can be changed or canceled). Else how it ended: Filled, Canceled, "
-               "Replaced (by a changed order), Rejected, Expired"),
+    ("Status", "Working: open and in the market (it can fill now). Pending: open, not in the market yet (placed "
+               "while it's closed: Working at the open). Both can be changed or canceled. Else how it ended: Filled, "
+               "Canceled, Replaced (by a changed order), Rejected, Expired"),
     ("Entered", "When the order was placed"),
     ("Filled", "When it was filled (its last fill)"),
     ("Duration", "GTC: good till canceled. Day: for the day only."),
@@ -825,7 +833,9 @@ class SchwabOrdersTable(AtmTable):
 
     def orders(self):
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: working orders always)
-        return self.sorted_rows(sorted((o for o in self.atm.all_orders() if order_recent(o, cutoff)),
+        flt = getattr(self, "ticker_filter", "")
+        return self.sorted_rows(sorted((o for o in self.atm.all_orders()
+                                        if order_recent(o, cutoff) and ticker_match(o.get("ticker"), flt)),
                                        key=lambda o: o.get("entered") or "", reverse=True))
 
     @staticmethod
@@ -847,6 +857,7 @@ class SchwabOrdersTable(AtmTable):
         mine = {o["busy"] for o in orders}
         busy = sorted(str(k) for k in self.atm.sending | self.atm.canceling if k in mine)
         signature = json.dumps([self.atm.chosen_account(), period_cutoff(getattr(self, "period_days", 0)),
+                                getattr(self, "ticker_filter", ""),
                                 [{k: v for k, v in o.items() if k != "atm"} for o in orders],
                                 [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state()],
                                sort_keys=True, default=str)
@@ -883,8 +894,8 @@ class SchwabOrdersTable(AtmTable):
         if changing or canceling:
             status, color = ("Changing ..." if changing else "Canceling ..."), YELLOW
         elif working:
-            status = "Working" + ("" if raw in ("WORKING", "") else f" ({raw.replace('_', ' ').lower()})")
-            color = "#1db31d"
+            status = status_word(raw) if raw else "Working"     # Working: in the market; Pending: not yet (closed)
+            color = "#1db31d" if status == "Working" else YELLOW
         else:
             status = raw.replace("_", " ").title()
             color = {"FILLED": ORDER_COLOR, "CANCELED": DIM, "REPLACED": DIM, "EXPIRED": DIM}.get(raw, "#e0404f")
@@ -1152,13 +1163,15 @@ class PositionsTable(AtmTable):
                 "Day P/L": p.get("day_pl")}.get(title)
 
     def rebuild(self):
-        rows = self.sorted_rows(sorted(self.atm.owned(), key=lambda p: p["ticker"]))
+        flt = getattr(self, "ticker_filter", "")      # (the tab's ticker filter)
+        rows = self.sorted_rows(sorted((p for p in self.atm.owned() if ticker_match(p["ticker"], flt)),
+                                       key=lambda p: p["ticker"]))
         busy = sorted(k for k in self.atm.sending if str(k).startswith("sell:"))
         in_orders = [self.atm.in_sell_orders(p["ticker"]) for p in rows]
         atm = [(self.atm_entry(p["ticker"]) or {}).get("state") for p in rows]
         atm_steps = [trade_steps(self.atm.live_view(self.atm_entry(p["ticker"]))) if self.atm_entry(p["ticker"]) else None
                      for p in rows]         # (the circles: Schwab's fills, at once)
-        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, atm, atm_steps, busy, self.sort_state()],
+        signature = json.dumps([self.atm.chosen_account(), rows, in_orders, atm, atm_steps, busy, self.sort_state(), flt],
                                sort_keys=True, default=str)
         if signature == self.signature:
             return

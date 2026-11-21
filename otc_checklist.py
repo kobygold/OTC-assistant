@@ -30,7 +30,7 @@ from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, o
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 from otc_trade import (DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, estimate_fees, pl_lines, pl_summary,
-                       trade_steps)
+                       status_word, trade_steps)
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
@@ -4210,7 +4210,7 @@ class ChecklistPanel(QWidget):
             # at once; the trade itself is updated by the main server's app, a moment later): its status and fills
             o = self.atm.live_order(e)
             status = (o or {}).get("status") or e.get("status", "")
-            status = f" ({status.replace('_', ' ')})" if status else ""
+            status = f" ({status_word(status).upper()})" if status else ""
             left = self.atm.remaining(e)
 
             def bought_line(n):

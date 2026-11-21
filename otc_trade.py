@@ -71,6 +71,18 @@ def remaining(e):
     return max(0, (e.get("filled") or 0) - (e.get("sold") or 0))
 
 
+def status_word(status):
+    """Schwab's status of an order, short: "Working" (in the market: it can fill now), "Pending" (accepted, not in
+    the market yet: placed while the market is closed; it becomes Working at the open), else as Schwab says it
+    ("Filled", "Canceled"...)."""
+    s = str(status or "")
+    if s == "WORKING":
+        return "Working"
+    if s in ("PENDING_ACTIVATION", "QUEUED", "ACCEPTED", "NEW") or s.startswith("AWAITING"):
+        return "Pending"
+    return s.replace("_", " ").title()
+
+
 def trade_fee(e):
     return FEE_USD if e.get("fee") is None else e["fee"]
 

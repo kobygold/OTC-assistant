@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.68"
+APP_VERSION = "2.7.69"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3036,6 +3036,18 @@ class MainWindow(QMainWindow):
                                        "always show.")
         self.monitor_period.currentIndexChanged.connect(self.on_monitor_period)
         prow.addWidget(self.monitor_period)
+        prow.addSpacing(12)
+        # the ticker filter: every section shows only the tickers holding its text (Esc clears it)
+        self.monitor_filter = QLineEdit()
+        self.monitor_filter.setPlaceholderText("Filter tickers")
+        self.monitor_filter.setClearButtonEnabled(True)
+        self.monitor_filter.setFixedWidth(160)
+        self.monitor_filter.setValidator(UpperValidator(self.monitor_filter))
+        self.monitor_filter.setToolTip("Only the tickers holding this text, in every list of this tab (empty: all)")
+        self.monitor_filter.textChanged.connect(lambda _t: self.on_monitor_period(save=False))
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self.monitor_filter, self.monitor_filter.clear,
+                  context=Qt.ShortcutContext.WidgetShortcut)
+        prow.addWidget(self.monitor_filter)
         prow.addStretch()
         root.addLayout(prow)
         trades = self.atm_box = QGroupBox("ATM Trades")
@@ -5040,8 +5052,11 @@ class MainWindow(QMainWindow):
     def on_monitor_period(self, *_args, save=True):
         """Show: the period of ATM Trades, All Orders and the Order Log."""
         days = self.monitor_period.currentData() or 0
+        flt = self.monitor_filter.text().strip()
         for table in (self.trades_table, self.orders_table):
             table.period_days = days
+        for table in (self.owned_table, self.trades_table, self.orders_table):
+            table.ticker_filter = flt
             table.signature = None
             table.rebuild()
         self.show_order_log()
@@ -5053,7 +5068,9 @@ class MainWindow(QMainWindow):
         """The Order Log: the period's lines, newest first, the box as tall as all of them (the page scrolls)."""
         days = self.monitor_period.currentData() or 0
         cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
-        lines = [x for x in reversed(self.order_log_lines) if cutoff is None or x[:19] >= cutoff]
+        flt = self.monitor_filter.text().strip().upper()
+        lines = [x for x in reversed(self.order_log_lines) if (cutoff is None or x[:19] >= cutoff)
+                 and (not flt or flt in x[19:].strip().split(":")[0].upper())]       # (the line's ticker)
         self.order_log.setPlainText("\n".join(lines))
         log = self.order_log
         bar = log.horizontalScrollBar()
