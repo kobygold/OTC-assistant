@@ -905,10 +905,10 @@ class SchwabOrdersTable(AtmTable):
                   DIM if not o.get("filled_at") else None, tip=o.get("filled_at") or "")
         duration = {"GOOD_TILL_CANCEL": "GTC", "DAY": "Day"}.get(o.get("duration"), o.get("duration") or "")
         self.cell(row, OCOL["Duration"], duration)
-        # filled / ordered (Schwab's): "200 / 19,350"; all of it: in green, with a check
+        # filled / ordered (Schwab's): "200 / 19,350"; all of it: in green
         got, asked = int(o.get("filled") or 0), int(o.get("quantity") or o.get("shares") or 0)
         whole = asked and got >= asked
-        self.cell(row, OCOL["Shares"], f"{got:,} / {asked:,}" + (" ✔" if whole else ""), GREEN if whole else None,
+        self.cell(row, OCOL["Shares"], f"{got:,} / {asked:,}", GREEN if whole else None,
                   bold=True, tip=f"Filled {got:,} of the {asked:,} ordered" + (
                       f" ({asked - got:,} still to fill)" if working and asked > got else ""))
         price = self.order_price(o)
