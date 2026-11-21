@@ -4410,6 +4410,9 @@ class ChecklistPanel(QWidget):
                 src = (" (Schwab)" if pl["source"] == "schwab" else " (estimated)") if pl else ""
                 fees = f" after ${pl['fees']:.2f} fees" if pl else " after both fees"
                 text = f"Sold {e.get('filled', 0):,}: {money}{fees}{src}."
+                # the orders the buy and the sell were filled in (a commission each)
+                n = int(e.get("filled") or 0)
+                text += f"\nBought{times_text('BUY')}: {n:,}\nSold{times_text('SELL')}: {n:,}"
             # (the trade's notes aren't shown here: they're in its history, on hover)
         self.order_text = text          # (as plain text)
         # its lines as rich text: a line's check (all bought / sold) in green
