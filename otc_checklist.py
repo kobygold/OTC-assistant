@@ -3722,8 +3722,8 @@ class ChecklistPanel(QWidget):
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                # the ticker | the amounts | the prices | the % results | the fee and the $ results:
-                if item.key in ("ticker", "shares", "stop", "ratio"):
+                # the ticker | the amounts | the prices | the % results | the fee | the $ results:
+                if item.key in ("ticker", "shares", "stop", "ratio", "fee"):
                     # a thin line between them
                     line = QWidget()
                     line.setObjectName("cl_split")
@@ -4887,7 +4887,9 @@ class ChecklistPanel(QWidget):
                 value.setReadOnly(bool(order))
                 value.setEnabled(bool(self.ticker))
                 value.setPlaceholderText(val)
-                value.setStyleSheet(f"color: {ORDER_COLOR};" if order else "")
+                # fixed: no box around it, as the other fixed cells (the left column's)
+                value.setStyleSheet(f"QLineEdit {{ color: {ORDER_COLOR}; font-weight: bold; background: transparent; "
+                                    f"border: none; padding: 1px 0px 1px 5px; }}" if order else "")
                 if order:
                     value.setText(val)
                 elif not value.hasFocus():
