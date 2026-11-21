@@ -3720,17 +3720,13 @@ class ChecklistPanel(QWidget):
                             glay.addStretch()
                         box = group
                     row.addWidget(box)
+                # thin lines: | the ticker | the amounts | the prices | the % results | the fee | the $ results | section 1
+                if item.key == "ticker":
+                    lay.addWidget(self.split_line())
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                # the ticker | the amounts | the prices | the % results | the fee | the $ results | section 1:
                 if item.key in ("ticker", "shares", "stop", "ratio", "fee", "loss_usd"):
-                    # a thin line between them
-                    line = QWidget()
-                    line.setObjectName("cl_split")
-                    line.setFixedHeight(1)
-                    line.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-                    line.setStyleSheet("QWidget#cl_split { background: #3a4046; }")
-                    lay.addWidget(line)
+                    lay.addWidget(self.split_line())
         lay.addStretch()
         self.scroll.setWidget(body)
         self.refresh()
@@ -3748,6 +3744,16 @@ class ChecklistPanel(QWidget):
         edit.textEdited.connect(lambda text, k=key: self.typed(k, text))
         edit.editingFinished.connect(lambda k=key, e=edit: self.edit_done(k, e))
         return edit
+
+    @staticmethod
+    def split_line():
+        """A thin line between the checklist's groups of rows."""
+        line = QWidget()
+        line.setObjectName("cl_split")
+        line.setFixedHeight(1)
+        line.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        line.setStyleSheet("QWidget#cl_split { background: #3a4046; }")
+        return line
 
     def make_shares_edit(self):
         """The amount of stocks: the automatic one (position $ / entry) shown, or type one: Enter sets the
