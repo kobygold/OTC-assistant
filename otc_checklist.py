@@ -2677,6 +2677,15 @@ class AtmTrades(QObject):
             return None
         return int(o.get("fills") or 0) + int(e.get(prev) or 0)
 
+    def commissions_count(self, e, side):
+        """How many commissions the trade's buys / sells took so far: each of its orders once a market day it was
+        filled on (an order filled in parts on the same day: one), or None when not known."""
+        orders = [o for o in self.trade_orders(e) if o.get("side") == side and int(o.get("filled") or 0)]
+        if not orders:
+            return None
+        # (a server of an older version: no fill_days, each order filled counts once)
+        return sum(len(o.get("fill_days") or []) or 1 for o in orders)
+
     def live_order(self, e):
         """The trade's open order (its buy while buy_open, its sell while sell_open) in Schwab's latest list of
         its account's orders (order_info()), or None."""
@@ -4363,10 +4372,17 @@ class ChecklistPanel(QWidget):
             status = f" ({status_word(status).upper()})" if status else ""
             left = self.atm.remaining(e)
 
+            def times_text(side):
+                """" (3 times, 2 orders)": the fills, and the orders they were in (an order again on another day
+                counts as another: one commission each)."""
+                times, orders = self.atm.fills_count(e, side), self.atm.commissions_count(e, side)
+                parts = ([f"{times} time{'s' if times != 1 else ''}"] if times else []) + (
+                    [f"{orders} order{'s' if orders != 1 else ''}"] if orders else [])
+                return f" ({', '.join(parts)})" if parts else ""
+
             def bought_line(n):
-                """"Bought so far (2 times): 3,700 of 19,737" (the buy's fills, its earlier orders' too)."""
-                times = self.atm.fills_count(e, "BUY")
-                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
+                """"Bought so far (2 times, 1 order): 3,700 of 19,737" (the buy's fills, its earlier orders' too)."""
+                times = times_text("BUY")
                 return f"Bought so far{times}: {n:,} of {e['shares']:,}" + (" ✔" if n >= e["shares"] else "")
             if state == "buy_open":
                 bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
@@ -4382,8 +4398,7 @@ class ChecklistPanel(QWidget):
                 selling = min(e.get("sell_shares") or left, left)
                 # the shares still waiting in the order, and below: those sold so far (of this order, and before)
                 done = sold + int(e.get("sold") or 0)
-                times = self.atm.fills_count(e, "SELL")
-                times = f" ({times} time{'s' if times != 1 else ''})" if times else ""
+                times = times_text("SELL")
                 owned = int(e.get("filled") or 0)
                 text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
                         + bought_line(owned) + "\n"

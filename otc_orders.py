@@ -7,7 +7,7 @@ limit_order / place_limit send a limit order (the app's trader, and the main ser
 Telegram).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 ORDERS_BACK_DAYS = 180      # how far back the account's orders are read
 # Schwab order statuses after which an order no longer works
@@ -31,11 +31,25 @@ def position_info(p):
         return None
 
 
+def market_day(when) -> str:
+    """The US Eastern (market) date "YYYY-MM-DD" of a Schwab time ("2026-11-20T15:30:00+0000"), "" if not one."""
+    try:
+        t = datetime.strptime(str(when)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        return t.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        return (t - timedelta(hours=5)).date().isoformat()      # no time zone data: close enough
+
+
 def order_info(o):
     """A Schwab order, short: {"id", "ticker", "side" ("BUY" or "SELL"), "shares" (left to fill),
     "quantity", "filled", "price", "status", "open", "entered", "duration", "session", "type", "aon",
     "fill_price" (the fills' average, None before any), "filled_at" (the last fill's time, ""), "closed" (when it
-    ended: filled, canceled..., ""), "fills" (how many times it was filled)};
+    ended: filled, canceled..., ""), "fills" (how many times it was filled), "fill_days" (the market days it was
+    filled on: one commission each)};
     None for an order that isn't a one-leg stock order."""
     try:
         legs = o.get("orderLegCollection") or []
@@ -50,7 +64,7 @@ def order_info(o):
         filled = int(o.get("filledQuantity") or 0)
         status = o.get("status", "")
         # the fills' average price (each execution's legs), None before any
-        done_shares, done_cost, last_fill, fills = 0, 0.0, "", 0
+        done_shares, done_cost, last_fill, fills, days = 0, 0.0, "", 0, set()
         for act in o.get("orderActivityCollection") or []:
             # only the fills: a partly filled order canceled has its rest as an "execution" too (CANCELED, at a
             # price of 0): not a fill (it made the average price ~0 and counted one fill more)
@@ -65,6 +79,7 @@ def order_info(o):
                     done_shares += q
                     done_cost += q * float(pr)
                     last_fill = max(last_fill, str(ex.get("time") or ""))
+                    days.add(market_day(ex.get("time")))
         return {"id": str(o.get("orderId")), "ticker": leg.get("instrument", {}).get("symbol", ""),
                 "side": side, "quantity": quantity, "filled": filled,
                 "shares": int(o.get("remainingQuantity") or (quantity - filled)),
@@ -75,7 +90,7 @@ def order_info(o):
                 "aon": str(o.get("specialInstruction") or "").startswith("ALL_OR_NONE"),
                 "fill_price": round(done_cost / done_shares, 6) if done_shares else None,
                 "filled_at": last_fill or (o.get("closeTime", "") if status == "FILLED" else ""),
-                "closed": o.get("closeTime", ""), "fills": fills}
+                "closed": o.get("closeTime", ""), "fills": fills, "fill_days": sorted(d for d in days if d)}
     except (TypeError, ValueError, AttributeError):
         return None
 
