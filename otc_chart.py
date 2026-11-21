@@ -424,6 +424,13 @@ class CandleChart(DrawingsMixin, QWidget):
         else:
             cutoff = self.dates[-1] - timedelta(days=int(months * 30.44))
             start = bisect_left(self.dates, cutoff)
+        if self.intraday:
+            # exactly the last two trading days, however few their candles (a thin OTC ticker trades a few
+            # minutes a day: at least 10 candles would reach days back)
+            self.count = float(max(n - start, 1) + RIGHT_PAD_BARS)
+            self.first = float(start)
+            self.update()
+            return
         start = min(start, max(n - 10, 0))
         self.count = float(max(n - start, 10) + RIGHT_PAD_BARS)
         self.first = self._clamp_first(float(start))
