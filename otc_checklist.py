@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
 
-from PyQt6.QtCore import QObject, QPoint, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QTimer, QRect, QRectF, QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalette, QPen, QPixmap, QPolygonF,
                          QRegularExpressionValidator)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
@@ -3582,7 +3582,36 @@ class ChecklistPanel(QWidget):
         # No scroll bar (it took room on the left and was hard to see); the mouse wheel still scrolls
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         root.addWidget(self.scroll, 1)
+        # ...so a small down arrow at the bottom left (over the text) tells there is more below; a click scrolls down
+        self.more_below = QToolButton(self.scroll)
+        self.more_below.setObjectName("cl_more")
+        self.more_below.setText("▼")
+        self.more_below.setFixedSize(22, 22)
+        self.more_below.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more_below.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.more_below.setToolTip("More below: scroll down (the mouse wheel, or click here)")
+        self.more_below.setStyleSheet("QToolButton#cl_more { background: rgba(58, 64, 70, 220); color: #e8e8e8; "
+                                      "border: 1px solid #5c6268; border-radius: 11px; font-size: 9px; padding: 0px; }"
+                                      "QToolButton#cl_more:hover { background: rgba(90, 98, 106, 240); }")
+        bar = self.scroll.verticalScrollBar()
+        self.more_below.clicked.connect(lambda: bar.setValue(bar.value() + max(40, self.scroll.viewport().height() * 3 // 4)))
+        bar.valueChanged.connect(self.show_more_below)
+        bar.rangeChanged.connect(self.show_more_below)
+        self.scroll.installEventFilter(self)
+        self.more_below.hide()
         self.load()
+
+    def show_more_below(self, *_):
+        """The down arrow: shown while there is more to scroll down to, at the bottom left."""
+        bar = self.scroll.verticalScrollBar()
+        self.more_below.move(4, self.scroll.height() - self.more_below.height() - 4)
+        self.more_below.setVisible(bar.value() < bar.maximum())
+        self.more_below.raise_()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "scroll", None) and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.show_more_below()
+        return super().eventFilter(obj, event)
 
     def reload(self):
         self.fees.pop(self.ticker, None)
