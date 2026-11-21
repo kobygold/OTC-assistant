@@ -41,6 +41,10 @@ ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "State": ("Status", "Schwa
                     "Entry": ("Limit", "The order's limit price (a buy's or a sell's)"),
                     "Exit plan": ("Filled at", "The price Schwab filled it at (the fills' average), as Schwab has "
                                                "it: up to 6 decimals"),
+                    "Safety Net": ("$", "What it filled for, with Schwab's commission: + for a buy (what it cost), "
+                                        "- for a sell (what you got). Schwab's own when the trade's P/L has it read"),
+                    "P/L": ("P/L", "The order's part of the trade's P/L: a buy's cost (-), a sell's proceeds (+); "
+                                   "together: the trade's"),
                     "Bid then": ("Bid then", "The bid when the order was sent. Hover: the Level II then"),
                     "Ask then": ("Ask then", "The ask when the order was sent. Hover: the Level II then")}
 
@@ -448,6 +452,24 @@ class AtmTable(SortMixin, QTableWidget):
                 self.fill_order(row, e, o)
             self.fit_row(row)
 
+    @staticmethod
+    def fee_of(e):
+        return FEE_USD if e.get("fee") is None else e["fee"]
+
+    def order_money(self, e, o):
+        """(value filled, commission, from Schwab) of the trade's order, or None when nothing filled: Schwab's own
+        (the trade's P/L read from its transactions) when it has the order's fills, else its shares x their price
+        and the fee rule (once an order; a sell's never more than it got)."""
+        fills = [f for f in (e.get("pl") or {}).get("fills") or [] if str(f.get("order")) == o["id"]]
+        if fills and (e.get("pl") or {}).get("source") == "schwab":
+            return sum(f.get("value") or 0 for f in fills), sum(f.get("fee") or 0 for f in fills), True
+        got = int(o.get("filled") or 0)
+        if not got or not o.get("fill_price"):
+            return None
+        value = round(got * o["fill_price"], 4)
+        fee = self.fee_of(e)
+        return value, (fee if o.get("side") == "BUY" else min(fee, value)), False
+
     def fill_order_titles(self, row):
         """The title row above an opened trade's orders: their own column names."""
         head = "#3a4046"        # (a lighter gray than the orders' rows under it)
@@ -484,6 +506,19 @@ class AtmTable(SortMixin, QTableWidget):
             self.cell(row, COL["Exit plan"], fill_text(o["fill_price"]), YELLOW if other else side, bold=True, bg=sub,
                       tip=f"Filled at {fill_text(o['fill_price'])} on average ({got:,} shares)" + (
                           f": not the limit {fmt_price(o['price'])}" if other else ""))
+        # $: what it filled for, with the commission; P/L: its part of the trade's (a buy -, a sell +)
+        money = self.order_money(e, o)
+        if money is not None:
+            value, fee, schwab = money
+            total = value + fee if buy else value - fee
+            text = f"${value:,.2f} {'+' if buy else '-'} ${fee:.2f} = ${total:,.2f}"
+            how = "Schwab's" if schwab else "estimated: $" + f"{self.fee_of(e):.2f} an order (a sell's: never more than it got)"
+            self.cell(row, COL["Safety Net"], text, side, bold=True, bg=sub,
+                      tip=f"{got:,} shares at {fill_text(o['fill_price'] or 0)}: ${value:,.2f}; the commission ({how}): "
+                          f"${fee:.2f}")
+            pl = -total if buy else total
+            self.cell(row, COL["P/L"], usd_signed(pl), GREEN if pl >= 0 else RED, bold=True, bg=sub,
+                      tip="Its part of the trade's P/L: " + ("what the buy cost" if buy else "what the sell brought"))
         q = self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])
         if q is None:
             for col in (COL["Bid then"], COL["Ask then"]):
