@@ -73,16 +73,24 @@ def ask_events(folder, ticker, day):
 
 
 def ask_slots(events, times):
-    """{mm: price} for each candle (times: its minute's Israel time, oldest first): the asks at the end of its
-    minute (the last change before the next minute starts); None before the record has any."""
+    """{mm: price} for each candle (times: its minute's Israel time, oldest first): each market maker's lowest ask
+    during its minute - the ask it had as the minute started, and each one it had in it (an offer taken or pulled
+    within the minute is still seen: where it could be bought from); None before the record has any."""
     stamped = [(israel_time(t), asks) for t, asks in events]
     out, j, now = [], 0, None
     for start in times:
         end = start + timedelta(minutes=1)
-        while j < len(stamped) and stamped[j][0] < end:
+        while j < len(stamped) and stamped[j][0] < start:      # (the asks as the minute starts)
             now = stamped[j][1]
             j += 1
-        out.append(now)
+        low = dict(now) if now else {}
+        while j < len(stamped) and stamped[j][0] < end:
+            now = stamped[j][1]
+            for mm, price in now.items():
+                if mm not in low or price < low[mm]:
+                    low[mm] = price
+            j += 1
+        out.append(low or None)
     return out
 
 
