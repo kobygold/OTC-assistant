@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.98"
+APP_VERSION = "2.7.99"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -891,6 +891,11 @@ class MainWindow(QMainWindow):
         self.restart_btn.setToolTip("Closes the app and starts it again (its server too)")
         self.restart_btn.clicked.connect(self.restart_app)
         right_row.addWidget(self.restart_btn)
+        # Ctrl+U: Check for update; Ctrl+R: Restart (Qt's "Ctrl" is Cmd on a Mac); as a click (nothing while disabled)
+        mod = "⌘" if sys.platform == "darwin" else "Ctrl+"
+        for key, btn in (("U", self.update_btn), ("R", self.restart_btn)):
+            QShortcut(QKeySequence(f"Ctrl+{key}"), self, btn.click)
+            btn.setToolTip(f"{btn.toolTip()} ({mod}{key})")
         self.tabs.setCornerWidget(right, Qt.Corner.TopRightCorner)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         # Ctrl+1, Ctrl+2, ... jump to the visible tabs in order (the hidden Screener tab is skipped)
