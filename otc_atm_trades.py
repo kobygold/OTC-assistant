@@ -450,11 +450,11 @@ class AtmTable(SortMixin, QTableWidget):
 
     def fill_order_titles(self, row):
         """The title row above an opened trade's orders: their own column names."""
-        head = "#1d2125"
+        head = "#3a4046"        # (a lighter gray than the orders' rows under it)
         for col in range(len(COLUMNS)):
             self.cell(row, col, "", bg=head)
         for title, (name, tip) in ORDER_SUB_TITLES.items():
-            self.cell(row, COL[title], name, "#a8a8a8", bold=True, bg=head, tip=tip,
+            self.cell(row, COL[title], name, "#e8e8e8", bold=True, bg=head, tip=tip,
                       align=Qt.AlignmentFlag.AlignCenter)
 
     def fill_order(self, row, e, o):
