@@ -3632,7 +3632,7 @@ class ChecklistPanel(QWidget):
                     mark.mousePressEvent = lambda _e, it=item: self.toggle(it)
                     text.setCursor(Qt.CursorShape.PointingHandCursor)
                     text.mousePressEvent = lambda _e, it=item: self.toggle(it)
-                if item.kind == "info" and item.key not in TARGETS and item.key not in ("shares", "ticker"):
+                if item.kind == "info" and item.key not in TARGETS and item.key not in ("shares", "ticker", "loss"):
                     mark.setFixedWidth(4)       # (the amount of stocks: its minimum's mark)
                 if item.kind == "info" and item.key in EDITABLE:
                     value = self.make_edit(item.key)
@@ -3722,7 +3722,8 @@ class ChecklistPanel(QWidget):
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                if item.key in ("ticker", "shares", "stop"):    # the ticker | the amounts | the prices | the results:
+                # the ticker | the amounts | the prices | the % results | the fee and the $ results:
+                if item.key in ("ticker", "shares", "stop", "ratio"):
                     # a thin line between them
                     line = QWidget()
                     line.setObjectName("cl_split")
@@ -4947,6 +4948,14 @@ class ChecklistPanel(QWidget):
                         good = OK           # (no loss at all, and a profit)
                     value.setStyleSheet("" if val in ("", NA) or good == UNKNOWN else
                                         f"color: {MARKS[OK if good == OK else BAD][1]};")
+                    if item.key == "loss":      # its mark: the ratio's (✔ when the profit is at least 3x it)
+                        state = good if val not in ("", NA) else UNKNOWN
+                        set_mark(mark, state)
+                        for w in (mark, text):
+                            w.setToolTip((f"{tip} · " if tip else "") + f"The profit at least {TARGETS['ratio']:g}x it")
+                        total += 1
+                        passed += state == OK
+                        continue
                 if item.key == "ticker":
                     ticker_mark(mark, text)
                     continue

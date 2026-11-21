@@ -35,13 +35,14 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - רווח פוטנציאלי
   info(profit): (exit - entry) / entry, in %
 - הפסד פוטנציאלי
-  info(loss): (entry - stop) / entry, in %
+  info(loss): (entry - stop) / entry, in %. A check beside it when the ratio below has its check (the profit is at
+        least 3x the loss), else an X
+- יחס רווח/הפסד (בהתעלם מעמלות)
+  info(ratio): shown as 1:X, where X = profit % / loss %, without the fees (N/A when the loss is 0)
 - עמלת קניה/מכירה
   auto(fee): the buy fee read from Schwab (the order preview of a $150 buy, nothing is placed), commission plus
         fees; the sell is taken to cost the same. An X when it's more than $6.95, in yellow (like the section titles) when more than $7.
         Until it's read it shows N/A, and $6.95 is used
-- יחס רווח/הפסד (בהתעלם מעמלות)
-  info(ratio): shown as 1:X, where X = profit % / loss %, without the fees (N/A when the loss is 0)
 - רווח פוטנציאלי (ללא עמלות)
   info(profit_gross): amount of stocks x (exit - entry), in $
 - הפסד פוטנציאלי (ללא עמלות)
