@@ -1354,7 +1354,7 @@ class CandleChart(DrawingsMixin, QWidget):
         return a[2], a[3]
 
     def _draw_ask_lines(self, p, price, py, i0, i1):
-        """Each market maker's ask, candle by candle: a step line in its color (market makers at the same price
+        """Each market maker's ask, candle by candle: a line joining its points (one a candle) in its color (market makers at the same price
         side by side, 2 px apart), and the legend (top left): those on the visible candles, lowest ask first."""
         now = self._ask_lines_now()
         if now is None:
@@ -1370,18 +1370,19 @@ class CandleChart(DrawingsMixin, QWidget):
             at = {}
             for mm in sorted(asks):
                 at.setdefault(asks[mm], []).append(mm)
-            x0, x1 = self._x(i, price) - bw / 2, self._x(i, price) + bw / 2
+            x = self._x(i, price)
             for value, mms in at.items():
                 for k, mm in enumerate(mms):
                     y = py(value) + (k - (len(mms) - 1) / 2) * 2
                     path = paths.get(mm)
                     if path is None:
                         path = paths[mm] = QPainterPath()
+                    # a point a candle, joined to the last one by a straight line (a gap: none)
                     if last_y.get(mm, (None, None))[0] == i - 1:
-                        path.lineTo(x0, y)
+                        path.lineTo(x, y)
                     else:
-                        path.moveTo(x0, y)
-                    path.lineTo(x1, y)
+                        path.moveTo(x, y)
+                        path.lineTo(x + 0.01, y)        # (one alone: a dot)
                     last_y[mm] = (i, y)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         for mm, path in paths.items():
