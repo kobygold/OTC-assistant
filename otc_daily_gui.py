@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.89"
+APP_VERSION = "2.7.90"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1483,13 +1483,23 @@ class MainWindow(QMainWindow):
             self.fee_bar.setToolTip(details)
         self.fee_bar.setVisible(danger or high)
 
-    def on_orders_show(self, show):
-        """All Orders' Show: choice (kept for the next start)."""
-        self.orders_table.status_show = show
+    def on_orders_show(self):
+        """All Orders' Show: check boxes (kept for the next start)."""
+        show = [n for n, box in self.orders_show.items() if box.isChecked()]
+        self.orders_table.status_show = set(show)
         self.orders_table.signature = None
         self.orders_table.rebuild()
         self.settings["orders_show"] = show
         save_settings(self.settings)
+
+    def toggle_orders_show(self):
+        """The All button: every box on when any is off; all off when all are on."""
+        on = not all(box.isChecked() for box in self.orders_show.values())
+        for box in self.orders_show.values():
+            box.blockSignals(True)
+            box.setChecked(on)
+            box.blockSignals(False)
+        self.on_orders_show()
 
     def on_fav_side_shown(self, shown):
         self.settings["fav_side_show"] = shown
@@ -3099,20 +3109,30 @@ class MainWindow(QMainWindow):
         olay = QVBoxLayout(others)
         self.orders_table = SchwabOrdersTable(self.checklist.atm)
         self.orders_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
-        # Show: only the orders of one status (Schwab's): Pending = still open (Working or Pending activation)
+        # Show: the orders of the statuses checked (Schwab's), any combination; All: every one on, or (all on) off.
+        # Pending = still open (Working or Pending activation)
         show_row = QWidget()        # (a widget: folded with the section)
         srow = QHBoxLayout(show_row)
         srow.setContentsMargins(0, 0, 0, 0)
         srow.addWidget(QLabel("Show:"))
-        self.orders_show = QComboBox()
-        self.orders_show.addItems(ORDER_SHOW)
-        self.orders_show.setToolTip("All: every order. Pending: the open ones (Working, or Pending: placed while "
-                                    "the market is closed). The others: Schwab's status")
-        shown = self.settings.get("orders_show", "All")
-        self.orders_show.setCurrentText(shown if shown in ORDER_SHOW else "All")
-        self.orders_table.status_show = self.orders_show.currentText()
-        self.orders_show.currentTextChanged.connect(self.on_orders_show)
-        srow.addWidget(self.orders_show)
+        shown = self.settings.get("orders_show", ORDER_SHOW)
+        if isinstance(shown, str):          # (before: one choice of a list)
+            shown = ORDER_SHOW if shown not in ORDER_SHOW else [shown]
+        self.orders_show_all = QPushButton("All")
+        self.orders_show_all.setToolTip("All on (when any is off), or all off (when all are on)")
+        self.orders_show_all.setFixedWidth(40)
+        self.orders_show_all.clicked.connect(self.toggle_orders_show)
+        srow.addWidget(self.orders_show_all)
+        self.orders_show = {}
+        tips = {"Pending": "The open orders: Working, or Pending (placed while the market is closed)"}
+        for name in ORDER_SHOW:
+            box = QCheckBox(name)
+            box.setChecked(name in shown)
+            box.setToolTip(tips.get(name, f"Schwab's status: {name.upper()}"))
+            box.toggled.connect(lambda _on: self.on_orders_show())
+            self.orders_show[name] = box
+            srow.addWidget(box)
+        self.orders_table.status_show = {n for n in ORDER_SHOW if n in shown}
         srow.addStretch()
         olay.addWidget(show_row)
         olay.addWidget(self.orders_table)

@@ -130,17 +130,18 @@ def ticker_match(ticker, text):
     return not text or text.upper() in str(ticker or "").upper()
 
 
-# All Orders' "Show:" choice -> the orders shown (by Schwab's status). Pending: still open (Working, or Pending
-# activation: placed while the market is closed)
-ORDER_SHOW = ["All", "Pending", "Filled", "Replaced", "Canceled", "Rejected", "Expired"]
+# All Orders' "Show:" check boxes -> the orders shown (by Schwab's status), any combination. Pending: still open
+# (Working, or Pending activation: placed while the market is closed)
+ORDER_SHOW = ["Pending", "Filled", "Replaced", "Canceled", "Rejected", "Expired"]
 
 
 def order_shown(o, show):
-    if not show or show == "All":
+    """show: the statuses checked (a set of ORDER_SHOW's); all of them (or "All"): every order, any status."""
+    if show == "All" or show is None or set(show) >= set(ORDER_SHOW):
         return True
-    if show == "Pending":
-        return bool(o.get("open"))
-    return str(o.get("status") or "").upper() == show.upper()
+    if o.get("open"):
+        return "Pending" in show
+    return str(o.get("status") or "").title() in show
 
 
 def trade_recent(e, cutoff):
@@ -1015,7 +1016,7 @@ class SchwabOrdersTable(AtmTable):
     def orders(self):
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: working orders always)
         flt = getattr(self, "ticker_filter", "")
-        show = getattr(self, "status_show", "All")      # (the section's Show: choice)
+        show = getattr(self, "status_show", ORDER_SHOW)      # (the section's Show: check boxes)
         return self.sorted_rows(sorted((o for o in self.atm.all_orders()
                                         if order_recent(o, cutoff) and ticker_match(o.get("ticker"), flt)
                                         and order_shown(o, show)),
@@ -1040,7 +1041,7 @@ class SchwabOrdersTable(AtmTable):
         mine = {o["busy"] for o in orders}
         busy = sorted(str(k) for k in self.atm.sending | self.atm.canceling if k in mine)
         signature = json.dumps([self.atm.chosen_account(), period_cutoff(getattr(self, "period_days", 0)),
-                                getattr(self, "ticker_filter", ""), getattr(self, "status_show", "All"),
+                                getattr(self, "ticker_filter", ""), sorted(getattr(self, "status_show", ORDER_SHOW)),
                                 [{k: v for k, v in o.items() if k != "atm"} for o in orders],
                                 [(o["atm"] or {}).get("state") for o in orders], busy, self.sort_state(),
                                 [bool(self.atm.order_quote(o.get("account") or self.atm.chosen_account(), o["id"]))
