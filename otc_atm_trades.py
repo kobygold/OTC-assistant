@@ -461,7 +461,6 @@ class AtmTable(SortMixin, QTableWidget):
         """An order's row under its trade: its side, status, when it was placed, filled / ordered, its limit (and
         the fills' average), and the Bid / Ask when it was sent (hover: the Level II then)."""
         sub = "#15191c"         # (a shade apart from the trades' rows)
-        TEXT = "#d8d8d8"        # (light: the rows are dark)
         for col in range(len(COLUMNS)):
             self.cell(row, col, "", bg=sub)
         buy = o.get("side") == "BUY"
@@ -473,16 +472,18 @@ class AtmTable(SortMixin, QTableWidget):
                   "#c8c8c8" if word == "Filled" else DIM, bold=word in ("Working", "Pending", "Filled"), bg=sub)
         self.cell(row, COL["Sent"], entered_text(o.get("entered")), DIM, bg=sub, tip="When the order was placed")
         got, asked = int(o.get("filled") or 0), int(o.get("quantity") or 0)
-        self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", GREEN if asked and got >= asked else TEXT, bold=True,
+        side = GREEN if buy else RED        # (the numbers from Filled / Ordered on: a buy's green, a sell's red)
+        self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", side, bold=True,
                   bg=sub, tip=f"Filled {got:,} of the {asked:,} ordered")
         # Limit: the order's (a buy's or a sell's); Filled at: Schwab's fills' average, up to 6 decimals
         self.cell(row, COL["Entry"], fmt_price(o.get("price")) if o.get("price") else "MKT",
-                  ORDER_COLOR if o.get("open") else TEXT, bold=True, bg=sub, tip="The order's limit price")
+                  side, bold=True, bg=sub, tip="The order's limit price")
         if got and o.get("fill_price"):
-            better = o.get("price") and (o["fill_price"] < o["price"] if buy else o["fill_price"] > o["price"])
-            self.cell(row, COL["Exit plan"], fill_text(o["fill_price"]), GREEN if better else TEXT, bold=True, bg=sub,
+            # yellow: filled at another price than the limit
+            other = bool(o.get("price")) and abs(o["fill_price"] - o["price"]) > 1e-9
+            self.cell(row, COL["Exit plan"], fill_text(o["fill_price"]), YELLOW if other else side, bold=True, bg=sub,
                       tip=f"Filled at {fill_text(o['fill_price'])} on average ({got:,} shares)" + (
-                          f": better than the limit {fmt_price(o['price'])}" if better else ""))
+                          f": not the limit {fmt_price(o['price'])}" if other else ""))
         q = self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])
         if q is None:
             for col in (COL["Bid then"], COL["Ask then"]):
@@ -492,7 +493,7 @@ class AtmTable(SortMixin, QTableWidget):
         then = book_html(f"{o['ticker']} Level II when the order was {'first seen' if q.get('seen') else 'sent'} "
                          f"({when})", q.get("level2", {}).get("bids", []), q.get("level2", {}).get("asks", []))
         for col, k, what in ((COL["Bid then"], "bid", "Bid then"), (COL["Ask then"], "ask", "Ask then")):
-            self.cell(row, col, price_text(q.get(k)), DIM if q.get("seen") else TEXT, bg=sub,
+            self.cell(row, col, price_text(q.get(k)), side, bold=True, bg=sub,
                       tip=quote_line(what, q.get(k)) + then)
 
     def fit_row(self, row):
