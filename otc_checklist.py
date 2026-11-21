@@ -128,7 +128,7 @@ PANEL_STYLE = """
 #checklist, #checklist QScrollArea, #checklist #cl_body { background: #101214; }
 #checklist QLabel { color: #d8d8d8; }
 #checklist QLabel#cl_title { font-size: 12pt; font-weight: bold; color: #ffffff; }
-#checklist QLabel#cl_section { font-weight: bold; color: #e3b23c; padding-top: 8px; }
+#checklist QLabel#cl_section { font-weight: bold; color: #e3b23c; padding-top: 3px; }
 #checklist QLabel#cl_value { font-weight: bold; color: #ffffff; }
 #checklist QLabel#cl_summary { color: #a8a8a8; }
 #checklist QToolButton { color: #c8c8c8; border: none; }
@@ -146,7 +146,7 @@ PANEL_STYLE = """
 #checklist QToolButton#cl_reset:hover, #checklist QToolButton#cl_pin:hover { background: #2c3136; }
 #checklist QToolButton#cl_reset:pressed, #checklist QToolButton#cl_pin:pressed { background: #3a4046; }
 #checklist QLineEdit { background: #1b1e21; border: 1px solid #2c3136; border-radius: 3px;
-                       padding: 1px 4px; font-weight: bold; }
+                       padding: 0px 4px; font-weight: bold; }
 #checklist QLineEdit:focus { border-color: #5a6670; }
 #checklist QLineEdit:disabled { background: #101214; border-color: #1b1e21; }
 #checklist QLineEdit[readOnly="true"] { background: #101214; }
@@ -3493,7 +3493,7 @@ class ChecklistPanel(QWidget):
         body.setObjectName("cl_body")
         lay = QVBoxLayout(body)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(3)
+        lay.setSpacing(1)          # (condensed)
         self.widgets = []
         self.price_tools = {}
         self.locked = {}        # key -> its fixed cell (the plan sent with Buy ATM), shown once sent
@@ -3782,7 +3782,7 @@ class ChecklistPanel(QWidget):
             b = QToolButton()
             b.setObjectName("cl_step")
             b.setText(sign)
-            b.setFixedSize(18, 12)
+            b.setFixedSize(18, 9)          # (condensed rows)
             b.setToolTip(f"{'Up' if direction > 0 else 'Down'} {what}")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setAutoRepeat(True)
@@ -3796,7 +3796,7 @@ class ChecklistPanel(QWidget):
         order (or the other new values). A click pins the value shown, or unpins it."""
         b = QToolButton()
         b.setObjectName("cl_pin")
-        b.setFixedSize(18, 25)
+        b.setFixedSize(18, 19)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         b.clicked.connect(lambda: self.draft_pin(key, edit))
@@ -3925,7 +3925,7 @@ class ChecklistPanel(QWidget):
             b = QToolButton()
             b.setObjectName("cl_step")
             b.setText(sign)
-            b.setFixedSize(18, 12)
+            b.setFixedSize(18, 9)          # (condensed rows)
             b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setAutoRepeat(True)
@@ -3939,7 +3939,7 @@ class ChecklistPanel(QWidget):
         when it's the automatic one. A click pins the price shown, or unpins it."""
         b = QToolButton()
         b.setObjectName("cl_pin")
-        b.setFixedSize(18, 25)
+        b.setFixedSize(18, 19)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         b.clicked.connect(lambda: self.toggle_pin(key, edit))
