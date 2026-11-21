@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.107"
+APP_VERSION = "2.7.108"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1199,6 +1199,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self.level2_show)
         row.addSpacing(16)
 
+        self.ask_lines_show = QCheckBox("L2 Ask lines")
+        self.ask_lines_show.setChecked(bool(self.settings.get("ask_lines_show", False)))
+        self.ask_lines_show.setToolTip(
+            "1D view: each market maker's ask on the Level II, minute by minute, a line of its own color (a legend "
+            "on the chart, the lowest ask first). From the record: the tickers streamed (the favorites, the ATM "
+            "trades, the chart's), the days kept (14).")
+        self.ask_lines_show.toggled.connect(self.on_ask_lines_toggled)
+        row.addWidget(self.ask_lines_show)
+        row.addSpacing(16)
+
         self.hold_close = QCheckBox("Hold last L1/L2 at end of day")
         self.hold_close.setChecked(bool(self.settings.get("hold_close", True)))
         self.hold_close.setToolTip(
@@ -1281,6 +1291,12 @@ class MainWindow(QMainWindow):
         self.chart.drawing_store = self.load_drawing_store()
         self.chart.drawings_changed = self.save_drawing_store
         self.chart.show_expirations = self.expirations_show.isChecked()
+        self.chart.show_ask_lines = self.ask_lines_show.isChecked()
+        from otc_ask_lines import AskLinesLoader
+        from otc_level2 import MARKET_LOG
+        self.ask_loader = AskLinesLoader(MARKET_LOG, self)
+        self.ask_loader.done.connect(self.on_ask_lines)
+        self.ask_colors = {}            # ticker -> {mm: color}: a market maker keeps its color
         self.chart.show_last_tags = self.last_tags_show.isChecked()
         self.chart.show_bid_ask_tags = self.bid_ask_tags_show.isChecked()
         self.chart.avg_period = self.avg_period.value()
@@ -2183,10 +2199,35 @@ class MainWindow(QMainWindow):
             return          # a refresh that failed: keep the candles shown
         self.chart.set_intraday(ticker, rows, keep_view=True,
                                 message=f"No 1-minute candles for {ticker}: {error}" if error else "")
+        self.apply_ask_lines()          # (the record of the new minutes too)
         held = getattr(self, "bounce_now", (None, None))
         if held[0] == ticker and held[1] is not None:       # the purple lines stay (new candles reset them)
             self.chart.set_bounce(held[1])
         self.apply_live_quote()
+
+    def on_ask_lines_toggled(self, checked):
+        self.settings["ask_lines_show"] = checked
+        save_settings(self.settings)
+        self.chart.show_ask_lines = checked
+        self.apply_ask_lines()
+        self.chart.update()
+
+    def apply_ask_lines(self):
+        """1D view with L2 Ask lines on: the asks of its candles read from the record (a thread)."""
+        c = self.chart
+        if not (self.ask_lines_show.isChecked() and c.intraday and c.ticker and c.times):
+            return
+        days = sorted({str(d) for d in c.dates})
+        self.ask_loader.request(c.ticker, c.times, days)
+
+    def on_ask_lines(self, ticker, times, slots):
+        if ticker != self.chart.ticker:
+            return
+        from otc_ask_lines import colors_for
+        colors = self.ask_colors[ticker] = colors_for(slots, self.ask_colors.get(ticker))
+        self.chart.set_ask_lines(ticker, times, slots, colors)
+        if not any(slots):
+            self.notify(f"L2 Ask lines: no Level II recorded for {ticker} in these days", 6000)
 
     def on_expirations_toggled(self, checked):
         self.settings["expirations_show"] = checked

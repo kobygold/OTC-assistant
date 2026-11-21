@@ -217,6 +217,8 @@ class CandleChart(DrawingsMixin, QWidget):
         self.avg_period = AVG_PERIOD   # days in the volume average and median
         self.intraday = False          # 1-minute candles (the 1D view) instead of days
         self.times = []                # 1D view: each candle's Israel time
+        self.show_ask_lines = False    # 1D view: each market maker's ask, a line of its color (otc_ask_lines)
+        self.ask_lines = None          # (ticker, the candles' times, [{mm: ask} or None per candle], {mm: color})
         self.risk_icon = None
         self._title_rect = QRectF()     # the ticker's box (top left): a click copies the ticker
         self.risk_tip = ""
@@ -519,6 +521,14 @@ class CandleChart(DrawingsMixin, QWidget):
             if hi <= lo:
                 pad = abs(hi) * 0.02 or 0.0001
                 lo, hi = lo - pad, hi + pad
+            # the L2 Ask lines stretch it to show them, up to 2x the candles' range more (farther ones: off it)
+            asks = self._ask_lines_now() if self.intraday and self.show_ask_lines else None
+            if asks:
+                seen = [v for s in asks[0][i0:i1 + 1] if s for v in s.values()]
+                if seen:
+                    room = 2 * (hi - lo)
+                    hi = max(hi, min(max(seen), hi + room))
+                    lo = min(lo, max(min(seen), lo - room))
         # the open orders don't stretch the scale: one off it is a tag on the pane's edge
         orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
         self._scale = (lo, hi)
@@ -577,6 +587,10 @@ class CandleChart(DrawingsMixin, QWidget):
             self._draw_zones(p, price, py)
         self._draw_bounce(p, price, py)     # the bounce range (from the days) on the 1-minute view too
 
+        legend = None
+        if self.intraday and self.show_ask_lines:
+            legend = self._draw_ask_lines(p, price, py, i0, i1)
+
         # Candles and volume bars
         bw = self._bar_w(price)
         body_w = max(1.0, bw * 0.68)
@@ -625,6 +639,8 @@ class CandleChart(DrawingsMixin, QWidget):
                              above=False, pane=price)
 
         self._draw_drawings(p, price)          # the trendlines, price levels, notes...
+        if self.intraday and self.show_ask_lines and legend:
+            self._draw_ask_legend(p, price, *legend)      # (over the Hi / Lo markers)
         self._draw_orders(p, price, py, orders)
         self._draw_alerts(p, price, py, vol, vy)
 
@@ -1324,6 +1340,80 @@ class CandleChart(DrawingsMixin, QWidget):
             p.setPen(EXPIRATION)
             p.drawText(QPointF(0, 0), fmt_date(d))
             p.restore()
+
+    def set_ask_lines(self, ticker, times, slots, colors):
+        """1D view: each market maker's ask per candle (otc_ask_lines.ask_slots), drawn in its color; None: none."""
+        self.ask_lines = (ticker, list(times), slots, colors) if slots else None
+        self.update()
+
+    def _ask_lines_now(self):
+        """(slots, colors) when they're of the candles shown, else None."""
+        a = self.ask_lines
+        if not a or a[0] != self.ticker or a[1] != self.times:
+            return None
+        return a[2], a[3]
+
+    def _draw_ask_lines(self, p, price, py, i0, i1):
+        """Each market maker's ask, candle by candle: a step line in its color (market makers at the same price
+        side by side, 2 px apart), and the legend (top left): those on the visible candles, lowest ask first."""
+        now = self._ask_lines_now()
+        if now is None:
+            return
+        slots, colors = now
+        bw = self._bar_w(price)
+        p.setClipRect(price.adjusted(1, 1, -1, -1))
+        paths = {}
+        last_y = {}
+        for i in range(i0, min(i1, len(slots) - 1) + 1):
+            asks = slots[i] or {}
+            # at one price, side by side (by name): each line stays seen
+            at = {}
+            for mm in sorted(asks):
+                at.setdefault(asks[mm], []).append(mm)
+            x0, x1 = self._x(i, price) - bw / 2, self._x(i, price) + bw / 2
+            for value, mms in at.items():
+                for k, mm in enumerate(mms):
+                    y = py(value) + (k - (len(mms) - 1) / 2) * 2
+                    path = paths.get(mm)
+                    if path is None:
+                        path = paths[mm] = QPainterPath()
+                    if last_y.get(mm, (None, None))[0] == i - 1:
+                        path.lineTo(x0, y)
+                    else:
+                        path.moveTo(x0, y)
+                    path.lineTo(x1, y)
+                    last_y[mm] = (i, y)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for mm, path in paths.items():
+            pen = QPen(QColor(colors.get(mm, "#c8c8c8")), 1.6)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        p.setClipping(False)
+        # the legend: the market makers on the visible candles, lowest ask first (at the last visible candle)
+        last = next((slots[i] for i in range(min(i1, len(slots) - 1), i0 - 1, -1) if slots[i]), {}) or {}
+        names = sorted(paths, key=lambda mm: (last.get(mm, float("inf")), mm))
+        return (names, last, colors) if names else None
+
+    def _draw_ask_legend(self, p, price, names, last, colors):
+        """The L2 Ask lines' legend, top left: each market maker's color and its ask at the last visible candle."""
+        fm = QFontMetrics(p.font())
+        x, y = price.left() + 8, price.top() + 26       # (under the Hi marker's place)
+        row_h = fm.height() + 2
+        width = max(fm.horizontalAdvance(f"{mm}  {fmt_price(last[mm])}" if mm in last else mm) for mm in names) + 22
+        per_col = max(1, int((price.height() - 32) // row_h))
+        cols = (len(names) + per_col - 1) // per_col
+        rows = min(len(names), per_col)
+        p.fillRect(QRectF(x - 4, y - 3, cols * width + 4, rows * row_h + 6), QColor(0, 0, 0, 170))
+        for n, mm in enumerate(names):
+            cx, cy = x + (n // per_col) * width, y + (n % per_col) * row_h
+            color = QColor(colors.get(mm, "#c8c8c8"))
+            p.fillRect(QRectF(cx, cy + row_h / 2 - 2, 12, 3), color)
+            p.setPen(color)
+            p.drawText(QRectF(cx + 16, cy, width - 16, row_h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       f"{mm}  {fmt_price(last[mm])}" if mm in last else mm)
 
     def _draw_day_lines(self, p, panes, i0, i1):
         """1D view: a dashed line between the last candle of a trading day and the first of the next."""
