@@ -187,7 +187,7 @@ class StepsDelegate(QStyledItemDelegate):
     them, [DONE / HALF / TODO] x 4)."""
 
     def sizeHint(self, option, index):
-        return QSize(2 * STEP_R + 3 * STEP_GAP + 16, 2 * STEP_R + 8)
+        return QSize(2 * STEP_R + 3 * STEP_GAP + 16, 2 * STEP_R + 2)     # (condensed rows)
 
     def paint(self, p, option, index):
         steps = index.data(Qt.ItemDataRole.UserRole)
@@ -261,6 +261,7 @@ class AtmTable(SortMixin, QTableWidget):
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
+        self.verticalHeader().setMinimumSectionSize(16)       # (condensed rows: no 24 px minimum)
         self.mono = QFont("Consolas")
         self.mono.setPointSizeF(8.5)
         self.bold = QFont(self.font())
@@ -360,8 +361,9 @@ class AtmTable(SortMixin, QTableWidget):
             self.fit_row(row)
 
     def fit_row(self, row):
-        self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 2)     # (condensed: little room around the lines)
+        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
+        # header's default size (~33 px, which made every row a third taller than its contents)
+        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
 
     def fill(self, row, e):
         state = e.get("state", "buy_open")
@@ -554,7 +556,7 @@ class AtmTable(SortMixin, QTableWidget):
         for sign, step in (("+", 1), ("−", -1)):
             b = QToolButton()
             b.setText(sign)
-            b.setFixedSize(18, 12)
+            b.setFixedSize(18, 10)          # (condensed rows: + and − together 21 px)
             b.setStyleSheet(TOOL.format(""))
             b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
             b.setAutoRepeat(True)
@@ -567,7 +569,7 @@ class AtmTable(SortMixin, QTableWidget):
         reset = QToolButton()
         reset.setIcon(reset_icon())
         reset.setIconSize(QSize(14, 14))
-        reset.setFixedSize(18, 25)
+        reset.setFixedSize(18, 21)
         reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
             "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
             "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
@@ -788,6 +790,7 @@ class SchwabOrdersTable(AtmTable):
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
+        self.verticalHeader().setMinimumSectionSize(16)       # (condensed rows: no 24 px minimum)
         self.bold = QFont(self.font())
         self.bold.setBold(True)
         self.market_timer = QTimer(self)
@@ -877,8 +880,9 @@ class SchwabOrdersTable(AtmTable):
             self.fit_row(row)
 
     def fit_row(self, row):
-        self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 1)     # (condensed)
+        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
+        # header's default size (~33 px, which made every row a third taller than its contents)
+        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
 
     def fill(self, row, o):
         key, e = o["key"], o.get("atm")
@@ -975,7 +979,7 @@ class SchwabOrdersTable(AtmTable):
         for sign, step in (("+", 1), ("−", -1)):
             b = QToolButton()
             b.setText(sign)
-            b.setFixedSize(18, 12)
+            b.setFixedSize(18, 10)          # (condensed rows: + and − together 21 px)
             b.setStyleSheet(TOOL.format(""))
             b.setToolTip(f"{'Up' if step > 0 else 'Down'} 0.0001")
             b.setAutoRepeat(True)
@@ -988,7 +992,7 @@ class SchwabOrdersTable(AtmTable):
         reset = QToolButton()
         reset.setIcon(reset_icon())
         reset.setIconSize(QSize(14, 14))
-        reset.setFixedSize(18, 25)
+        reset.setFixedSize(18, 21)
         reset.setStyleSheet(TOOL.format("border-color: transparent;").replace(
             "background: #1d2125; color: #c8c8c8; border: 1px solid #3a4046;",
             "background: transparent; color: #c8c8c8; border: 1px solid transparent;"))
@@ -1116,6 +1120,7 @@ class PositionsTable(AtmTable):
         self.setWordWrap(False)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setMinimumSectionSize(20)     # (short columns as narrow as their contents)
+        self.verticalHeader().setMinimumSectionSize(16)       # (condensed rows: no 24 px minimum)
         self.bold = QFont(self.font())
         self.bold.setBold(True)
         self.market_timer = QTimer(self)
@@ -1189,8 +1194,9 @@ class PositionsTable(AtmTable):
             self.fit_row(row)
 
     def fit_row(self, row):
-        self.resizeRowToContents(row)
-        self.setRowHeight(row, self.rowHeight(row) + 1)     # (condensed)
+        # condensed: the row's own contents (its text, buttons, boxes) and a pixel; not the hidden row
+        # header's default size (~33 px, which made every row a third taller than its contents)
+        self.setRowHeight(row, max(self.sizeHintForRow(row), 18) + 1)
 
     def fill(self, row, p):
         ticker = p["ticker"]
