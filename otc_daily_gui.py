@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.81"
+APP_VERSION = "2.7.82"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -146,6 +146,7 @@ ZONE_NAME_WIDTH = 170
 # Favorites groups: number -> (name, star colour). Each ticker is in at most one group.
 FAV_GROUPS = {1: ("Yellow", "#f5c518"), 2: ("Green", "#22a33a"), 3: ("Blue", "#2f6fe0"),
               4: ("Cyan", "#16c2d5"), 5: ("Magenta", "#d81bd8"), 6: ("Red", "#e03030")}
+FAV_ROW_H = 20                  # the Favorites tab's rows (condensed)
 NOT_FAV = 99                    # sorts tickers that aren't favorites after every group
 FAV_COLUMNS = ["Fav", "Ticker", "Name", "Checks", "ATM", "Last day", "Close", "Change %", "Volume", "$ Volume",
                "VolAvg (50)", "VolDollar (50)", "Bid", "Ask", "Own", "Want to buy", "Own value", "Notes"]
@@ -1494,6 +1495,14 @@ class MainWindow(QMainWindow):
         self.settings["fav_side_show"] = shown
         save_settings(self.settings)
 
+    def fav_order(self, t):
+        """The favorites' usual order (the Mini Favorites' and the Favorites tab's): the ATM trades first, the most
+        circles first (a yellow, partly filled one: half a circle: a sell partly sold before a sell sent, partly
+        bought before a buy sent), then by name; then the other favorites by group, then by name."""
+        e = self.fav_atm_trade(t)
+        rank = steps_score(e) if e else 0
+        return (0, -rank, 0, t) if rank > 0 else (1, 0, self.favs[t]["group"], t)
+
     def update_fav_side(self):
         """The Chart tab's favorites list again: the open ATM trades' first, then by group; their day, ATM trade
         and checks."""
@@ -1501,14 +1510,7 @@ class MainWindow(QMainWindow):
         if side is None:
             return
         rows = []
-        # the ATM trades first, the most circles first (a yellow, partly filled one: half a circle: a sell partly
-        # sold before a sell sent, partly bought before a buy sent), then by name; then the other favorites by
-        # group, then by name
-        def order(t):
-            e = self.fav_atm_trade(t)
-            rank = steps_score(e) if e else 0
-            return (0, -rank, t) if rank > 0 else (1, self.favs[t]["group"], t)
-        for t in sorted(self.favs, key=order):
+        for t in sorted(self.favs, key=self.fav_order):
             fav = self.favs[t]
             g = fav["group"]
             close, change, name = self.fav_side_info.get(t, (None, None, ""))
@@ -4857,6 +4859,10 @@ class MainWindow(QMainWindow):
                                        | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.fav_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.fav_table.verticalHeader().setVisible(False)
+        # condensed rows (as the Monitor tab's): FAV_ROW_H each
+        self.fav_table.verticalHeader().setMinimumSectionSize(16)
+        self.fav_table.verticalHeader().setDefaultSectionSize(FAV_ROW_H)
+        self.fav_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.fav_table.horizontalHeader().setStretchLastSection(True)
         self.fav_table.setSortingEnabled(True)
         sort_descending_first(self.fav_table)
@@ -4872,10 +4878,11 @@ class MainWindow(QMainWindow):
     def fav_group(self, ticker: str):
         return self.favs.get(ticker, {}).get("group")
 
-    def fav_item(self, ticker: str) -> QTableWidgetItem:
-        """The Fav cell: the group's star and number, sorting by group with non-favorites last."""
+    def fav_item(self, ticker: str, number=True) -> QTableWidgetItem:
+        """The Fav cell: the group's star and number (number=False: the star alone, as on the Favorites tab),
+        sorting by group with non-favorites last."""
         g = self.fav_group(ticker)
-        item = NumItem(str(g) if g else "", g or NOT_FAV)
+        item = NumItem(str(g) if g and number else "", g or NOT_FAV)
         item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if g:
@@ -4964,7 +4971,7 @@ class MainWindow(QMainWindow):
                                      else f"{ticker} added to favorites {group}.", 8000)
 
     def refresh_favorites_table(self):
-        tickers = sorted(self.favs, key=lambda t: (self.favs[t]["group"], t))
+        tickers = sorted(self.favs, key=self.fav_order)
         con = db()
         try:
             info = {}
@@ -4993,8 +5000,11 @@ class MainWindow(QMainWindow):
         self.fav_filling = True
         tbl.setSortingEnabled(False)
         tbl.setRowCount(len(tickers))
+        for r in range(len(tickers)):
+            tbl.setRowHeight(r, FAV_ROW_H)
         self.fav_check_items = {}
         self.fav_atm_items = {}
+        self.fav_star_items = {}
         for r, t in enumerate(tickers):
             fav = self.favs[t]
             rows, name = info[t]
@@ -5012,8 +5022,12 @@ class MainWindow(QMainWindow):
             dollar_avg = sum(zones.dollar_price(x[3], x[2], x[4], x[6]) * (x[5] or 0)
                              for x in rows) / len(rows) if rows else None
             self.fav_side_info[t] = (close, change, name)
+            star = self.fav_item(t, number=False)       # (the star alone: its colour is the group)
+            star.value = self.fav_order(t)      # (sorting by Fav: the usual order, as the Mini Favorites')
+            star.setToolTip(star.toolTip() + "\nClick the Fav title: the usual order (the ATM trades first)")
+            self.fav_star_items[t] = star
             cells = [
-                self.fav_item(t),
+                star,
                 plain(t),
                 plain(name),
                 self.check_item(t, self.fav_check_items),
@@ -5256,14 +5270,27 @@ class MainWindow(QMainWindow):
         item.setToolTip("\n".join(lines))
 
     def refresh_fav_atm(self):
-        """The Favorites table's ATM cells again (a trade changed, or the chosen account)."""
-        for ticker, item in list(getattr(self, "fav_atm_items", {}).items()):
-            try:
-                self.fill_fav_atm(item, self.fav_atm_trade(ticker))
-                if item.tableWidget() is not None:
-                    item.setData(Qt.ItemDataRole.UserRole, item.value)     # (the table re-sorts by it)
-            except RuntimeError:        # (the table was filled again meanwhile)
-                pass
+        """The Favorites table's ATM cells again (a trade changed, or the chosen account), and its order."""
+        tbl = getattr(self, "fav_table", None)
+        # sorting paused while the cells change: each change re-sorted the rows in the middle of the loop (the rows
+        # moving under the items being changed: an occasional crash); sorted once, after
+        sorting = tbl is not None and tbl.isSortingEnabled()
+        if sorting:
+            tbl.setSortingEnabled(False)
+        try:
+            for ticker, item in list(getattr(self, "fav_atm_items", {}).items()):
+                try:
+                    self.fill_fav_atm(item, self.fav_atm_trade(ticker))
+                    if item.tableWidget() is not None:
+                        item.setData(Qt.ItemDataRole.UserRole, item.value)     # (sorted by it below)
+                    star = getattr(self, "fav_star_items", {}).get(ticker)
+                    if star is not None and star.tableWidget() is not None and ticker in self.favs:
+                        star.value = self.fav_order(ticker)     # (the usual order, while sorted by Fav)
+                except RuntimeError:        # (the table was filled again meanwhile)
+                    pass
+        finally:
+            if sorting:
+                tbl.setSortingEnabled(True)         # (sorts again by its column)
         self.update_fav_side()
 
     def fav_row_ticker(self, row: int) -> str:
