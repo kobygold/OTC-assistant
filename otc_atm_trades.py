@@ -35,7 +35,8 @@ def fill_text(v) -> str:
 
 
 # an opened trade's orders: their own titles, on a title row above them (the table's columns they use)
-ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "State": ("Status", "Schwab's status of the order"),
+ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "Steps": ("Order #", "Schwab's order number"),
+                    "State": ("Status", "Schwab's status of the order"),
                     "Sent": ("Placed", "When the order was placed"),
                     "Shares": ("Filled / Ordered", "The shares filled of those the order asked for"),
                     "Entry": ("Limit", "The order's limit price (a buy's or a sell's)"),
@@ -506,6 +507,8 @@ class AtmTable(SortMixin, QTableWidget):
         left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         self.cell(row, COL["Ticker"], f"  ↳ {o.get('side', '')}", GREEN if buy else RED, bold=True, bg=sub, align=left,
                   tip=f"Order {o['id']}")
+        self.cell(row, COL["Steps"], o["id"], DIM, bg=sub, tip="Schwab's order number",
+                  align=Qt.AlignmentFlag.AlignCenter)
         word = status_word(o.get("status"))
         self.cell(row, COL["State"], word, "#1db31d" if word == "Working" else YELLOW if word == "Pending" else
                   "#c8c8c8" if word == "Filled" else DIM, bold=word in ("Working", "Pending", "Filled"), bg=sub)
@@ -930,6 +933,7 @@ ORDER_COLUMNS = [
     ("Status", "Working: open and in the market (it can fill now). Pending: open, not in the market yet (placed "
                "while it's closed: Working at the open). Both can be changed or canceled. Else how it ended: Filled, "
                "Canceled, Replaced (by a changed order), Rejected, Expired"),
+    ("Order #", "Schwab's order number"),
     ("Entered", "When the order was placed"),
     ("Filled", "When it was filled (its last fill)"),
     ("Duration", "GTC: good till canceled. Day: for the day only."),
@@ -995,7 +999,7 @@ class SchwabOrdersTable(AtmTable):
         atm.changed.connect(lambda: QTimer.singleShot(0, self.rebuild))
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
-        self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Entered", "Filled", "Duration", "Shares",
+        self.init_sorting([OCOL[t] for t in ("Ticker", "Side", "Status", "Order #", "Entered", "Filled", "Duration", "Shares",
                                               "Limit", "$", "Bid then", "Ask then", "Bid now", "Ask now")])
         self.rebuild()
 
@@ -1006,6 +1010,8 @@ class SchwabOrdersTable(AtmTable):
         m = self.atm.market.get(o["ticker"], {})
         if title == "Status":
             return (1 if o.get("open") else 0, o.get("status") or "")      # (the working ones first, highest first)
+        if title == "Order #":
+            return int(o["id"]) if str(o["id"]).isdigit() else 0
         if title in ("Ticker", "Side", "Entered", "Duration"):
             return o.get({"Ticker": "ticker", "Side": "side", "Entered": "entered", "Duration": "duration"}[title])
         if title == "Filled":
@@ -1107,6 +1113,7 @@ class SchwabOrdersTable(AtmTable):
             status = raw.replace("_", " ").title()
             color = {"FILLED": ORDER_COLOR, "CANCELED": DIM, "REPLACED": DIM, "EXPIRED": DIM}.get(raw, "#e0404f")
         self.cell(row, OCOL["Status"], status, color, bold=working or raw == "FILLED")
+        self.cell(row, OCOL["Order #"], o["id"], DIM, tip="Schwab's order number")
         self.cell(row, OCOL["Entered"], entered_text(o.get("entered")), DIM, tip=o.get("entered") or "")
         self.cell(row, OCOL["Filled"], entered_text(o.get("filled_at")) if o.get("filled_at") else "-",
                   DIM if not o.get("filled_at") else None, tip=o.get("filled_at") or "")
