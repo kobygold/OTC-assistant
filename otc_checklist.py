@@ -3722,8 +3722,8 @@ class ChecklistPanel(QWidget):
                     row.addWidget(box)
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                # the ticker | the amounts | the prices | the % results | the fee | the $ results:
-                if item.key in ("ticker", "shares", "stop", "ratio", "fee"):
+                # the ticker | the amounts | the prices | the % results | the fee | the $ results | section 1:
+                if item.key in ("ticker", "shares", "stop", "ratio", "fee", "loss_usd"):
                     # a thin line between them
                     line = QWidget()
                     line.setObjectName("cl_split")
