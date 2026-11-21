@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
                              QStyledItemDelegate, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
-                           STEP_GAP, STEP_R, AtmTrades, paint_steps, red_x_icon, reset_icon, usd_signed)
+                           STEP_GAP, STEP_R, AtmTrades, paint_steps, plan, red_x_icon, reset_icon, usd_signed)
 from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, status_word, steps_score, trade_steps
 
 
@@ -41,7 +41,9 @@ ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "State": ("Status", "Schwa
                     "Entry": ("Limit", "The order's limit price (a buy's or a sell's)"),
                     "Exit plan": ("Filled at", "The price Schwab filled it at (the fills' average), as Schwab has "
                                                "it: up to 6 decimals"),
-                    "Safety Net": ("$", "What it filled for, with Schwab's commission: + for a buy (what it cost), "
+                    "Safety Net": ("Safety Net then", "The safety net when the order was sent: worked out from the "
+                                                       "Level II bids then (under its entry), for its shares"),
+                    "Fee": ("$", "What it filled for, with Schwab's commission: + for a buy (what it cost), "
                                         "- for a sell (what you got). Schwab's own when the trade's P/L has it read"),
                     "P/L": ("P/L", "The order's part of the trade's P/L: a buy's cost (-), a sell's proceeds (+); "
                                    "together: the trade's"),
@@ -453,6 +455,20 @@ class AtmTable(SortMixin, QTableWidget):
                 self.fill_order(row, e, o)
             self.fit_row(row)
 
+    def net_then(self, e, o, q):
+        """(the safety net when the order was sent, the entry it is under): the checklist's, worked out from the
+        Level II bids kept then: a buy's under its limit, a sell's under the trade's entry; for the order's shares."""
+        entry = o.get("price") if o.get("side") == "BUY" else e.get("entry")
+        bids = [(r[0], r[1], r[2], 0) for r in (q.get("level2") or {}).get("bids") or [] if len(r) >= 3]
+        shares = int(o.get("quantity") or 0)
+        if not entry or not bids or not shares:
+            return None, entry
+        try:
+            return plan((q.get("bid") or [None])[0], (q.get("ask") or [None])[0], bids, entry=entry,
+                        fee=self.fee_of(e), shares=shares)["stop"], entry
+        except Exception:
+            return None, entry
+
     @staticmethod
     def fee_of(e):
         return FEE_USD if e.get("fee") is None else e["fee"]
@@ -514,7 +530,7 @@ class AtmTable(SortMixin, QTableWidget):
             total = value + fee if buy else value - fee
             text = f"${value:,.2f} {'+' if buy else '-'} ${fee:.2f} = ${total:,.2f}"
             how = "Schwab's" if schwab else "estimated: $" + f"{self.fee_of(e):.2f} an order (a sell's: never more than it got)"
-            self.cell(row, COL["Safety Net"], text, side, bold=True, bg=sub,
+            self.cell(row, COL["Fee"], text, side, bold=True, bg=sub,
                       tip=f"{got:,} shares at {fill_text(o['fill_price'] or 0)}: ${value:,.2f}; the commission ({how}): "
                           f"${fee:.2f}")
             pl = -total if buy else total
@@ -522,10 +538,15 @@ class AtmTable(SortMixin, QTableWidget):
                       tip="Its part of the trade's P/L: " + ("what the buy cost" if buy else "what the sell brought"))
         q = self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])
         if q is None:
-            for col in (COL["Bid then"], COL["Ask then"]):
+            for col in (COL["Safety Net"], COL["Bid then"], COL["Ask then"]):
                 self.cell(row, col, "-", DIM, bg=sub, tip="Not kept: sent before the app kept the market of each order")
             return
         when = str(q.get("time", "")).replace("T", " ")[:19]
+        net, entry = self.net_then(e, o, q)
+        self.cell(row, COL["Safety Net"], fmt_price(net) if net else "-", RED if net else DIM, bold=bool(net), bg=sub,
+                  tip=(f"The safety net then ({when}): from the Level II bids under the entry {fmt_price(entry)}, "
+                       f"for {int(o.get('quantity') or 0):,} shares" if net else
+                       "Not known: the Level II then had too few bids under the entry"))
         then = book_html(f"{o['ticker']} Level II when the order was {'first seen' if q.get('seen') else 'sent'} "
                          f"({when})", q.get("level2", {}).get("bids", []), q.get("level2", {}).get("asks", []))
         for col, k, what in ((COL["Bid then"], "bid", "Bid then"), (COL["Ask then"], "ask", "Ask then")):
