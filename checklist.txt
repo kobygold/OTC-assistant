@@ -48,9 +48,11 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - הפסד פוטנציאלי (ללא עמלות)
   info(loss_gross): -(amount of stocks x (entry - stop)), in $
 - רווח פוטנציאלי - בניכוי עמלות
-  info(profit_usd): amount of stocks x (exit - entry) - 2 x the fee above (the buy and the sell)
+  info(profit_usd): amount of stocks x (exit - entry) - the fee above for the buy - the sell's (the same, but never more than
+        the sale brings: Schwab's cap)
 - הפסד פוטנציאלי - בתוספת עמלות
-  info(loss_usd): -(amount of stocks x (entry - stop)) - 2 x the fee above (the buy and the sell)
+  info(loss_usd): -(amount of stocks x (entry - stop)) - the fee above for the buy - the sell's (the same, but never more
+        than the sale brings: Schwab's cap)
 
 
 ## 1 חיפוש המנייה

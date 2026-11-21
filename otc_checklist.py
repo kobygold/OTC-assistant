@@ -30,7 +30,7 @@ from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, o
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 from otc_trade import (DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, estimate_fees, pl_lines, pl_summary,
-                       status_word, trade_steps)
+                       sell_fee, status_word, trade_steps)
 
 POSITION_USD = 150      # the position size, in $ (the default's default: the Settings tab sets it per account)
 
@@ -255,13 +255,13 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
         out["profit"] = (out["exit"] - out["entry"]) / out["entry"] * 100
     if out["entry"] and out["stop"] is not None:
         out["loss"] = (out["entry"] - out["stop"]) / out["entry"] * 100
-    fees = 2 * fee          # one buy and one sell
+    # one buy's fee and one sell's (never more than the sale brings)
     if out["shares"] and out["entry"] and out["exit"]:
         out["profit_gross"] = out["shares"] * (out["exit"] - out["entry"])
-        out["profit_usd"] = out["profit_gross"] - fees
+        out["profit_usd"] = out["profit_gross"] - fee - sell_fee(fee, out["shares"] * out["exit"])
     if out["shares"] and out["entry"] and out["stop"] is not None:
         out["loss_gross"] = -out["shares"] * (out["entry"] - out["stop"])
-        out["loss_usd"] = out["loss_gross"] - fees
+        out["loss_usd"] = out["loss_gross"] - fee - sell_fee(fee, out["shares"] * out["stop"])
     if out["profit"] is not None and out["loss"]:
         out["ratio"] = out["profit"] / out["loss"]
     return out
@@ -1109,6 +1109,8 @@ def fee_rows(fee, total, sell=False):
     sell gets the total less it). fee None: not read from Schwab, the usual one is used (and said)."""
     usual = fee is None
     fee = FEE_USD if usual else fee
+    if sell:
+        fee = sell_fee(fee, total)      # (never more than the sale brings)
     net = total - fee if sell else total + fee
     text = (f"${total:,.2f} {'-' if sell else '+'} ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
             + (f" (the commission is more than ${FEE_HIGH:.2f}!)" if fee > FEE_HIGH else ""))
@@ -1333,8 +1335,9 @@ def sell_dialog(parent, account_name, ticker, owned, in_orders, start, fee, wher
 
     def make(shares, price):
         total = shares * price
-        net = total - fee
-        dollars = f"${total:,.2f} - ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
+        taken = sell_fee(fee, total)        # (never more than the sale brings)
+        net = total - taken
+        dollars = f"${total:,.2f} - ${taken:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
         rows = [("Ticker", ticker), ("Order", "SELL · Limit · from the stocks owned"),
                 ("Owned", f"{owned:,}" + (f" ({in_orders:,} in sell orders)" if in_orders else "")),
                 ("Amount of stocks", amount_row), ("Limit price", PRICE_ROW), ("Duration", duration),
@@ -1385,7 +1388,7 @@ def partial_sell_dialog(parent, account_name, e, start, fee):
 
     def make(shares, price):
         total = shares * price
-        gain = shares * (price - entry) - 2 * fee
+        gain = shares * (price - entry) - fee - sell_fee(fee, total)
         rest = int(e.get("shares") or 0) - filled
         rows = [("Ticker", e["ticker"]), ("Order", "SELL · Limit · GTC (good till canceled)"),
                 ("Bought so far", f"{filled:,} of {e.get('shares', 0):,} @ {fmt_price(entry)}"),
@@ -1582,10 +1585,11 @@ def order_dialog(parent, account_name, ticker, side, start, fee, owned=None, in_
         market = kind.currentData() == "MARKET"
         send.setEnabled(n > 0 and (p > 0 or market))
         amount = n * p
-        net = amount - fee if selling else amount + fee
+        taken = sell_fee(fee, amount) if selling else fee       # (a sale's: never more than it brings)
+        net = amount - taken if selling else amount + taken
         sign = "-" if selling else "+"
         about = "≈ " if market else ""
-        total.setText(f"<b style='color:#e3b23c'>{about}${amount:,.2f} {sign} ${fee:.2f} = "
+        total.setText(f"<b style='color:#e3b23c'>{about}${amount:,.2f} {sign} ${taken:.2f} = "
                       f"{'-' if net < 0 else ''}${abs(net):,.2f}</b>")
         total.setToolTip("At the price above: a market order's price is the market's when it fills" if market else "")
         what = f"{side} {n:,} {ticker} " + ("at the market" if market else f"at {fmt_price(p)}" if p else "")
@@ -2004,10 +2008,11 @@ class AtmTrades(QObject):
         if e.get("state") == "sold":
             if (e.get("pl") or {}).get("net") is not None:      # Schwab's own
                 return e["pl"]["net"]
-            return got - cost - 2 * fee
+            return got - cost - fee - sell_fee(fee, got)
         if e.get("state") == "canceled" or not e.get("filled") or bid is None:
             return None
-        return got + AtmTrades.remaining(e) * bid - cost - 2 * fee
+        got += AtmTrades.remaining(e) * bid
+        return got - cost - fee - sell_fee(fee, got)
 
     # ---- orders ----
     def send_buy(self, snapshot):
@@ -2142,7 +2147,8 @@ class AtmTrades(QObject):
                 (on_bid[0] if on_bid else "Limit price (exit)", fmt_price(price))
                 ] + ([("On the Bid", on_bid[1])] if on_bid else []) + fee_rows(fee, total, sell=True)
         used = FEE_USD if fee is None else fee
-        gain = (e.get("proceeds") or 0) + total - (e.get("filled") or 0) * e["entry"] - 2 * used
+        got = (e.get("proceeds") or 0) + total
+        gain = got - (e.get("filled") or 0) * e["entry"] - used - sell_fee(used, got)
         rows.append(("Profit after both fees", usd_signed(gain)))
         aon = aon_box()
         rows.append(("Fill", aon))
@@ -4784,9 +4790,9 @@ class ChecklistPanel(QWidget):
             "profit_gross": (INFO, usd_text(p["profit_gross"]), "amount of stocks x (exit - entry), without the fees"),
             "loss_gross": (INFO, usd_text(p["loss_gross"]), "-amount of stocks x (entry - stop), without the fees"),
             "profit_usd": (INFO, usd_text(p["profit_usd"]),
-                           f"amount of stocks x (exit - entry) - 2 x ${fee_used:.2f} fees (buy and sell)"),
+                           f"amount of stocks x (exit - entry) - the buy's ${fee_used:.2f} fee - the sell's (${fee_used:.2f}, never more than the sale brings)"),
             "loss_usd": (INFO, usd_text(p["loss_usd"]),
-                         f"-amount of stocks x (entry - stop) - 2 x ${fee_used:.2f} fees (buy and sell)"),
+                         f"-amount of stocks x (entry - stop) - the buy's ${fee_used:.2f} fee - the sell's (${fee_used:.2f}, never more than the sale brings)"),
             "ratio": (INFO, f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA, "1 : profit % / loss % (the fees are left out)"),
         }
 

@@ -95,12 +95,19 @@ def trade_fee(e):
     return FEE_USD if e.get("fee") is None else e["fee"]
 
 
+def sell_fee(fee, proceeds):
+    """A sale's commission as Schwab charges it: never more than the sale brings (a sale of $3.83: $3.83, net $0).
+    A buy's has no cap (26 shares for $0.09: + $6.95)."""
+    return max(0.0, min(fee, proceeds or 0.0))
+
+
 def sold_profit(e):
     """$ after the fees of what was sold so far (all of it, once sold): Schwab's own (its transactions: "pl"), else
     the old way (the orders' limit prices, one fee for the buy and one for the sell)."""
     if (e.get("pl") or {}).get("net") is not None:
         return e["pl"]["net"]
-    return (e.get("proceeds") or 0.0) - (e.get("sold") or 0) * e["entry"] - 2 * trade_fee(e)
+    got = e.get("proceeds") or 0.0
+    return got - (e.get("sold") or 0) * e["entry"] - trade_fee(e) - sell_fee(trade_fee(e), got)
 
 
 def estimate_fees(fills, fee=FEE_USD):
@@ -153,5 +160,5 @@ def pl_lines(pl):
 
 def plan_profit(e, price):
     """$ after both fees, selling the stocks owned now at `price` (with what was sold so far)."""
-    return ((e.get("proceeds") or 0.0) + remaining(e) * price - (e.get("filled") or 0) * e["entry"]
-            - 2 * trade_fee(e))
+    got = (e.get("proceeds") or 0.0) + remaining(e) * price
+    return got - (e.get("filled") or 0) * e["entry"] - trade_fee(e) - sell_fee(trade_fee(e), got)

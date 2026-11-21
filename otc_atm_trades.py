@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            STEP_GAP, STEP_R, AtmTrades, paint_steps, plan, red_x_icon, reset_icon, usd_signed)
-from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, status_word, steps_score, trade_steps
+from otc_trade import (DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, sell_fee, status_word, steps_score,
+                       trade_steps)
 
 
 
@@ -508,7 +509,7 @@ class AtmTable(SortMixin, QTableWidget):
             return None
         value = round(got * o["fill_price"], 4)
         fee = self.fee_of(e)
-        return value, (fee if o.get("side") == "BUY" else min(fee, value)), False
+        return value, (fee if o.get("side") == "BUY" else sell_fee(fee, value)), False
 
     def fill_order_titles(self, row):
         """The title row above an opened trade's orders: their own column names."""
@@ -1309,6 +1310,7 @@ class SchwabOrdersTable(AtmTable):
         if o["side"] == "BUY":
             text = f"${total:,.2f} + ${fee:.2f} = ${total + fee:,.2f}"
         else:
+            fee = sell_fee(fee, total)          # (a sale's: never more than it brings)
             net = total - fee
             text = f"${total:,.2f} - ${fee:.2f} = {'-' if net < 0 else ''}${abs(net):,.2f}"
         changed = bool(o.get("open")) and abs(price - (o.get("price") or 0)) > 1e-9
@@ -1425,6 +1427,8 @@ class PositionsTable(AtmTable):
         fee = FEE_USD if read is None else read
         cost = p["shares"] * p["avg"] if p.get("avg") else None
         value = p["shares"] * bid if bid else None
+        if value is not None:
+            fee = sell_fee(fee, value)          # (selling them: the commission never more than the sale brings)
         pl = value - cost - fee if value is not None and cost is not None else None
         return {"bid": bid, "ask": ask, "cost": cost, "value": value, "pl": pl, "fee": fee, "fee_read": read is not None,
                 "pct": pl / cost * 100 if pl is not None and cost else None}
