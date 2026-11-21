@@ -51,6 +51,14 @@ def trade_steps(e):
     return [DONE, got, sell, sold]
 
 
+def steps_score(e):
+    """The circles as a number, for sorting: a green circle 1, a yellow (partly filled) one 0.5: a sell sent and
+    partly sold 3.5, above a sell sent 3; partly bought 1.5, above a buy sent 1. A canceled trade: -0.5 (last)."""
+    if e.get("state") == "canceled":
+        return -0.5
+    return sum({DONE: 1.0, HALF: 0.5}.get(st, 0.0) for st in trade_steps(e))
+
+
 def steps_line(e):
     """The steps as a phone shows them: 🟢-🟢-🟡-⚪, and on the next line Step 3/4: Wait for Sell."""
     dots = {DONE: "🟢", HALF: "🟡", TODO: "⚪"}

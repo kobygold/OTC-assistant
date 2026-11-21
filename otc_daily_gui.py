@@ -53,7 +53,7 @@ import otc_atm as atm
 from otc_alert_dialog import AlertDialog, AlertsDialog
 from otc_atm_trades import ORDER_SHOW, AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
-from otc_trade import STEP_NAMES, trade_steps
+from otc_trade import STEP_NAMES, steps_score, trade_steps
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.79"
+APP_VERSION = "2.7.80"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1501,14 +1501,13 @@ class MainWindow(QMainWindow):
         if side is None:
             return
         rows = []
-        # the ATM trades first, the furthest step first (completed: sold, until cleared; sell sent; bought; buy
-        # sent and partly bought; buy sent), then by name; then the other favorites by group, then by name
-        step = {"sold": 5, "sell_open": 4, "bought": 3, "buy_open": 1}
-
+        # the ATM trades first, the most circles first (a yellow, partly filled one: half a circle: a sell partly
+        # sold before a sell sent, partly bought before a buy sent), then by name; then the other favorites by
+        # group, then by name
         def order(t):
-            e = self.fav_atm_trade(t) or {}
-            rank = step.get(e.get("state"), 0) + (1 if e.get("state") == "buy_open" and e.get("filled") else 0)
-            return (0, -rank, t) if rank else (1, self.favs[t]["group"], t)
+            e = self.fav_atm_trade(t)
+            rank = steps_score(e) if e else 0
+            return (0, -rank, t) if rank > 0 else (1, self.favs[t]["group"], t)
         for t in sorted(self.favs, key=order):
             fav = self.favs[t]
             g = fav["group"]
@@ -3162,6 +3161,13 @@ class MainWindow(QMainWindow):
                                  (owned, "owned_box", "#1db31d"), (log_box, "order_log_box", "#c8c8c8")):
             box.setObjectName(name)
             box.setStyleSheet(f"QGroupBox#{name} {{ font-size: 13pt; font-weight: bold; color: {color}; }}")
+            # folded: only the title line, without the frame's empty rectangle under it
+            box.folded_style = (f"QGroupBox#{name} {{ font-size: 13pt; font-weight: bold; color: {color}; border: none;"
+                                f" margin-top: 0px; padding-top: 0px; }}"
+                                f" QGroupBox#{name}::title {{ subcontrol-origin: padding; subcontrol-position: top left;"
+                                f" left: 8px; padding: 0px 3px; }}")
+            box.open_style = box.styleSheet()
+            box.open_margins = box.layout().contentsMargins()
         # a click on a section's title folds it (only the title left) or opens it again
         self.monitor_boxes = {"owned_box": (owned, "Portfolio"), "atm_box": (trades, "ATM Trades"),
                               "orders_box": (others, "All Orders"), "order_log_box": (log_box, "Order Log")}
@@ -5153,7 +5159,14 @@ class MainWindow(QMainWindow):
             if w is not None:
                 w.setVisible(not folded)
         box.setTitle(("▸ " if folded else "▾ ") + title)
-        box.setMaximumHeight(box.minimumSizeHint().height() if folded else 16777215)
+        if hasattr(box, "folded_style"):
+            # folded: the title line alone (no frame, no margins under it)
+            box.setStyleSheet(box.folded_style if folded else box.open_style)
+            if folded:
+                lay.setContentsMargins(0, 0, 0, 0)
+            else:
+                lay.setContentsMargins(box.open_margins)
+        box.setMaximumHeight(box.fontMetrics().height() + 6 if folded else 16777215)
         if save:
             self.settings["monitor_folded"] = sorted(n for n, (b, _t) in self.monitor_boxes.items()
                                                      if getattr(b, "folded", False))
@@ -5230,7 +5243,7 @@ class MainWindow(QMainWindow):
         steps = trade_steps(e)
         item.setData(STEPS_ROLE, steps)          # drawn as 4 circles (StepsCellDelegate)
         # sorted by the steps done (a half: half a step), a canceled one first
-        item.value = -0.5 if state == "canceled" else sum({"done": 1.0, "half": 0.5}.get(st, 0.0) for st in steps)
+        item.value = steps_score(e)
         words = {"done": "✔", "half": "partly", "todo": "not yet"}
         lines = [f"ATM trade: {name}"] + [f"{i + 1}. {n}: {words[st]}" for i, (n, st) in enumerate(zip(STEP_NAMES, steps))] + [
                  f"{e.get('shares', 0):,} shares, entry {fmt_price(e.get('entry'))}, exit {fmt_price(e.get('exit'))}"]

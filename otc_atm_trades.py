@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHead
 
 from otc_checklist import (BUY_COLOR, CANCEL_COLOR, FEE_HIGH, FEE_USD, ORDER_COLOR, PRICE_STEP, SELL_COLOR, STATES,
                            STEP_GAP, STEP_R, AtmTrades, paint_steps, red_x_icon, reset_icon, usd_signed)
-from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, status_word, trade_steps
+from otc_trade import DONE, HALF, STEP_NAMES, TODO, current_exit, pl_lines, status_word, steps_score, trade_steps
 
 
 
@@ -348,15 +348,10 @@ class AtmTable(SortMixin, QTableWidget):
         self.setItem(row, col, item)
         return item
 
-    # the usual order, as the Mini Favorites': the furthest step first (sold, sell sent, bought, buy sent and partly
-    # bought, buy sent), then canceled; by ticker within each
-    STEP_RANK = {"sold": 5, "sell_open": 4, "bought": 3, "buy_open": 1}
-
+    # the usual order, as the Mini Favorites': the most circles first (a yellow, partly filled one: half a circle,
+    # so a sell partly sold comes before a sell sent), canceled last; by ticker within each
     def usual_order(self, e):
-        live = self.atm.live_view(e)        # (Schwab's fills and cancels, at once)
-        state = live.get("state")
-        rank = self.STEP_RANK.get(state, 0) + (1 if state == "buy_open" and live.get("filled") else 0)
-        return (-rank, str(e.get("ticker") or ""))      # (stable: the newest first stays first)
+        return (-steps_score(self.atm.live_view(e)), str(e.get("ticker") or ""))   # (stable: the newest first)
 
     def rebuild(self):
         # only the trades of the account chosen at the top of the Monitor tab (all while none is)
