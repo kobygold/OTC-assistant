@@ -52,11 +52,16 @@ def order_info(o):
         # the fills' average price (each execution's legs), None before any
         done_shares, done_cost, last_fill, fills = 0, 0.0, "", 0
         for act in o.get("orderActivityCollection") or []:
-            if act.get("executionLegs"):
+            # only the fills: a partly filled order canceled has its rest as an "execution" too (CANCELED, at a
+            # price of 0): not a fill (it made the average price ~0 and counted one fill more)
+            if act.get("executionType", "FILL") != "FILL":
+                continue
+            legs = [ex for ex in act.get("executionLegs") or [] if ex.get("quantity") and ex.get("price")]
+            if legs:
                 fills += 1          # (each execution: one fill)
-            for ex in act.get("executionLegs") or []:
+            for ex in legs:
                 q, pr = ex.get("quantity") or 0, ex.get("price")
-                if q and pr is not None:
+                if q and pr:
                     done_shares += q
                     done_cost += q * float(pr)
                     last_fill = max(last_fill, str(ex.get("time") or ""))

@@ -2219,6 +2219,8 @@ class AtmTrades(QObject):
                 ids.add(str(e["id"]))
             ids.update(str(x) for x in e.get("replaced_ids", []))
             ids.update(str(x) for x in e.get("adopted_ids", []))
+            # (its Schwab P/L's fills: every order it was made of, the old ones too)
+            ids.update(str(f["order"]) for f in (e.get("pl") or {}).get("fills") or [] if f.get("order"))
         return ids
 
     def other_orders(self, ticker=None, account=None):
