@@ -1049,7 +1049,7 @@ class SchwabOrdersTable(AtmTable):
                + (f", Schwab's commission ${fee:.2f}" if read is not None else
                   f", the usual commission ${fee:.2f} (Schwab's not read yet)")
                + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))
-        self.cell(row, OCOL["$"], text, CHANGED if changed else YELLOW,
+        self.cell(row, OCOL["$"], text, CHANGED if changed else (GREEN if o["side"] == "BUY" else RED),
                   bold=True, tip=tip)
 
     def update_market(self):
