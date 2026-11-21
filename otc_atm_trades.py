@@ -1043,10 +1043,11 @@ class SchwabOrdersTable(AtmTable):
 
     @staticmethod
     def order_shares(o):
-        """A working order's shares still to fill; else the order's (those filled, once filled)."""
+        """A working order's shares still to fill; else those it filled (0: ended without a fill, as a canceled,
+        replaced, expired or rejected one: nothing paid, no commission)."""
         if o.get("open"):
             return o["shares"]
-        return o.get("filled") or o.get("quantity") or o["shares"]
+        return int(o.get("filled") or 0)
 
     @staticmethod
     def order_price(o):
@@ -1257,6 +1258,10 @@ class SchwabOrdersTable(AtmTable):
         """Shares x the limit (the New limit, while changed) with the commission: "$101.00 + $6.95 =
         $107.95" for a buy, "$101.00 - $6.95 = $94.05" for a sell."""
         price = price or self.order_price(o)
+        if not o.get("open") and not int(o.get("filled") or 0):
+            # ended without a fill (canceled, replaced, expired, rejected): nothing paid, no commission
+            self.cell(row, OCOL["$"], "-", DIM, tip="Nothing filled: nothing paid, no commission")
+            return
         if not price:               # (a market order not filled: no price)
             self.cell(row, OCOL["$"], "-", DIM)
             return
