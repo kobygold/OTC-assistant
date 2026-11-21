@@ -35,6 +35,7 @@ CHANGED = "#f0a020"     # a New Price changed from the exit plan (or the open or
 
 # (title, tooltip)
 COLUMNS = [
+    ("▸", "Click ▸: the trade's orders under it (each with the Bid / Ask then, hover: the Level II then); ▾: hide them"),
     ("Ticker", ""),
     ("Steps", "1 Buy order placed · 2 Got the stocks · 3 Sell order placed · 4 Sold. Green ✔: done. "
               "Yellow half: partly (some bought / some sold so far). Empty: not yet."),
@@ -297,7 +298,9 @@ class AtmTable(SortMixin, QTableWidget):
         atm.market_changed.connect(self.market_changed)
         self.cellDoubleClicked.connect(self.double_clicked)
         self.init_sorting([i for i, (t, _) in enumerate(COLUMNS)
-                           if t not in ("Order", "")])
+                           if t not in ("Order", "", "▸")])
+        self.expanded = set()       # trade ids whose orders are shown under them (▾)
+        self.cellClicked.connect(self.toggle_orders)
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now", "P/L")
@@ -329,8 +332,19 @@ class AtmTable(SortMixin, QTableWidget):
         return None
 
     def double_clicked(self, row, col):
-        if col == COL["Ticker"] and self.item(row, col):
+        if col == COL["Ticker"] and self.item(row, col) and row < len(self.ids) and self.ids[row]:
             self.open_chart.emit(self.item(row, col).text())
+
+    def toggle_orders(self, row, col):
+        """A click on a trade's ▸ / ▾: its orders shown under it, or hidden."""
+        if col != COL["▸"] or row >= len(self.ids) or not self.ids[row]:
+            return
+        eid = self.ids[row]
+        if not self.atm.trade_orders(self.atm.find(eid) or {}):
+            return
+        self.expanded.symmetric_difference_update({eid})
+        self.signature = None
+        self.rebuild()
 
     # ---- cells ----
     def cell(self, row, col, text, color=None, bold=False, bg=None, tip="", align=None):
@@ -365,8 +379,15 @@ class AtmTable(SortMixin, QTableWidget):
             entries.sort(key=self.usual_order)
         entries = self.sorted_rows(entries)
         # A Sell at change only updates its box (the +/- buttons keep repeating while held)
+        # the orders of the trades opened (▾), each as a row under its trade
+        children = {e["id"]: self.atm.trade_orders(e) for e in entries}
+        quotes = {o["id"]: bool(self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"]))
+                  for e in entries if e["id"] in self.expanded for o in children[e["id"]]}
         signature = json.dumps([account, [{k: v for k, v in e.items() if k not in ("sell_at", "exit-live", "safety-net-live")}
-                                          for e in entries],
+                                          for e in entries], sorted(self.expanded & set(children)),
+                                {k: [(o["id"], o.get("status"), o.get("filled"), o.get("fill_price")) for o in v]
+                                 for k, v in children.items() if k in self.expanded}, quotes,
+                                [bool(children[e["id"]]) for e in entries],
                                 [trade_steps(self.atm.live_view(e)) for e in entries],     # (Schwab's fills, at once)
                                 sorted(self.atm.sending), sorted(self.atm.canceling), self.sort_state(), cutoff, flt],
                                sort_keys=True, default=str)
@@ -378,16 +399,67 @@ class AtmTable(SortMixin, QTableWidget):
             QTimer.singleShot(1000, self.rebuild)       # not while a price is being typed
             return
         self.signature = signature
-        self.ids = [e["id"] for e in entries]
+        # the rows: each trade, and under an opened one its orders (self.ids: None for an order's row)
+        rows = []
+        for e in entries:
+            rows.append((e, None))
+            if e["id"] in self.expanded:
+                rows += [(e, o) for o in children[e["id"]]]
+        self.ids = [e["id"] if o is None else None for e, o in rows]
         self.edits = {}
         self.order_boxes = {}
         open_ids = {e["id"] for e in entries if e.get("state") in ("buy_open", "sell_open")}
         self.new_prices = {k: v for k, v in self.new_prices.items() if k in open_ids}
-        self.setRowCount(len(entries))
-        for row, e in enumerate(entries):
-            self.fill(row, e)
-            self.fill_market(row, e)
+        self.clearSpans()
+        self.setRowCount(0)         # (the old rows' buttons go: an order's row has none)
+        self.setRowCount(len(rows))
+        for row, (e, o) in enumerate(rows):
+            if o is None:
+                self.fill(row, e)
+                self.fill_market(row, e)
+                has = bool(children[e["id"]])
+                self.cell(row, COL["▸"], ("▾" if e["id"] in self.expanded else "▸") if has else "", "#c8c8c8",
+                          bold=True, align=Qt.AlignmentFlag.AlignCenter,
+                          tip=(f"Click: {'hide' if e['id'] in self.expanded else 'show'} the trade's orders "
+                               f"({len(children[e['id']])})") if has else "")
+            else:
+                self.fill_order(row, e, o)
             self.fit_row(row)
+
+    def fill_order(self, row, e, o):
+        """An order's row under its trade: its side, status, when it was placed, filled / ordered, its limit (and
+        the fills' average), and the Bid / Ask when it was sent (hover: the Level II then)."""
+        sub = "#15191c"         # (a shade apart from the trades' rows)
+        TEXT = "#d8d8d8"        # (light: the rows are dark)
+        for col in range(len(COLUMNS)):
+            self.cell(row, col, "", bg=sub)
+        buy = o.get("side") == "BUY"
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        self.cell(row, COL["Ticker"], f"  ↳ {o.get('side', '')}", GREEN if buy else RED, bold=True, bg=sub, align=left,
+                  tip=f"Order {o['id']}")
+        word = status_word(o.get("status"))
+        self.cell(row, COL["State"], word, "#1db31d" if word == "Working" else YELLOW if word == "Pending" else
+                  "#c8c8c8" if word == "Filled" else DIM, bold=word in ("Working", "Pending", "Filled"), bg=sub)
+        self.cell(row, COL["Sent"], entered_text(o.get("entered")), DIM, bg=sub, tip="When the order was placed")
+        got, asked = int(o.get("filled") or 0), int(o.get("quantity") or 0)
+        self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", GREEN if asked and got >= asked else TEXT, bold=True,
+                  bg=sub, tip=f"Filled {got:,} of the {asked:,} ordered")
+        price = o.get("fill_price") if got and o.get("fill_price") else o.get("price")
+        tip = (f"Limit {fmt_price(o.get('price'))}" + (f" · filled at {fmt_price(o['fill_price'])} on average"
+                                                       if got and o.get("fill_price") else ""))
+        self.cell(row, COL["Entry" if buy else "Exit plan"], fmt_price(price) if price else "MKT",
+                  ORDER_COLOR if o.get("open") else TEXT, bold=True, bg=sub, tip=tip)
+        q = self.atm.order_quote(e.get("account") or self.atm.chosen_account(), o["id"])
+        if q is None:
+            for col in (COL["Bid then"], COL["Ask then"]):
+                self.cell(row, col, "-", DIM, bg=sub, tip="Not kept: sent before the app kept the market of each order")
+            return
+        when = str(q.get("time", "")).replace("T", " ")[:19]
+        then = book_html(f"{o['ticker']} Level II when the order was {'first seen' if q.get('seen') else 'sent'} "
+                         f"({when})", q.get("level2", {}).get("bids", []), q.get("level2", {}).get("asks", []))
+        for col, k, what in ((COL["Bid then"], "bid", "Bid then"), (COL["Ask then"], "ask", "Ask then")):
+            self.cell(row, col, price_text(q.get(k)), DIM if q.get("seen") else TEXT, bg=sub,
+                      tip=quote_line(what, q.get(k)) + then)
 
     def fit_row(self, row):
         # condensed: every row ROW_H (its buttons and boxes made to fit it), not the hidden row header's
@@ -540,7 +612,7 @@ class AtmTable(SortMixin, QTableWidget):
             self.rebuild()          # sorted by the market: the rows may move
         dirty, self.dirty = self.dirty, set()
         for row, eid in enumerate(self.ids):
-            e = self.atm.find(eid)
+            e = self.atm.find(eid) if eid else None         # (an order's row: no live cells)
             if e is not None and e["ticker"] in dirty:
                 self.fill_market(row, e)
                 self.fit_row(row)

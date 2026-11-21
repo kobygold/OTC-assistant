@@ -2250,6 +2250,23 @@ class AtmTrades(QObject):
             ids.update(str(f["order"]) for f in (e.get("pl") or {}).get("fills") or [] if f.get("order"))
         return ids
 
+    @staticmethod
+    def trade_order_ids(e):
+        """The ids of the orders the trade was made of: its buys and sells, the replaced ones and the adopted
+        ones, and those of its Schwab P/L's fills."""
+        ids = {str(e[k]) for k in ("order_id", "sell_id") if e.get(k)}
+        if str(e.get("id", "")).isdigit():          # (a trade's id: its first buy order's)
+            ids.add(str(e["id"]))
+        ids.update(str(x) for x in e.get("replaced_ids", []) + e.get("adopted_ids", []))
+        ids.update(str(f["order"]) for f in (e.get("pl") or {}).get("fills") or [] if f.get("order"))
+        return ids
+
+    def trade_orders(self, e):
+        """The trade's orders as Schwab's latest list of its account's orders has them, oldest first."""
+        ids = self.trade_order_ids(e)
+        found = [o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), []) if o["id"] in ids]
+        return sorted(found, key=lambda o: o.get("entered") or "")
+
     def other_orders(self, ticker=None, account=None):
         """The open limit orders of the ticker (None: of every ticker) in the account (the chosen
         one) that aren't an ATM trade's: sent from thinkorswim."""
