@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.75"
+APP_VERSION = "2.7.76"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3479,15 +3479,22 @@ class MainWindow(QMainWindow):
         """Every minute: the button's colour, and on Saturday and Sunday a reminder when the login
         would run out before the next weekend ("Not now": not again until tomorrow)."""
         self.show_login_age()
-        if not self.settings.get("schwab_app_key") or self.renew_asking:
+        if not self.settings.get("schwab_app_key"):
             return
         now = datetime.now()
-        if now.weekday() < 5:
-            return
         _made, ends = self.login_expiry()
         monday = (now + timedelta(days=7 - now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         next_weekend = monday + timedelta(days=5)       # the Saturday after the coming week
-        if ends is not None and ends >= next_weekend:
+        renewed = ends is not None and ends >= next_weekend
+        if self.renew_asking:
+            # the reminder still open, and the login renewed meanwhile (here, or on another computer: the main
+            # server passes it on to all): it closes by itself
+            box = getattr(self, "renew_box", None)
+            if renewed and box is not None:
+                self.renew_box_closed = True
+                box.reject()
+            return
+        if now.weekday() < 5 or renewed:
             return
         if self.settings.get("renew_not_now") == now.date().isoformat():
             return
@@ -3500,8 +3507,12 @@ class MainWindow(QMainWindow):
                               "coming market week (it lasts 7 days from the login).", parent=self)
             renew = box.addButton("Renew now...", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+            self.renew_box, self.renew_box_closed = box, False
             box.exec()
-            if box.clickedButton() is renew:
+            self.renew_box = None
+            if self.renew_box_closed:
+                pass            # closed by itself: renewed meanwhile (no "Not now")
+            elif box.clickedButton() is renew:
                 self.renew_login()
             else:
                 self.settings["renew_not_now"] = now.date().isoformat()
