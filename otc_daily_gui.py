@@ -68,11 +68,12 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.92"
+APP_VERSION = "2.7.93"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
 ORDER_LOG_LOAD = 500                    # its last lines shown at the start
+ORDER_LOG_TAG = "\t@"                   # a line's account, after its text (not shown): "...\t@159"
 MONITOR_PERIODS = (("Last day", 1), ("Last 2 days", 2), ("Last week", 7), ("All", 0))     # the Monitor tab's Show
 ORDER_TIP_LINES = 10                    # the chart's Orders button's tooltip: the latest news (new, filled, ended)
 SETTINGS_PATH = APP_DIR / "settings.json"
@@ -3698,6 +3699,7 @@ class MainWindow(QMainWindow):
             self.reload_drawings()
             self.load_checklist_prices()
         self.on_atm_changed()           # the chart and Level II show only this account's orders, now
+        self.show_order_log()           # the Order Log: this account's lines
         self.checklist.atm.check()      # and read its orders
         self.telegram.refresh()         # Settings → Telegram: this account's phones
         self.show_position_default()    # and its default position $
@@ -5105,12 +5107,11 @@ class MainWindow(QMainWindow):
         return text + (" · ATM" if ev.get("atm") else "")
 
     def on_order_event(self, ev):
-        """Schwab's news of an order: in the Order Log (and its file); a fill or a cancel lights the chart's
-        Orders button. Only the account chosen at the top's (as everything on the Monitor tab)."""
-        if ev.get("account") != self.checklist.atm.chosen_account():
-            return
+        """Schwab's news of an order: in the Order Log (and its file), every account's, each line with its account
+        (the log shows the chosen one's); a fill or a cancel of the account chosen at the top lights the chart's
+        Orders button."""
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"{stamp}  {self.order_text(ev)}"
+        line = f"{stamp}  {self.order_text(ev)}" + (f"{ORDER_LOG_TAG}{ev['account']}" if ev.get("account") else "")
         self.order_log_lines.append(line)
         del self.order_log_lines[:-ORDER_LOG_LOAD * 4]
         self.show_order_log()                       # (new: in every period, at the top)
@@ -5119,8 +5120,10 @@ class MainWindow(QMainWindow):
                 f.write(line + "\n")
         except OSError:
             pass
+        if ev.get("account") != self.checklist.atm.chosen_account():
+            return
         if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired", "placed"):
-            self.order_news.insert(0, line)
+            self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
             del self.order_news[ORDER_TIP_LINES:]
             self.order_news_ticker = ev["ticker"]
             self.show_orders_btn(ev)
@@ -5166,8 +5169,14 @@ class MainWindow(QMainWindow):
         days = self.monitor_period.currentData() or 0
         cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
         flt = self.monitor_filter.text().strip().upper()
-        lines = [x for x in reversed(self.order_log_lines) if (cutoff is None or x[:19] >= cutoff)
-                 and (not flt or flt in x[19:].strip().split(":")[0].upper())]       # (the line's ticker)
+        account = self.checklist.atm.chosen_account()
+        lines = []
+        for x in reversed(self.order_log_lines):
+            text, _, tag = x.partition(ORDER_LOG_TAG)
+            # the chosen account's only (a line from before the lines had their account: shown in every one)
+            if (cutoff is None or x[:19] >= cutoff) and (not tag or tag == account) \
+                    and (not flt or flt in text[19:].strip().split(":")[0].upper()):       # (the line's ticker)
+                lines.append(text)
         self.order_log.setPlainText("\n".join(lines))
         log = self.order_log
         bar = log.horizontalScrollBar()
