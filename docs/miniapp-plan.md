@@ -259,3 +259,9 @@ The Trades tab is gone (the Favorites list the ATM trades first, with their step
 ticker's line (as the chart's: the ticker, its risk, the ATM trade's steps) and the card's book (`renderL2`), with
 the ticker's buttons. The chart's panel no longer shows the book. The view "trades" and `renderTrades` stay (no tab
 asks for it now). Swiping between favorites and the kept scroll places include the Level II tab.
+
+## 16. The Ticker tab; the order buttons only on the checklist (built in 2.7.145)
+The ticker's card (opened from a favorite) has its own tab, Ticker (8 tabs now); Telegram's Back shows only when it
+was opened from a list (back there). The buy / sell / update buttons (`renderActions`) show only on the Checklist
+tab: no longer on the Ticker, Chart and Level II tabs. A swipe to the next / previous favorite works on the Ticker tab
+too.

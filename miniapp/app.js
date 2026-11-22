@@ -23,6 +23,7 @@ const TG = (typeof window !== "undefined" && window.Telegram && window.Telegram.
 const DONE = "done", HALF = "half";
 const TABS = [
   { id: "favs", label: "Favorites", icon: "M12 2.8l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 16.8l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" },
+  { id: "ticker", label: "Ticker", icon: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-5M12 8h.01" },
   { id: "chart", label: "Chart", icon: "M7 4v16M7 8h-2v6h2M7 8h2v6H7M17 6v14M17 10h-2v5h2M17 10h2v5h-2" },
   { id: "l2", label: "Level II", icon: "M3 5h8M3 9h6M3 13h7M3 17h5M13 5h8M15 9h6M14 13h7M16 17h5" },
   { id: "checklist", label: "Checklist", icon: "M9 6h11M9 12h11M9 18h11M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5" },
@@ -594,8 +595,8 @@ function render() {
   let html;
   const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
   if (S.tab === "favs") html = renderFavs(v("favs"), S);
-  else if (S.tab === "l2") html = S.ticker ? renderL2(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
-  else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
+  else if (S.tab === "l2") html = S.ticker ? renderL2(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
+  else if (S.tab === "ticker") html = S.ticker ? renderCard(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else if (S.tab === "orders") html = renderOrders(v("orders"), S);
   else if (S.tab === "alerts") html = renderAlerts(v("alerts"));
   else if (S.tab === "news") {
@@ -605,8 +606,8 @@ function render() {
     html = renderNews(nv);
     if (nv && nv.items.length && nv.items[0].t > newsSeen()) localSet("seen:" + S.account, String(nv.items[0].t));
   }
-  else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range) +
-    renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
+  else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range)
+    : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
@@ -622,11 +623,11 @@ function render() {
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
   if (S.tab !== "news") S.newsSeenShown = null;
   const unread = S.tab === "news" ? 0 : newsUnread();
-  document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
+  document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab ? "on" : ""}">` +
     `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}` +
     (t.id === "news" && unread ? `<span class="badge">${unread > 99 ? "99+" : unread}</span>` : "") + `</button>`).join("");
   // (no top bar: Telegram's Back button; a lost connection: the banner, "Reconnecting…")
-  if (TG && TG.BackButton) { try { if (S.tab === "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
+  if (TG && TG.BackButton) { try { if (S.tab === "ticker" && S.from && S.from !== "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
   applyZoom();
 }
 function banner(text, bad) {
@@ -755,13 +756,13 @@ function subscribe() {
 function openTicker(tk) {
   S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
 }
-// ---- a swipe left / right on the chart, the Level II or the checklist: the next / previous ticker, in the Favorites' order
+// ---- a swipe left / right on the ticker's card, the chart, the Level II or the checklist: the next / previous ticker, in the Favorites' order
 // (wrapping around). Only favorites can be opened for now; a ticker not there (if that ever changes) doesn't swipe.
 // On the chart's picture a drag pans the candles: the swipe is on the rest of the panel ----
 const SWIPE_PX = 60, SWIPE_MS = 700;
 function swipeStart(e) {
   S.swipe = null;
-  if (!(S.tab === "chart" || S.tab === "l2" || S.tab === "checklist") || !S.ticker || e.touches.length !== 1) return;
+  if (!(S.tab === "ticker" || S.tab === "chart" || S.tab === "l2" || S.tab === "checklist") || !S.ticker || e.touches.length !== 1) return;
   const el = e.target;
   if (el.closest && (el.closest(".chartImg") || el.closest("input,textarea,select") || el.closest("#sheet") || el.closest("#tabs"))) return;
   const t = e.touches[0];
@@ -790,7 +791,7 @@ function chooseAccount() {
   if (!S.accounts) return;
   sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
 }
-function goBack() { S.tab = S.from || "favs"; render(); }
+function goBack() { S.tab = S.from || "favs"; S.from = null; render(); }
 
 function setup() {
   if (TG) {
@@ -845,7 +846,7 @@ function setup() {
       }
       render(); return;
     }
-    if (t.dataset.tab) { S.tab = t.dataset.tab; subscribe(); render(); return; }
+    if (t.dataset.tab) { S.tab = t.dataset.tab; S.from = null; subscribe(); render(); return; }    // (no Back then)
     if (t.dataset.seg) { S.seg = t.dataset.seg; render(); return; }
     if (t.dataset.show || t.dataset.showall) {
       const all = ((S.views["orders/" + S.account] || {}).show || []);
