@@ -465,14 +465,14 @@ class MiniViews(QObject):
         return found
 
     def buyers(self, ticker):
-        """The ticker's good market makers caught keeping their bid while sold to (the Level II's magenta sign);
-        looked for with the reloaders."""
+        """{"BID" / "ASK": {CSTI / GTSM: its events}}: caught keeping its 10,000 while traded with (the Level II's
+        magenta sign, "Probably Unsolicited Stock"); looked for with the reloaders."""
         return self.reloads.get(ticker, (0.0, {}, {}))[2]
 
     def card(self, account, ticker):
         from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS
         from otc_daily_gui import RISK_COLORS, ticker_risk
-        from otc_level2 import BUYER, MINE, MM_TIPS, Level2Panel, mm_risk, reload_text
+        from otc_level2 import BUYER, MINE, MM_TIPS, Level2Panel, mm_risk, unsolicited_tip
         w = self.win
         panel = self.panel_for(ticker)
         q, bids, asks, note = self.market(ticker)
@@ -495,14 +495,15 @@ class MiniViews(QObject):
                 if mine:
                     row["mine"] = True
                     row["tip"] = "My open order (from Schwab; not part of the market's book)"
-                elif side == "ASK":
-                    risk = mm_risk(mm, reloaders)
+                else:
+                    risk = mm_risk(mm, reloaders) if side == "ASK" else 0
+                    seen = buyers.get(side, {})
                     if risk:
                         row["sign"] = {"level": risk, "color": RISK_COLORS[risk][0],
                                        "ring": RISK_COLORS[1][0] if risk in (3, 4) else "", "tip": MM_TIPS[risk]}
-                elif mm in buyers:          # (the Bid: "Probably Unsolicited Stock", magenta)
-                    row["sign"] = {"level": BUYER, "color": RISK_COLORS[BUYER][0], "ring": "",
-                                   "tip": f"{MM_TIPS[BUYER]}\n\n{reload_text(buyers[mm], 'BID')}"}
+                    elif mm in seen:        # (CSTI / GTSM keeping its 10,000: "Probably Unsolicited Stock", magenta)
+                        row["sign"] = {"level": BUYER, "color": RISK_COLORS[BUYER][0], "ring": "",
+                                       "tip": unsolicited_tip(seen[mm], side)}
                 out.append(row)
             return out
         e = panel.order()

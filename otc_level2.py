@@ -59,28 +59,34 @@ MM_TIPS = {4: "A dilutive market maker here: it refills its offer while it's bou
            3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
            2: "Dilutive Market Maker! Don't buy this stock!",
            1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks.",
-           5: "Probably Unsolicited Stock: this market maker keeps its bid (or refills it) while it's sold to, "
-              "on the highest Bid."}
-BUYER = 5               # the Bid's sign: a good market maker caught keeping / refilling its bid (magenta): "Probably Unsolicited Stock"
+           5: "Probably Unsolicited Stock"}
+BUYER = 5               # the sign (magenta) of CSTI / GTSM caught keeping / refilling its 10,000: "Probably Unsolicited Stock"
+UNSOLICITED = {"CSTI", "GTSM"}      # the market makers watched for it (on both sides)...
+UNSOLICITED_SIZE = 10_000           # ...showing this amount
 SIGN_W = 16             # the Ask table's sign column
 HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
 RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at for reloaders, in the session
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"     # the server's record (otc_recorder)
 
 
-def good_mm(mm):
-    """A good (green) market maker: neither a diluter (MM_RED) nor a so-so one (MM_YELLOW). Its bid is watched for
-    the buyer's refills (the diluter's check, on the Bid)."""
-    return mm not in MM_RED and mm not in MM_YELLOW
-
-
 def find_buyers(folder, ticker, days=RELOAD_DAYS):
-    """{good market maker: its events} that kept / refilled its bid on the highest Bid while it was sold to
-    (otc_recorder.find_reloads on the Bid): the Level II's magenta sign, the desktop's and the Mini App's."""
-    found = {}
-    for ev in find_reloads(folder, ticker, good_mm, days, side="BID"):
-        found.setdefault(ev["mm"], []).append(ev)
-    return found
+    """{"BID" / "ASK": {market maker: its events}}: CSTI / GTSM caught keeping (or refilling) its 10,000 on the best
+    price while traded with - the highest Bid while sold to, the lowest Ask while bought from (the diluter's check,
+    otc_recorder.find_reloads): the Level II's magenta sign, "Probably Unsolicited Stock", the desktop's and the
+    Mini App's."""
+    out = {}
+    for side in ("BID", "ASK"):
+        found = out[side] = {}
+        for ev in find_reloads(folder, ticker, UNSOLICITED, days, side=side, only_size=UNSOLICITED_SIZE):
+            found.setdefault(ev["mm"], []).append(ev)
+    return out
+
+
+def unsolicited_tip(events, side):
+    """The magenta sign's tooltip: what it means on that side, and when it happened."""
+    how = ("keeps its bid (or refills it) while it's sold to, on the highest Bid" if side == "BID" else
+           "keeps its offer (or refills it) while it's bought from, on the lowest Ask")
+    return f"{MM_TIPS[BUYER]}: this market maker {how}.\n\n{reload_text(events, side)}"
 
 
 def mm_risk(mm, reloaders):
@@ -323,7 +329,7 @@ class Level2Panel(QWidget):
         self.held = False                      # showing the close now
         self.close_info = None                 # the shown ticker's close (the server's answer), when held
         self.reloaders = {}                    # yellow market maker -> its reload events (the shown ticker)
-        self.buyers = {}                       # good market maker -> its events keeping its bid (the shown ticker)
+        self.buyers = {}                       # "BID" / "ASK" -> {CSTI / GTSM: its events} (the shown ticker)
         self.market_log = MARKET_LOG
         self.live_q = {}                       # the shown ticker's latest streamed quote and book
         self.live_book = ([], [])
@@ -418,8 +424,10 @@ class Level2Panel(QWidget):
             hdr.resizeSection(0, SIGN_W)
             t.setIconSize(QSize(SIGN_W - 4, SIGN_W - 4))
             t.horizontalHeaderItem(0).setToolTip(
-                "Magenta: Probably Unsolicited Stock (a market maker keeps or refills its bid while it's sold to)." if bid else
-                "Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker.")
+                "Magenta: Probably Unsolicited Stock (CSTI / GTSM keeps or refills its 10,000 while it's sold to)."
+                if bid else "Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker. "
+                            "Magenta: Probably Unsolicited Stock (CSTI / GTSM keeps or refills its 10,000 while it's "
+                            "bought from).")
         t.horizontalHeaderItem(first).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in (first + 1, first + 2):
             t.horizontalHeaderItem(col).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -788,7 +796,8 @@ class Level2Panel(QWidget):
                 cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
             # The sign column. The Ask: red for a diluter, yellow for a so-so market maker, red with a
             # yellow ring for a yellow one caught refilling its offer (a diluter here). The Bid: magenta for a
-            # good one caught keeping / refilling its bid while it's sold to ("Probably Unsolicited Stock")
+            # CSTI / GTSM caught keeping / refilling its 10,000 while traded with, on either side
+            # ("Probably Unsolicited Stock")
             sign = QTableWidgetItem()
             if side == "ASK":
                 risk = mm_risk(mm, self.reloaders)
@@ -796,9 +805,10 @@ class Level2Panel(QWidget):
                     sign.setIcon(self.mm_icons[risk])
                     sign.setToolTip(MM_TIPS[risk] if risk < 3 else
                                     f"{MM_TIPS[risk]}\n\n{reload_text(self.reloaders[mm])}")
-            elif not mine and mm in self.buyers and BUYER in self.mm_icons:
-                sign.setIcon(self.mm_icons[BUYER])
-                sign.setToolTip(f"{MM_TIPS[BUYER]}\n\n{reload_text(self.buyers[mm], 'BID')}")
+            seen = self.buyers.get(side, {})
+            if not mine and not sign.toolTip() and mm in seen and BUYER in self.mm_icons:
+                sign.setIcon(self.mm_icons[BUYER])          # (magenta: CSTI / GTSM keeping its 10,000)
+                sign.setToolTip(unsolicited_tip(seen[mm], side))
             cells.insert(0, sign)
             first = 1
             for col, item in enumerate(cells):
