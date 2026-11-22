@@ -163,6 +163,7 @@ function renderCard(view) {
     ` <span class="x">x</span> ${q.ask_size != null ? Number(q.ask_size).toLocaleString("en-US") : "-"}</div></div></div>`;
   out += `<div class="box"><div class="boxHead"><b>${view.steps ? "ATM trade" : "No ATM trade"}</b>${stepsSvg(view.steps, 8, 24)}</div>` +
     (ck.order_lines || []).map(l => `<div class="orderLine">${esc(l)}</div>`).join("") + `</div>`;
+  out += `<div class="rowBtns" style="margin:0 0 8px"><button data-addalert="${esc(view.ticker)}" style="background:#1d2125;color:#e3b23c;border:1px solid #2c3136">🔔 Add alert</button></div>`;
   out += renderBook(view.book);
   return out + `</div>`;
 }
@@ -282,28 +283,52 @@ function renderDialog(a) {
         `<button data-op="step" data-row="${esc(r.label)}" data-d="1"${dis}>+</button>` +
         (r.all ? `<button data-op="all" data-row="${esc(r.label)}"${dis}>All</button>` : "") + `</span></div>`;
     } else if (r.kind === "check") {
-      out += `<div class="dlgRow">${lab}<button class="chk${r.checked ? " on" : ""}" data-check="${esc(r.label)}"${dis}>${r.checked ? "☑" : "☐"} ${esc(r.text)}</button></div>`;
+      out += `<div class="dlgRow">${r.label === r.text ? "" : lab}<button class="chk${r.checked ? " on" : ""}" data-check="${esc(r.label)}"${dis}>${r.checked ? "☑" : "☐"} ${esc(r.text)}</button></div>`;
     } else if (r.kind === "choice") {
       out += `<div class="dlgRow">${lab}<span class="choices">` + r.options.map((o, i) => `<button class="${i === r.index ? "on" : ""}" data-choice="${esc(r.label)}" data-i="${i}"${dis}>${esc(o)}</button>`).join("") + `</span></div>`;
     }
   }
   out += `</div>`;
+  out += (d.notes || []).map(n => `<div class="tip">${esc(n)}</div>`).join("");
   if (!d.can_send && d.why) out += `<div class="tip">${esc(d.why)}</div>`;
   return out + `<div class="dlgBtns"><button class="dlgSend" style="background:${d.can_send ? esc(d.send_color || "#1c8a3e") : "#1d2125"};color:${d.can_send ? "#fff" : "#5c6268"}" data-dlg="send"${d.can_send ? "" : " disabled"}${busy}>${esc(d.send)}</button>` +
     `<button class="dlgCancel" data-dlg="close">Cancel</button></div>`;
 }
 
+// a checklist row's editing sheet: its boxes and buttons as the desktop shows them (the hidden checklist's, worked
+// there: typing then Enter, + / −, the pin, the reset)
+function renderEdit(card, key) {
+  const ck = (card || {}).checklist;
+  const r = ck && ck.sections.flatMap(s => s.rows).find(x => x.key === key);
+  if (!r) return `<div class="tip">That row isn't shown now.</div>`;
+  const busy = S.act && S.act.wait ? " disabled" : "";
+  let out = `<div class="dlgTitle" dir="rtl" lang="he">${esc(r.text)}</div>`;
+  out += `<div class="dlgRow"><span class="dlgLab">Live</span><span class="dlgVal" style="color:${esc(r.value_color || "#fff")}">${esc(r.value || "")}</span></div>`;
+  if (r.plan) out += `<div class="dlgRow"><span class="dlgLab">Plan</span><span class="dlgVal" style="color:#4fc3f7">${esc(r.plan)}</span></div>`;
+  for (const b of r.boxes || []) {
+    if (!b.editable) continue;
+    out += `<div class="dlgRow"><span class="dlgLab">${(r.boxes || []).length > 1 ? (b.i ? "New value" : "Value") : "Type"}</span><span class="stepper">` +
+      `<input class="dlgIn" inputmode="decimal" id="edIn${b.i}" value="${esc(b.text)}" placeholder="${esc(b.placeholder)}"${busy}>` +
+      `<button data-edset="${b.i}"${busy}>Set</button></span></div>`;
+  }
+  const label = (t) => t.name === "cl_pin" ? (t.pinned ? "📌 Pinned" : "📌 Pin") : t.name === "cl_reset" ? "↺" : t.text;
+  if ((r.tools || []).length) out += `<div class="rowBtns">` + r.tools.map(t => `<button data-edtool="${t.i}" data-name="${esc(t.name)}" ` +
+    `style="background:${t.pinned ? "#2b2414" : "#1d2125"};color:${t.pinned ? "#e3b23c" : "#e6e9ec"};border:1px solid #2c3136"${t.enabled ? "" : " disabled"}${busy} aria-label="${esc(t.tip)}">${esc(label(t))}</button>`).join("") + `</div>`;
+  out += `<div class="tip" dir="ltr" style="margin-top:8px">${esc(r.tip || "")}</div>`;
+  return out + `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`;
+}
+
 // ---------------------------------------------------------------- Alerts (view "alerts") ---
 function renderAlerts(view) {
   if (!view) return `<div class="empty">Waiting for the alerts…</div>`;
-  if (!view.alerts.length) return `<div class="empty">No alerts in this account.</div>`;
+  if (!view.alerts.length) return `<div class="empty">No alerts in this account. Add one from a ticker's card (Add alert).</div>`;
   return `<div class="cards">` + view.alerts.map(a => {
     const on = a.state === "active";
     const sub = on ? "Active" + (a.created ? " · since " + String(a.created).replace("T", " ").slice(0, 16) : "") :
       "Fired " + String(a.triggered_at || "").replace("T", " ").slice(0, 16) + (a.triggered_value != null ? " · at " + a.triggered_value : "");
-    return `<div class="alert" data-ticker="${esc(a.ticker)}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${on ? "#e3b23c" : "#5c6670"}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${TABS[5].icon}"/></svg>` +
+    return `<div class="alert" data-alert="${esc(a.id)}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${on ? "#e3b23c" : "#5c6670"}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${TABS[5].icon}"/></svg>` +
       `<div><div><b style="color:#e3b23c">${esc(a.ticker)}</b> ${esc(a.text)}</div><div class="dim">${esc(sub)}</div></div></div>`;
-  }).join("") + `</div><div class="note">Adding and deleting alerts from the phone: step 4.</div>`;
+  }).join("") + `</div><div class="note">Tap an alert to change it. Add one from a ticker's card (Add alert).</div>`;
 }
 
 // ---------------------------------------------------------------- Checklist (view "card": the desktop's panel) ---
@@ -322,16 +347,17 @@ function renderChecklist(view) {
       if (r.split_before) out += `<div class="split"></div>`;
       if (i === 0) {
         const val = r.value == null ? "" : `<span dir="ltr" class="val${r.editable ? " edit" : ""}" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
-        out += `<button class="ckRow" data-tip="${esc(r.tip)}"><span class="lab">${mark(r)}${esc(r.text)}</span>` +
+        const can = (r.boxes || []).some(b => b.editable) || (r.tools || []).length;
+        out += `<button class="ckRow" ${can ? `data-edit="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}><span class="lab">${mark(r)}${esc(r.text)}</span>` +
           `${val}<span dir="ltr" class="plan">${esc(r.plan || "")}</span></button>`;
       } else {
-        out += `<button class="ckItem" data-tip="${esc(r.tip)}">${mark(r)}<span>${esc(r.text)}` +
+        out += `<button class="ckItem" ${r.kind === "manual" ? `data-mark="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}>${mark(r)}<span>${esc(r.text)}` +
           (r.value ? ` <span dir="ltr" class="itemVal" style="color:${esc(r.value_color || "#9aa3ad")}">· ${esc(r.value)}</span>` : "") + `</span></button>`;
       }
       if (r.split_after) out += `<div class="split"></div>`;
     }
   });
-  return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker. Editing (−/+, pins, the manual marks): step 4.</div></div>`;
+  return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker: tap a row to change it (its boxes, −/+, the pin), a manual item to mark it (☐ → ✔ → ✘).</div></div>`;
 }
 // the checklist's trade buttons as the desktop shows them; a tap runs the desktop's button on the main server's app
 // (Update Buy / Update Sell need the checklist's boxes typed: step 4)
@@ -392,11 +418,12 @@ function sheet(html) {
 
 // ---- an order: the desktop's code runs on the main server's app; each dialog it opens comes here to answer ----
 let actN = 0, actTimer = null;
-function startAct(act) {
+function startAct(act, quiet) {
   if (!ws || ws.readyState !== 1) { sheet(`<div class="tip">Not connected to the main server.</div>`); return; }
-  S.act = { act, answers: [], dialog: null };
+  S.act = { act, answers: [], dialog: null, quiet: !!quiet };
   sendAct();
 }
+function showEdit() { if (S.edit) sheet(renderEdit(S.views["card/" + S.account + "/" + S.edit.ticker], S.edit.key)); }
 function sendAct() {
   const a = S.act;
   a.req = ++actN; a.wait = true;
@@ -405,7 +432,12 @@ function sendAct() {
   actTimer = setTimeout(() => { if (S.act === a && a.wait) { a.wait = false; a.done = { sent: false, messages: [{ icon: "warning", title: "No answer", text: "The main server's app didn't answer. Check the order on the Orders tab before trying again." }] }; showAct(); } }, 35000);
   showAct();
 }
-function showAct() { if (S.act) sheet(renderDialog(S.act)); else sheet(""); }
+function showAct() {
+  const a = S.act;
+  // a quiet change (the checklist's): its sheet stays, unless a dialog or a message comes
+  if (a && a.quiet && !a.dialog && !(a.done && (a.done.messages || []).length)) { if (a.done) S.act = null; showEdit(); return; }
+  if (a) sheet(renderDialog(a)); else if (S.edit) showEdit(); else sheet("");
+}
 function onResult(m) {
   const a = S.act;
   if (!a || m.req !== a.req) return;
@@ -442,7 +474,7 @@ function onDialogTap(t) {
   const a = S.act;
   if (!a) return;
   const d = a.dialog;
-  if (t.dataset.dlg === "close") { S.act = null; sheet(""); return; }
+  if (t.dataset.dlg === "close") { S.act = null; showAct(); return; }
   if (a.wait) return;
   if (t.dataset.dlg === "back") { a.confirm = false; showAct(); return; }
   if (t.dataset.dlg === "send") { a.confirm = true; showAct(); return; }       // asked once more here
@@ -469,6 +501,8 @@ function connect() {
       subscribe(); render();
     } else if (m.t === "view") {
       S.views[m.key] = m.data; render();
+      // the editing sheet follows its row (not while a box is being typed in)
+      if (S.edit && !S.act && m.key === "card/" + S.account + "/" + S.edit.ticker && !(document.activeElement && document.activeElement.classList.contains("dlgIn"))) showEdit();
     } else if (m.t === "result") {
       onResult(m);
     } else if (m.t === "status") {
@@ -500,9 +534,33 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-edit],[data-mark],[data-edset],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
+    if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
+    if (t.dataset.edit) { S.edit = { ticker: S.ticker, key: t.dataset.edit }; showEdit(); return; }
+    if (t.dataset.mark) { startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.mark, what: "mark" }, true); return; }
+    if (t.dataset.edset != null && S.edit) {
+      const v = (document.getElementById("edIn" + t.dataset.edset) || {}).value || "";
+      startAct({ kind: "edit", ticker: S.edit.ticker, key: S.edit.key, what: "typed", box: Number(t.dataset.edset), text: v }, true); return;
+    }
+    if (t.dataset.edtool != null && S.edit) {
+      if (!t.disabled) startAct({ kind: "edit", ticker: S.edit.ticker, key: S.edit.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
+      return;
+    }
+    if (t.dataset.addalert) { startAct({ kind: "alert", do: "add", ticker: t.dataset.addalert }); return; }
+    if (t.dataset.alert) {
+      const a = ((S.views["alerts/" + S.account] || {}).alerts || []).find(x => x.id === t.dataset.alert);
+      if (!a) return;
+      sheet(`<div class="dlgTitle">${esc(a.ticker)} ${esc(a.text)}</div><div class="rowBtns">` +
+        `<button data-alertdo="edit" data-id="${esc(a.id)}" style="background:#2f6fe0;color:#fff">Edit…</button>` +
+        (a.state !== "active" ? `<button data-alertdo="rearm" data-id="${esc(a.id)}" style="background:#1c8a3e;color:#fff">Turn on again</button>` : "") +
+        `<button data-alertdo="delete" data-id="${esc(a.id)}" style="background:#c62f3c;color:#fff">Delete</button></div>` +
+        `<div class="rowBtns"><button data-ticker="${esc(a.ticker)}" style="background:#1d2125;color:#e6e9ec;border:1px solid #2c3136">Open ${esc(a.ticker)}</button></div>` +
+        `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`);
+      return;
+    }
+    if (t.dataset.alertdo) { startAct({ kind: "alert", do: t.dataset.alertdo, id: t.dataset.id }); return; }
     if (t.dataset.act) { if (!t.disabled) startAct({ kind: "button", id: t.dataset.act, text: t.dataset.text, ticker: t.dataset.tk }); return; }
     if (t.dataset.cell) {
       if (t.disabled) return;
@@ -536,7 +594,7 @@ function setup() {
       render(); return;
     }
     if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
-    if (t.dataset.ticker) { openTicker(t.dataset.ticker); return; }
+    if (t.dataset.ticker) { sheet(""); openTicker(t.dataset.ticker); return; }
     if (t.dataset.soon) { sheet(`<div class="tip">Update Buy / Update Sell send the values typed in the checklist's boxes: they come with the checklist's editing (step 4). Meanwhile, the Orders tab's Change sends a new limit.</div>`); return; }
     if (t.id === "back") { goBack(); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
@@ -545,7 +603,7 @@ function setup() {
       sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
       return;
     }
-    if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; sheet(""); } return; }
+    if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
   document.addEventListener("input", (e) => { if (e.target.id === "flt") { S.filter = e.target.value; render(); } });
@@ -592,5 +650,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, renderDialog, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

@@ -174,7 +174,7 @@ Allowed: phones in "The news + trading" mode of an account with "Allow trading f
 at every tap), and only the account chosen on the main server's app (the desktop's order code sends there). Each order
 sent: a line in the Order Log ("... · from the Mini App by <name>") and the server's log.
 
-Not yet: Update Buy / Update Sell (they send the checklist's typed boxes: step 4); the phone shows Schwab's later
+Update Buy / Update Sell: with step 4 (the checklist's boxes typed on the phone). The phone shows Schwab's later
 errors only through the trade's state (the desktop's error box shows on the main server's screen).
 
 ### The proposal (kept for the record)
@@ -198,3 +198,19 @@ Decided (2026-11-22, all yes):
 - the checklist not all green: the same question as the desktop's ("לא כל הצ'ק ליסט ירוק...") before the sheet.
 - Cancel Buy / Cancel Sell: a confirm step on the phone too, as the desktop asks.
 - the phone's −/+ steps and the amount's limits: the desktop dialogs' (0.0001; 1,000 shares under $1, else 10).
+
+## 11. Step 4, the checklist's editing and the alerts (built in 2.7.124)
+
+The same way as the orders: nothing copied. The checklist view sends each row's boxes and buttons as the hidden
+checklist shows them (`row_boxes`: the live value's box, an open buy's new values' box, + / -, the pin, the reset);
+the phone's row sheet types in a box (Enter, as on the desktop: 12 -> 0.0012) or clicks one of those buttons there
+(`MiniOrders.edit_action`), and a manual item's tap clicks its mark (empty -> ✔ -> ✘). The pins and marks are saved
+as the desktop's (on every computer). Update Buy / Update Sell then show on the phone as on the desktop, and send
+through their own dialogs.
+
+Alerts: Add alert on the ticker's card opens the desktop's alert dialog (`add_alert_for`, read by the bridge: its
+form, the price box, the Telegram box, the "Now:" line); an alert's tap: Edit... (the same dialog), Turn on again,
+Delete (its question). The bridge presses the dialog's own button (Create, Save, Send), so whatever the desktop does
+on it runs.
+
+Who: the checklist's editing needs trading allowed (it changes the plan the orders use); the alerts, any linked phone.

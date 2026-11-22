@@ -168,3 +168,5 @@ button { font-family: inherit; color: inherit; }
 .msg.warning, .msg.error { border-color: #6b4a14; background: #2b2414; }
 .sentOk { color: #1db31d; font-weight: 700; font-size: 16px; margin: 6px 0; }
 button:disabled { opacity: 0.6; }
+
+.stepper button[data-edset] { background: #2f6fe0; border-color: #2f6fe0; color: #fff; font-weight: 700; font-size: 13px; }

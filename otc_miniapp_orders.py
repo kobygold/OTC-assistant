@@ -25,8 +25,8 @@ import hashlib
 import html
 import re
 
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QGridLayout, QLabel, QMessageBox, QPushButton, QSpinBox,
-                             QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QLabel,
+                             QLineEdit, QMessageBox, QPushButton, QSpinBox, QStackedWidget, QToolButton, QWidget)
 from PyQt6.QtCore import QObject, Qt
 
 from otc_checklist import AmountBox, PriceBox
@@ -34,7 +34,9 @@ from otc_checklist import AmountBox, PriceBox
 TAG = re.compile(r"<[^>]+>")
 COLOR = re.compile(r"color:\s*([#\w]+)")
 BACKGROUND = re.compile(r"background:\s*([#\w]+)")
-BUTTONS = {"buy_btn": "buy_clicked", "sell_btn": "sell_clicked", "bid_btn": "sell_on_bid", "done_btn": "reset_done"}
+BUTTONS = {"buy_btn": "buy_clicked", "sell_btn": "sell_clicked", "bid_btn": "sell_on_bid", "done_btn": "reset_done",
+           "update_btn": "update_buy", "update_sell_btn": "update_sell"}
+NOT_SEND = ("Cancel", "Delete")         # a dialog's buttons that aren't its Send
 ICONS = {QMessageBox.Icon.Warning: "warning", QMessageBox.Icon.Critical: "error", QMessageBox.Icon.Question: "question",
          QMessageBox.Icon.Information: "info"}
 
@@ -66,13 +68,15 @@ def widget_desc(w):
     if isinstance(w, QComboBox):
         return {"kind": "choice", "options": [w.itemText(i) for i in range(w.count())], "index": w.currentIndex(),
                 "enabled": w.isEnabled()}
-    if isinstance(w, QSpinBox):
+    if isinstance(w, (QSpinBox, QDoubleSpinBox)):
         return {"kind": "spin", "value": w.value(), "min": w.minimum(), "max": w.maximum(), "enabled": w.isEnabled(),
-                "tip": w.toolTip()}
+                "tip": w.toolTip(), "suffix": w.suffix(), "decimals": w.decimals() if isinstance(w, QDoubleSpinBox) else 0}
+    if isinstance(w, QStackedWidget):           # (the page shown)
+        return widget_desc(w.currentWidget()) if w.currentWidget() is not None else {"kind": "other"}
     if isinstance(w, QLabel):
         m = COLOR.search(w.text())
         return {"kind": "text", "text": plain(w.text()), "color": m.group(1) if m else ""}
-    for kind in (PriceBox, QSpinBox, QComboBox, QCheckBox):      # a row of its own (the amount and its All button)
+    for kind in (PriceBox, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox):   # a row of its own (the amount and its All)
         inner = w.findChild(kind)
         if inner is not None:
             out = widget_desc(inner)
@@ -83,28 +87,59 @@ def widget_desc(w):
 
 
 def row_widgets(dlg):
-    """The order dialog's rows: [(label, the value's widget)] (the Account row first)."""
-    grid = dlg.findChild(QGridLayout)
+    """The dialog's rows: [(label, the value's widget)] - an order dialog's grid (the Account row first), or a form
+    (the alert dialog's) - and then its checkboxes outside them (labelled by their text)."""
     out = []
-    if grid is None:
-        return out
-    for r in range(grid.rowCount()):
-        k, v = grid.itemAtPosition(r, 0), grid.itemAtPosition(r, 1)
-        if k is not None and v is not None and k.widget() is not None and v.widget() is not None:
-            out.append((plain(k.widget().text()), v.widget()))
+    grid = dlg.findChild(QGridLayout)
+    if grid is not None:
+        for r in range(grid.rowCount()):
+            k, v = grid.itemAtPosition(r, 0), grid.itemAtPosition(r, 1)
+            if k is not None and v is not None and k.widget() is not None and v.widget() is not None:
+                out.append((plain(k.widget().text()), v.widget()))
+    form = dlg.findChild(QFormLayout)
+    if form is not None:
+        for r in range(form.rowCount()):
+            k = form.itemAt(r, QFormLayout.ItemRole.LabelRole)
+            v = form.itemAt(r, QFormLayout.ItemRole.FieldRole)
+            if k is not None and v is not None and k.widget() is not None and v.widget() is not None:
+                out.append((plain(k.widget().text()).rstrip(":"), v.widget()))
+    inside = {id(x) for _l, w in out for x in [w] + w.findChildren(QWidget)}
+    for c in dlg.findChildren(QCheckBox):
+        if id(c) not in inside:
+            out.append((c.text(), c))
     return out
+
+
+def dialog_notes(dlg, rows):
+    """The dialog's other lines (not its title or rows): the alert dialog's "Now: Last ..." and its note."""
+    inside = {id(x) for _l, w in rows for x in [w] + w.findChildren(QWidget)}
+    labels = [lb for lb in dlg.findChildren(QLabel) if id(lb) not in inside and lb.text().strip()]
+    grid = dlg.findChild(QGridLayout)
+    if grid is not None:        # (the grid's own labels)
+        labels = [lb for lb in labels if grid.indexOf(lb) < 0]
+    form = dlg.findChild(QFormLayout)
+    if form is not None:
+        labels = [lb for lb in labels if form.indexOf(lb) < 0]
+    return [plain(lb.text()) for lb in labels[1:]]          # (the first: the title)
+
+
+def send_button(dlg):
+    """The dialog's Send (Create, Save...): its own button, not Cancel or Delete."""
+    buttons = dlg.findChildren(QPushButton, options=Qt.FindChildOption.FindDirectChildrenOnly)
+    return next((b for b in buttons if b.text() not in NOT_SEND), None)
 
 
 def dialog_desc(dlg):
     """An order dialog (otc_checklist._order_dialog) as the phone shows it."""
-    rows = [dict(label=label, **widget_desc(w)) for label, w in row_widgets(dlg)]
-    buttons = dlg.findChildren(QPushButton, options=Qt.FindChildOption.FindDirectChildrenOnly)
-    send = next((b for b in buttons if b.text() != "Cancel"), None)
+    found = row_widgets(dlg)
+    rows = [dict(label=label, **widget_desc(w)) for label, w in found]
+    send = send_button(dlg)
     m = BACKGROUND.search(send.styleSheet() if send else "")
     title = dlg.findChild(QLabel)
     desc = {"kind": "order", "title": plain(title.text()) if title else dlg.windowTitle(), "rows": rows,
             "send": send.text() if send else "", "send_color": m.group(1) if m else "",
-            "can_send": bool(send and send.isEnabled()), "why": send.toolTip() if send else ""}
+            "can_send": bool(send and send.isEnabled()), "why": send.toolTip() if send else "",
+            "notes": dialog_notes(dlg, found)}
     desc["check"] = check_of(desc)
     return desc
 
@@ -115,9 +150,11 @@ def apply_answer(dlg, ans):
     boxes = dict(row_widgets(dlg))
 
     def inner(w):
-        if isinstance(w, (PriceBox, QSpinBox, QComboBox, QCheckBox)):
+        if isinstance(w, QStackedWidget):
+            w = w.currentWidget()
+        if w is None or isinstance(w, (PriceBox, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox)):
             return w
-        for kind in (PriceBox, QSpinBox, QComboBox, QCheckBox):
+        for kind in (PriceBox, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox):
             found = w.findChild(kind)
             if found is not None:
                 return found
@@ -130,6 +167,8 @@ def apply_answer(dlg, ans):
             text = str(value or "")
             if w.edit.text() != text:
                 w.edit.setText(text)
+        elif isinstance(w, QDoubleSpinBox):
+            w.setValue(float(value))
         elif isinstance(w, QSpinBox):
             w.setValue(int(value))
         elif isinstance(w, QComboBox):
@@ -149,16 +188,28 @@ def apply_answer(dlg, ans):
         elif do == "typed":
             w.edit.setText(re.sub(r"[^\d.,]", "", str(op.get("text") or "")))
             w._steps()
-    elif isinstance(w, QSpinBox):
+    elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
         if do == "step":
             w.stepBy(1 if (op.get("d") or 0) > 0 else -1)
         elif do == "all":
             w.setValue(w.maximum())
         elif do == "typed":
             try:
-                w.setValue(int(str(op.get("text") or "").replace(",", "")))
+                text = re.sub(r"[^\d.]", "", str(op.get("text") or ""))
+                w.setValue(float(text) if isinstance(w, QDoubleSpinBox) else int(float(text)))
             except ValueError:
                 pass
+
+
+def row_edits(panel, box):
+    """A checklist row's boxes as shown (the live value; while the buy is open, the order's beside it)."""
+    return [e for e in box.findChildren(QLineEdit) if e.isVisibleTo(panel)] if box is not None else []
+
+
+def row_tools(panel, box):
+    """A checklist row's buttons as shown: + / -, the pin, the reset (not the copy buttons)."""
+    return [b for b in box.findChildren(QToolButton) if b.isVisibleTo(panel)
+            and b.objectName() in ("cl_step", "cl_pin", "cl_reset")] if box is not None else []
 
 
 class DialogBridge:
@@ -223,6 +274,10 @@ class DialogBridge:
         if isinstance(dlg, QMessageBox):
             return self.on_box(dlg)
         ok = self.answer(lambda: dialog_desc(dlg), lambda ans: apply_answer(dlg, ans))
+        if ok:              # its own button pressed, as a click: whatever it does (Create keeps the alert) runs
+            dlg.setResult(0)
+            send_button(dlg).click()
+            ok = dlg.result() == QDialog.DialogCode.Accepted.value
         return QDialog.DialogCode.Accepted if ok else QDialog.DialogCode.Rejected
 
     def on_box(self, box):
@@ -278,7 +333,7 @@ class MiniOrders(QObject):
         if account != atm.chosen_account():
             return self.note(f"Orders from the phone go to the account chosen on the main server's app "
                              f"(...{atm.chosen_account()}): choose ...{account} there first.")
-        if atm.trader is None:
+        if atm.trader is None and act.get("kind") in ("button", "cell"):
             return self.note("No Schwab login on the main server's app: orders can't be sent.")
         do = self.action(act)
         if isinstance(do, str):
@@ -288,6 +343,10 @@ class MiniOrders(QObject):
             do()
         if bridge.ask is not None:
             return {"state": "ask", "dialog": bridge.ask, "messages": bridge.messages}
+        if act.get("kind") in ("edit", "alert"):            # (not orders: done, the views show it)
+            self.views.sent.clear()
+            return {"state": "done", "sent": False, "changed": True, "what": bridge.title, "messages": bridge.messages,
+                    "nothing": not bridge.messages}
         sent = bool(bridge.accepted) and self.state(atm) != before
         if sent:
             w.log_order_line(f"{act.get('ticker') or ''}: {bridge.title} · from the Mini App by {msg.get('who') or 'a phone'}",
@@ -320,7 +379,74 @@ class MiniOrders(QObject):
             return getattr(panel, BUTTONS[name])
         if kind == "cell":              # a button of the Monitor tab's tables: All Orders' Change / Cancel, Stocks
             return self.cell_action(act)    # owned's Sell on Bid / Ask (the desktop's button itself, clicked)
+        if kind == "edit":              # the checklist's boxes, +/-, pins and manual marks
+            return self.edit_action(act)
+        if kind == "alert":             # Add / Edit / Turn on again / Delete an alert: the desktop's own
+            return self.alert_action(act)
         return "Not an order the phone sends."
+
+    def edit_action(self, act):
+        """A row of the hidden checklist worked as on the desktop: a value typed in its box (Enter), one of its
+        buttons (+ / -, the pin, the reset) clicked, a manual item's mark clicked (empty -> ✔ -> ✘)."""
+        from otc_miniapp import TICKER
+        ticker, key = str(act.get("ticker") or ""), str(act.get("key") or "")
+        if not TICKER.fullmatch(ticker):
+            return "No ticker."
+        panel = self.views.panel_for(ticker)
+        panel.refresh()
+        item = next((it for it, *_ in panel.widgets if it.key == key), None)
+        if item is None:
+            return "Not a row of the checklist."
+        what = act.get("what")
+        if what == "mark":
+            if item.kind != "manual":
+                return "Not a manual item."
+            return lambda: panel.toggle(item)
+        box = panel.row_boxes.get(key)
+        if box is None:
+            return "That row has no box."
+        if what == "typed":
+            edits = row_edits(panel, box)
+            i = int(act.get("box") or 0)
+            if i >= len(edits) or edits[i].isReadOnly() or not edits[i].isEnabled():
+                return "That box can't be typed in now."
+            edit, text = edits[i], str(act.get("text") or "")[:20]
+
+            def typed():
+                edit.setText(text)
+                edit.textEdited.emit(text)
+                edit.editingFinished.emit()
+            return typed
+        if what == "tool":
+            tools = row_tools(panel, box)
+            i = int(act.get("tool") or 0)
+            if i >= len(tools) or not tools[i].isEnabled() or tools[i].objectName() != act.get("name"):
+                return "That button changed meanwhile: look again."
+            return tools[i].click
+        return "Not a change of the checklist."
+
+    def alert_action(self, act):
+        from otc_miniapp import TICKER
+        w = self.win
+        do = act.get("do")
+        if do == "add":
+            ticker = str(act.get("ticker") or "")
+            if not TICKER.fullmatch(ticker):
+                return "No ticker."
+            q = self.views.quotes.get(ticker, {})
+            quote = {"last": q.get("LAST_PRICE"), "bid": q.get("BID_PRICE"), "ask": q.get("ASK_PRICE")}
+            start = quote["last"] or quote["bid"] or 0.0
+            return lambda: w.add_alert_for(ticker, "price", start, quote, self.parent)
+        alert_id = str(act.get("id") or "")
+        if w.alert(alert_id) is None:
+            return "That alert isn't there any more."
+        if do == "edit":
+            return lambda: w.edit_alert(alert_id)
+        if do == "rearm":
+            return lambda: w.rearm_alert(alert_id)
+        if do == "delete":
+            return lambda: w.delete_alert(alert_id)
+        return "Not an alert change."
 
     def cell_action(self, act):
         from otc_atm_trades import ORDER_COLUMNS, POS_COLUMNS

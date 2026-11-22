@@ -38,7 +38,8 @@ AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
 ACT_WAIT_S = 30                 # an order's answer from the main server's app waited this long
-ACT_KINDS = ("button", "cell")
+ACT_KINDS = ("button", "cell", "edit", "alert")     # orders, the checklist's editing, the alerts
+FREE_KINDS = ("alert",)         # (the alerts: any linked phone; the rest: trading allowed)
 VIEWS = ("favs", "trades", "orders", "alerts")       # (and "card:<TICKER>", "chart:<TICKER>:<RANGE>")
 TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 RANGES = ("1D", "1M", "2M", "1Y")       # the phone's chart ranges (the desktop's buttons)
@@ -265,7 +266,7 @@ class MiniApp:
         act = msg.get("act")
         if a is None:
             return await no(f"Account ...{account} isn't one of yours.")
-        if a["mode"] != "trade" or not a["trading"]:
+        if (a["mode"] != "trade" or not a["trading"]) and not (isinstance(act, dict) and act.get("kind") in FREE_KINDS):
             return await no(f"This phone may not send orders of ...{account}: on the app's Telegram tab, allow trading "
                             "from Telegram and set the phone to news + trading.")
         if not isinstance(act, dict) or act.get("kind") not in ACT_KINDS or len(json.dumps(msg)) > 20000:

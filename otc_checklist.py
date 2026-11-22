@@ -3758,6 +3758,7 @@ class ChecklistPanel(QWidget):
             self.default_usd = lambda: default_position(self.settings)
         self.draft_tools = {}   # key -> the +/- and reset buttons of its new value's box (an open buy)
         self.boxes = {}         # key -> its live value's box
+        self.row_boxes = {}     # key -> the row's value part: its boxes, +/-, pin (the Mini App works them)
         self.new_plan_btn = None    # by the ticker: an open buy's plan with the new values copied
         self.sections = sections        # (the Mini App reads the rows by them)
         for name, items in sections:
@@ -3867,6 +3868,7 @@ class ChecklistPanel(QWidget):
                             glay.addStretch()
                         box = group
                     row.addWidget(box)
+                    self.row_boxes[item.key] = box
                 # thin lines: | the ticker | the amounts | the prices | the % results | the fee | the $ results | section 1
                 if item.key in SPLIT_BEFORE:
                     lay.addWidget(self.split_line())

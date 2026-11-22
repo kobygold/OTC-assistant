@@ -464,7 +464,8 @@ def checklist_view(panel):
     section (mark, text, the live value - typed or not -, the fixed plan value), the lines between the groups, and
     the trade's buttons shown."""
     from PyQt6.QtWidgets import QLineEdit
-    rows_of = {id(item): (mark, text, value) for item, mark, text, value in panel.widgets}
+    from otc_miniapp_orders import row_edits, row_tools
+    rows_of ={id(item): (mark, text, value) for item, mark, text, value in panel.widgets}
     sections = []
     for name, items in getattr(panel, "sections", []):
         rows = []
@@ -492,6 +493,13 @@ def checklist_view(panel):
             edit = panel.order_edits.get(item.key)
             if edit is not None and not edit.isHidden():
                 row["plan"] = edit.text() or edit.placeholderText()
+            # what the phone can work, as the desktop shows it: the row's boxes (typed in) and buttons (+ / -, pin, reset)
+            box = getattr(panel, "row_boxes", {}).get(item.key)
+            row["boxes"] = [{"i": i, "text": e.text(), "placeholder": e.placeholderText(),
+                             "editable": e.isEnabled() and not e.isReadOnly(), "tip": e.toolTip()}
+                            for i, e in enumerate(row_edits(panel, box))]
+            row["tools"] = [{"i": i, "name": b.objectName(), "text": b.text(), "tip": b.toolTip(), "enabled": b.isEnabled(),
+                             "pinned": bool(b.property("pinned"))} for i, b in enumerate(row_tools(panel, box))]
             rows.append(row)
         sections.append({"title": name, "rows": rows})
     buttons = [{"id": attr, "name": b.objectName(), "text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip()}

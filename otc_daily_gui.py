@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.123"
+APP_VERSION = "2.7.124"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -4770,10 +4770,15 @@ class MainWindow(QMainWindow):
 
     def add_alert(self, kind, value):
         """The chart's right-click Add alert: the dialog, from where it was clicked."""
-        ticker = self.chart.ticker
+        self.add_alert_for(self.chart.ticker, kind, value)
+
+    def add_alert_for(self, ticker, kind, value, quote=None, parent=None):
+        """Add alert: the dialog for the ticker, from (kind, value) ("price" / "volume"); quote: {"last", "bid",
+        "ask"} now (else the chart's / checklist's). The chart's, and the Mini App's (its dialog answered by the
+        phone)."""
         if not ticker or not self.alerts_ready():
             return
-        dlg = AlertDialog(self, ticker, (kind, value), self.avg_volume(ticker), self.alert_quote(ticker))
+        dlg = AlertDialog(parent or self, ticker, (kind, value), self.avg_volume(ticker), quote or self.alert_quote(ticker))
         if dlg.exec() != QDialog.DialogCode.Accepted or not isinstance(dlg.result_alert(), dict):
             return
         now = datetime.now().isoformat(timespec="seconds")
