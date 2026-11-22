@@ -551,7 +551,7 @@ function renderActions(view) {
 
 // ---------------------------------------------------------------- the page ---
 const S = { tab: "favs", filter: "", account: null, accounts: [], views: {}, open: {}, live: false, user: null,
-  ticker: null, from: "favs", range: localGet("range") || "2M" };
+  ticker: null, from: "favs", range: localGet("range") || "2M", scrolls: {}, restore: null };
 function localGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function localSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* (private mode) */ } }
 
@@ -580,8 +580,14 @@ function render() {
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
   screen.innerHTML = html;
-  const shown = S.tab + "|" + (S.ticker || "");
-  if (shown !== S.shown) { S.shown = shown; screen.scrollTop = 0; }     // (another tab or ticker: from its top)
+  // each panel (a tab, and on a ticker's tabs each ticker) back where it was left (a new one: its top); the place
+  // is kept asking until the panel is long enough for it (its view may come a moment later), or a finger moves it
+  const shown = S.tab + "|" + (S.tab === "chart" || S.tab === "checklist" || S.tab === "ticker" ? S.ticker || "" : "");
+  if (shown !== S.shown) { S.shown = shown; S.restore = S.scrolls[shown] || 0; }
+  if (S.restore != null) {
+    screen.scrollTop = S.restore;
+    if (Math.abs(screen.scrollTop - S.restore) <= 1) S.restore = null;
+  }
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
   if (S.tab !== "news") S.newsSeenShown = null;
   const unread = S.tab === "news" ? 0 : newsUnread();
@@ -717,7 +723,6 @@ function subscribe() {
 
 function openTicker(tk) {
   S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
-  document.getElementById("screen").scrollTop = 0;
 }
 // ---- a swipe left / right on the chart or the checklist: the next / previous ticker, in the Favorites' order
 // (wrapping around). Only favorites can be opened for now; a ticker not there (if that ever changes) doesn't swipe.
@@ -830,6 +835,11 @@ function setup() {
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
+  // (the panel's place, as the finger leaves it; a finger on the page: its own place from now on)
+  const screen = document.getElementById("screen");
+  screen.addEventListener("scroll", () => { if (S.restore == null && S.shown) S.scrolls[S.shown] = screen.scrollTop; }, { passive: true });
+  screen.addEventListener("touchstart", () => { S.restore = null; }, { passive: true });
+  screen.addEventListener("wheel", () => { S.restore = null; }, { passive: true });
   document.addEventListener("touchstart", swipeStart, { passive: true });
   document.addEventListener("touchend", swipeEnd);
   document.addEventListener("touchcancel", swipeEnd);
