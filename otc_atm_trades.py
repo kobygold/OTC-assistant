@@ -567,7 +567,7 @@ class AtmTable(SortMixin, QTableWidget):
             self.cell(row, col, "", bg=sub)
         buy = o.get("side") == "BUY"
         left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        self.cell(row, COL["Ticker"], f"  ↳ {o.get('side', '')}", GREEN if buy else RED, bold=True, bg=sub, align=left,
+        self.cell(row, COL["Ticker"], f"  ↳ {o.get('side', '')}", RED if buy else GREEN, bold=True, bg=sub, align=left,
                   tip=f"Order {o['id']}")
         self.cell(row, COL["Steps"], o["id"], DIM, bg=sub, tip="Schwab's order number",
                   align=Qt.AlignmentFlag.AlignCenter)
@@ -576,7 +576,7 @@ class AtmTable(SortMixin, QTableWidget):
                   "#c8c8c8" if word == "Filled" else DIM, bold=word in ("Working", "Pending", "Filled"), bg=sub)
         self.cell(row, COL["Sent"], entered_text(o.get("entered")), DIM, bg=sub, tip="When the order was placed")
         got, asked = int(o.get("filled") or 0), int(o.get("quantity") or 0)
-        side = GREEN if buy else RED        # (the numbers from Filled / Ordered on: a buy's green, a sell's red)
+        side = RED if buy else GREEN        # (the numbers from Filled / Ordered on: a buy's red, a sell's green)
         self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", side, bold=True,
                   bg=sub, tip=f"Filled {got:,} of the {asked:,} ordered")
         # Limit: the order's (a buy's or a sell's); Filled at: Schwab's fills' average, up to 6 decimals
@@ -1175,7 +1175,7 @@ class SchwabOrdersTable(AtmTable):
         self.cell(row, OCOL["Ticker"], o["ticker"], "#ffffff" if working else DIM, bold=True,
                   tip="An ATM trade's order: Change / Cancel act on the trade too" if e else "")
         self.cell(row, OCOL["Side"], o["side"] + (" · ATM" if atm_order else ""), "#ffffff", bold=True,
-                  bg=(BUY_COLOR if buy else SELL_COLOR) if working else "#2a2f34",
+                  bg=(SELL_COLOR if buy else BUY_COLOR) if working else "#2a2f34",     # (a buy red, a sell green)
                   tip="An ATM trade's order (the Monitor's ATM Trades)" if atm_order else "Not an ATM trade")
         raw = o.get("status") or ""
         if changing or canceling:
@@ -1230,7 +1230,7 @@ class SchwabOrdersTable(AtmTable):
         edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,6}(\.\d{0,6})?"), edit))
         edit.setText(limit_text(o["price"]))
         edit.setToolTip(ORDER_COLUMNS[OCOL["New limit"]][1])
-        change = button("Change", BUY_COLOR if buy else SELL_COLOR)
+        change = button("Change", SELL_COLOR if buy else BUY_COLOR)     # (the side's color: a buy red, a sell green)
         rebuy = bool(e) and bool(filled)        # a partly filled ATM order: the rest canceled, then a new one
         change.setToolTip("Change the order's limit to the New limit, after asking (Schwab replaces the order, "
                           "as thinkorswim does)" + (". The ATM trade follows (its entry, $ and safety net / its "
@@ -1361,7 +1361,7 @@ class SchwabOrdersTable(AtmTable):
                + (f", Schwab's commission ${fee:.2f}" if read is not None else
                   f", the usual commission ${fee:.2f} (Schwab's not read yet)")
                + (". Total with it." if o["side"] == "BUY" else ". You get, less it."))
-        self.cell(row, OCOL["Estimate$"], text, CHANGED if changed else (GREEN if o["side"] == "BUY" else RED),
+        self.cell(row, OCOL["Estimate$"], text, CHANGED if changed else (RED if o["side"] == "BUY" else GREEN),
                   bold=True, tip=tip)
 
     def fill_actual(self, row, o):
@@ -1376,7 +1376,7 @@ class SchwabOrdersTable(AtmTable):
             self.cell(row, OCOL["Actual$"], "…", DIM, align=Qt.AlignmentFlag.AlignCenter,
                       tip="Filled: Schwab's transactions not read yet (the main server reads them a little after a fill)")
             return
-        self.cell(row, OCOL["Actual$"], actual_text(a, o["side"]), GREEN if o["side"] == "BUY" else RED, bold=True,
+        self.cell(row, OCOL["Actual$"], actual_text(a, o["side"]), RED if o["side"] == "BUY" else GREEN, bold=True,
                   tip=actual_tip(a, got))
 
     def update_market(self):
