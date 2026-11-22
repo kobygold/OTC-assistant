@@ -98,7 +98,6 @@ button { font-family: inherit; color: inherit; }
 .ck { padding: 10px 12px 16px; }
 .ckHead { display: flex; justify-content: space-between; align-items: center; font-size: 18px; margin-bottom: 4px; }
 .ckHead span { font-size: 13px; font-weight: 700; color: var(--gold); }
-.ckHead .ckRight { display: flex; align-items: center; gap: 10px; }
 .ckSteps svg { display: block; }
 .ckSec { font-size: 14px; font-weight: 700; color: var(--gold); margin: 8px 0 2px; }
 .ckRow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 104px 64px; column-gap: 6px; align-items: center;
