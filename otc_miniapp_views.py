@@ -623,7 +623,9 @@ def checklist_view(panel):
                 **style_colors(checklist.PANEL_STYLE, b.objectName())}         # (the desktop's colors)
                for attr in ("buy_btn", "update_btn", "sell_btn", "update_sell_btn", "bid_btn", "done_btn")
                for b in [getattr(panel, attr)] if not b.isHidden()]
+    sv = panel.steps_view       # the ATM trade's 4 steps beside the title (none without a trade)
     return {"title": panel.title.text(), "summary": panel.summary.text(),
+            "steps": sv.steps if not sv.isHidden() else None,
             "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
             "sections": sections, "buttons": buttons}
 

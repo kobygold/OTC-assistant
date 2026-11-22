@@ -475,7 +475,9 @@ function renderAlerts(view) {
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
-  let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><b>${esc(ck.title)}</b><span dir="ltr">${esc(ck.summary)}</span></div>`;
+  // (the title, and at the left edge the ATM trade's 4 steps, as the desktop panel; the score beside them)
+  let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><b>${esc(ck.title)}</b><span class="ckRight"><span dir="ltr">${esc(ck.summary)}</span>` +
+    `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</span></div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
