@@ -312,6 +312,7 @@ class SortMixin:
 
 class AtmTable(SortMixin, QTableWidget):
     open_chart = pyqtSignal(str)    # a ticker was double-clicked
+    picked = None                   # the row clicked (its key): highlighted; All Orders and Stocks owned too
 
     def __init__(self, atm: AtmTrades, parent=None):
         super().__init__(0, len(COLUMNS), parent)
@@ -1042,6 +1043,7 @@ class SchwabOrdersTable(AtmTable):
     def __init__(self, atm: AtmTrades, parent=None):
         self.keys = []              # the orders' chart keys ("schwab:<id>" / "atm:<trade id>:<side>"), in row order
         QTableWidget.__init__(self, 0, len(ORDER_COLUMNS), parent)
+        self.cellPressed.connect(self.pick_row)         # (a click: its line highlighted, as ATM Trades)
         self.atm = atm
         self.edits = {}
         self.signature = None
@@ -1423,6 +1425,7 @@ class PositionsTable(AtmTable):
     def __init__(self, atm: AtmTrades, parent=None):
         self.tickers = []
         QTableWidget.__init__(self, 0, len(POS_COLUMNS), parent)
+        self.cellPressed.connect(self.pick_row)         # (a click: its line highlighted, as ATM Trades)
         self.atm = atm
         self.edits = {}
         self.signature = None
