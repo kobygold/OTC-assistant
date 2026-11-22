@@ -37,6 +37,7 @@ from urllib.parse import parse_qsl
 PAGE_DIR = Path(__file__).resolve().parent / "miniapp"
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
+BIND_RETRY_S, BIND_TRIES = 2, 30  # the page's port taken (the last server still closing): tried again this often
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
@@ -126,6 +127,7 @@ class MiniApp:
         self.views = {}             # key -> the latest data from the main server's app
         self.wanted = set()         # the keys asked of the apps, as last sent
         self.listener = None
+        self.retry_task = None      # (the port taken at the start: tried again)
         self.dns_name = None        # this computer's tailnet name: the page's https:// address
         self.acts = {}              # req -> (phone, its req number, time): orders waiting for the app's answer
         self.act_n = 0
@@ -134,13 +136,38 @@ class MiniApp:
     async def start(self):
         if not self.port:
             return
+        if not await self.listen():
+            # (taken: most often by this computer's server of a moment ago, still closing after the app restarted;
+            # tried again in the background a while, the server's start not held up)
+            self.server.log(f"Mini App: port {self.port} is taken: trying again every {BIND_RETRY_S} s "
+                            f"for {BIND_RETRY_S * BIND_TRIES} s")
+            self.retry_task = asyncio.create_task(self.listen_later())
+            return
+        await self.served()
+
+    async def listen(self, quiet=True):
+        """Listens on the port: True, or False when it's taken."""
         from websockets.asyncio.server import serve
         try:
             self.listener = await serve(self.handler, "127.0.0.1", self.port, process_request=self.http,
                                         max_size=2 ** 20, ping_interval=20, ping_timeout=20)
+            return True
         except OSError as e:
-            self.server.log(f"Mini App: port {self.port} is taken ({e}): not served here")
-            return
+            if not quiet:
+                self.server.log(f"Mini App: port {self.port} is taken ({e}): not served here")
+            return False
+
+    async def listen_later(self):
+        for i in range(BIND_TRIES):
+            await asyncio.sleep(BIND_RETRY_S)
+            if await self.listen(quiet=i < BIND_TRIES - 1):
+                await self.served()
+                bot = getattr(self.server, "bot", None)
+                if bot is not None and getattr(bot, "username", None):
+                    await bot.set_menu()        # (the bot started before: its menu button now)
+                return
+
+    async def served(self):
         self.dns_name = await asyncio.to_thread(tailscale_dns_name)
         self.server.log(f"Mini App served on 127.0.0.1:{self.port}"
                         + (f" (https://{self.dns_name}/ once Tailscale Serve is on)" if self.dns_name else ""))
