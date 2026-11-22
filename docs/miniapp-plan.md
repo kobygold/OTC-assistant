@@ -245,3 +245,11 @@ the shared data `telegram/news/<account>/<id>` = `{"t", "ticker", "text"}` (the 
 account; on every computer, so it moves with the main server). The view `news/<account>` (`MiniViews.news`) lists
 them newest first; the page's Inbox tab (`renderNews`) shows them, the new ones marked (since the tab was last
 opened: `seen:<account>` in the phone's storage) and counted on the tab; a line with a ticker opens its checklist.
+
+## 14. Swiping between tickers (built in 2.7.140)
+On the Chart and Checklist tabs a swipe left / right (at least 60 px, mostly sideways, under 0.7 s) opens the
+next / previous ticker in the Favorites' order (view `favs`, unfiltered, wrapping around): `swipeStart`,
+`swipeEnd`, `stepTicker` in the page. On the chart's picture a sideways drag pans the candles, so the swipe there is
+on the rest of the panel (the ranges, the buttons). The rule holds while only favorites can be opened (Favorites,
+Trades, Alerts and the Inbox only show the account's favorites): a ticker not in the list doesn't swipe. If the
+Mini App ever opens other tickers, revisit it (e.g. swipe within the list it was opened from).

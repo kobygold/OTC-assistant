@@ -719,6 +719,37 @@ function openTicker(tk) {
   S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
   document.getElementById("screen").scrollTop = 0;
 }
+// ---- a swipe left / right on the chart or the checklist: the next / previous ticker, in the Favorites' order
+// (wrapping around). Only favorites can be opened for now; a ticker not there (if that ever changes) doesn't swipe.
+// On the chart's picture a drag pans the candles: the swipe is on the rest of the panel ----
+const SWIPE_PX = 60, SWIPE_MS = 700;
+function swipeStart(e) {
+  S.swipe = null;
+  if (!(S.tab === "chart" || S.tab === "checklist") || !S.ticker || e.touches.length !== 1) return;
+  const el = e.target;
+  if (el.closest && (el.closest(".chartImg") || el.closest("input,textarea,select") || el.closest("#sheet") || el.closest("#tabs"))) return;
+  const t = e.touches[0];
+  S.swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+}
+function swipeEnd(e) {
+  const s = S.swipe;
+  S.swipe = null;
+  if (!s || e.type !== "touchend" || !e.changedTouches.length) return;
+  const t = e.changedTouches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
+  if (Math.abs(dx) < SWIPE_PX || Math.abs(dx) < 1.5 * Math.abs(dy) || Date.now() - s.at > SWIPE_MS) return;
+  stepTicker(dx < 0 ? 1 : -1);
+}
+function stepTicker(d) {
+  const fav = S.views["favs/" + S.account];
+  const list = fav ? fav.rows.map(r => r.ticker) : [];
+  const i = list.indexOf(S.ticker);
+  if (i < 0 || list.length < 2) return;
+  S.ticker = list[(i + d + list.length) % list.length];
+  try { TG && TG.HapticFeedback && TG.HapticFeedback.selectionChanged(); } catch (e) { /* (older Telegram) */ }
+  subscribe(); render();
+  const sc = document.getElementById("screen");
+  sc.classList.remove("swipeL", "swipeR"); void sc.offsetWidth; sc.classList.add(d > 0 ? "swipeL" : "swipeR");
+}
 function chooseAccount() {
   if (!S.accounts) return;
   sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
@@ -799,6 +830,9 @@ function setup() {
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
+  document.addEventListener("touchstart", swipeStart, { passive: true });
+  document.addEventListener("touchend", swipeEnd);
+  document.addEventListener("touchcancel", swipeEnd);
   document.addEventListener("touchstart", (e) => {
     const img = e.target.closest && e.target.closest(".chartImg"), v = chartView();
     if (img && v) startGesture(e, img, v);

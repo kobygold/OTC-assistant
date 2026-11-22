@@ -16,6 +16,11 @@ button { font-family: inherit; color: inherit; }
   border-bottom: 1px solid #5c4716; }
 #banner.bad { background: #3a1a20; color: #ffb3bd; border-color: #6b2a35; }
 #screen { flex: 1; overflow-y: auto; overflow-x: hidden; }
+/* a swipe to the next / previous favorite: the new one slides in from that side */
+#screen.swipeL { animation: inR 0.18s ease-out; }
+#screen.swipeR { animation: inL 0.18s ease-out; }
+@keyframes inR { from { transform: translateX(40px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+@keyframes inL { from { transform: translateX(-40px); opacity: 0.4; } to { transform: none; opacity: 1; } }
 
 #tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--line);
   background: var(--bar); padding-bottom: env(safe-area-inset-bottom); }
