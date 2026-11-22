@@ -129,3 +129,14 @@ button { font-family: inherit; color: inherit; }
 .ranges button { min-width: 30px; height: 26px; padding: 0 5px; border-radius: 6px; border: 1px solid #2c3136; background: transparent;
   color: var(--dim); font-size: 11px; font-weight: 700; }
 .ranges button.on { border-color: var(--gold); color: var(--gold); background: #2b2414; }
+
+/* the orders (the Monitor tab) and the alerts */
+.segs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin: 10px 12px 0; padding: 3px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.segs button { height: 34px; border-radius: 8px; border: none; background: transparent; color: var(--dim); font-size: 12.5px; font-weight: 700; }
+.segs button.on { background: #2b2414; color: var(--gold); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px; }
+.chips button { height: 30px; padding: 0 9px; border-radius: 8px; border: 1px solid #2c3136; background: transparent; color: #8a939c; font-size: 12px; font-weight: 600; }
+.chips button.on { border-color: #2b4a5c; background: #1d2a36; color: var(--text); }
+.log { margin: 10px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: #d8d8d8; }
+.alert { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }

@@ -12,6 +12,9 @@ sent when it changed ({"type": "mini_view", "key", "data"}).
                     Monitor tab's table, for that account, with every trade's orders opened under it
   chart/<account>/<ticker>/<range>  its chart: the desktop's chart widget (a hidden copy, dressed as the desktop's:
                     the same drawings, orders, alerts, bounce range, tags), drawn at the phone's size as a picture
+  orders/<account>  the Monitor tab: its All Orders and Stocks owned tables (hidden copies, every status: the phone
+                    filters), cell by cell, and the account's Order Log; the account chosen on the main server's app
+  alerts/<account>  the account's price / volume alerts, as the alerts' own describe() words them
   card/<account>/<ticker>  the ticker's card and checklist: the desktop's checklist panel (a hidden copy of it, fed
                     the ticker's candles, quote and book), read row by row; the bar over its chart; its Level II
                     with the market makers' signs (the Level II box's own functions)
@@ -98,8 +101,11 @@ class MiniViews(QObject):
             return
         self.keys = {str(k) for k in msg.get("keys") or []}
         self.sent = {k: v for k, v in self.sent.items() if k in self.keys}
-        for account in [a for a in self.tables if f"trades/{a}" not in self.keys]:
+        for account in [a for a in self.tables if a != "monitor" and f"trades/{a}" not in self.keys]:
             self.tables.pop(account).deleteLater()
+        if "monitor" in self.tables and not any(k.startswith("orders/") for k in self.keys):
+            for t in self.tables.pop("monitor").values():
+                t.deleteLater()
         wanted_charts = {tuple(k.split("/")[2:4]) for k in self.keys if k.startswith("chart/") and k.count("/") == 3}
         for c in [c for c in self.charts if c not in wanted_charts]:
             self.charts.pop(c)["chart"].deleteLater()
@@ -153,6 +159,10 @@ class MiniViews(QObject):
             return self.favs(account)
         if what == "trades":
             return self.trades(account)
+        if what == "orders":
+            return self.orders(account)
+        if what == "alerts":
+            return self.alerts(account)
         if what == "card":
             account, _, ticker = account.partition("/")
             return self.card(account, ticker)
@@ -233,6 +243,42 @@ class MiniViews(QObject):
         return {"account": account, "columns": [t for t, _ in COLUMNS],
                 "sub_titles": {k: v[0] for k, v in ORDER_SUB_TITLES.items()}, "rows": out}
 
+
+    # ---- the Monitor tab's orders, stocks owned and Order Log; the alerts ----
+    def orders(self, account):
+        from otc_atm_trades import ORDER_COLUMNS, ORDER_SHOW, POS_COLUMNS, PositionsTable, SchwabOrdersTable
+        w = self.win
+        if account != w.checklist.atm.chosen_account():
+            return {"account": account, "other": True,
+                    "note": f"The orders of ...{account}: choose it at the top of the main server's app's Monitor tab."}
+        tables = self.tables.setdefault("monitor", {})
+        if not tables:
+            tables["orders"], tables["owned"] = SchwabOrdersTable(w.checklist.atm), PositionsTable(w.checklist.atm)
+            for t in tables.values():
+                t.hide()
+        orders, owned = tables["orders"], tables["owned"]
+        orders.period_days = w.monitor_period.currentData() or 0
+        orders.status_show = set(ORDER_SHOW)            # (every status: the phone filters)
+        orders.rebuild()
+        owned.rebuild()
+        ids = [o["id"] for o in orders.orders()]
+        rows = table_rows(orders, ORDER_COLUMNS)
+        for row, o in zip(rows, orders.orders()):
+            row.update(id=o["id"], open=bool(o.get("open")), ticker=o.get("ticker"), atm=bool(o.get("atm_order")),
+                       status=o.get("status"))
+        return {"account": account, "columns": [t for t, _ in ORDER_COLUMNS], "rows": rows[:len(ids)],
+                "show": list(ORDER_SHOW), "owned_columns": [t for t, _ in POS_COLUMNS], "owned": table_rows(owned, POS_COLUMNS),
+                "log": w.order_log_for(account)[:300], "period": w.monitor_period.currentText()}
+
+    def alerts(self, account):
+        import otc_alerts
+        out = []
+        for a in sorted(self.win.alerts(account), key=lambda a: (a.get("state") != "active", str(a.get("created") or "")),
+                        reverse=False):
+            out.append({"id": a.get("id"), "ticker": a.get("ticker"), "text": otc_alerts.describe(a),
+                        "state": a.get("state"), "created": a.get("created"), "by": a.get("by"),
+                        "triggered_at": a.get("triggered_at"), "triggered_value": a.get("triggered_value")})
+        return {"account": account, "alerts": out}
 
     # ---- a ticker's card and checklist ----
     def panel_for(self, ticker):

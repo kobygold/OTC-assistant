@@ -6,6 +6,9 @@
      Trades     <- view "trades" (the Monitor tab's ATM Trades table, cell by cell)             -> renderTrades()
      Chart      <- view "chart" (the desktop's chart widget itself, drawn at the phone's size: otc_miniapp_views.chart)
                                                                                            -> renderChart()
+     Orders     <- view "orders" (the Monitor tab's All Orders and Stocks owned tables, cell by cell, and the Order Log)
+                                                                                           -> renderOrders()
+     Alerts     <- view "alerts" (the account's alerts, worded by otc_alerts.describe)  -> renderAlerts()
      Ticker card, Checklist <- view "card" (the desktop's checklist panel row by row, the bar over the chart,
                 Level II with the market makers' signs: otc_miniapp_views.card)          -> renderCard(), renderChecklist()
    A new column or text on the desktop's table comes here by itself (the cards show every column it has).
@@ -22,7 +25,9 @@ const TABS = [
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" }
 ];
-const SOON = { orders: "step 4", alerts: "step 4" };
+const SOON = {};
+// the Monitor tab's columns not shown on a phone's card (its buttons and boxes: the orders come in step 3)
+const ORDER_SKIP = new Set(["Ticker", "Side", "Status", "New limit", "Change", "Cancel", "Sell on Bid", "Sell on Ask", "ATM"]);
 const RANGES = ["1D", "1M", "2M", "1Y"];
 // the trade card's columns not shown as fields (drawn in its top line, or the desktop's buttons)
 const CARD_SKIP = new Set(["▸", "Ticker", "Steps", "State", "Order", "New Price", ""]);
@@ -120,10 +125,10 @@ function renderTrades(view, st) {
   return out + `</div><div class="note">The desktop's ATM Trades (the Monitor tab's period). Tap a value for its details.</div>`;
 }
 // the cells as label / value fields, in the desktop's column order; long texts (the P/L) take the whole width
-function fields(columns, cells, label, all) {
+function fields(columns, cells, label, all, skip) {
   let out = "";
   for (const col of columns) {
-    if (!all && CARD_SKIP.has(col)) continue;
+    if (skip ? skip.has(col) : !all && CARD_SKIP.has(col)) continue;
     if (all && (col === "▸" || col === "Order" || col === "New Price")) continue;
     const cell = cells[col];
     if (!cell || !cell.t) continue;
@@ -171,6 +176,52 @@ function renderChart(view, card, range) {
   const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
   return `<div class="chartBox">${img}<div class="ranges">${ranges}</div></div>` +
     `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
+}
+
+// ---------------------------------------------------------------- Orders (view "orders": the Monitor tab) ---
+function renderOrders(view, st) {
+  if (!view) return `<div class="empty">Waiting for the orders…</div>`;
+  if (view.other) return `<div class="soon">${esc(view.note)}</div>`;
+  const segs = [["open", "Open"], ["all", "All Orders"], ["owned", "Owned"], ["log", "Order Log"]];
+  const seg = st.seg || "open";
+  let out = `<div class="segs">` + segs.map(([id, l]) => `<button data-seg="${id}" class="${id === seg ? "on" : ""}">${l}</button>`).join("") + `</div>` +
+    `<div class="note" style="padding-top:2px">Period: ${esc(view.period)} (the desktop's Monitor tab)</div>`;
+  const card = (row, cols, skip) => {
+    const c = row.cells, side = c.Side || {}, status = c.Status || {};
+    return `<div class="card"><div class="cardTop"${row.ticker ? ` data-ticker="${esc(row.ticker)}"` : ""}><span class="tk" style="color:#e3b23c">${esc((c.Ticker || {}).t || row.ticker || "")}</span>` +
+      (side.t ? `<span style="color:${esc(side.c || "#e6e9ec")};font-weight:700">${esc(side.t)}</span>` : "") +
+      `<span class="state" style="color:${esc(status.c || "#e6e9ec")}">${esc(status.t || "")}</span></div>` +
+      `<div class="grid">` + fields(cols, c, col => col, false, skip) + `</div></div>`;
+  };
+  if (seg === "open") {
+    const rows = view.rows.filter(r => r.open);
+    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP)).join("") || `<div class="empty">No open orders.</div>`) + `</div>`;
+  } else if (seg === "all") {
+    const show = st.show || new Set(view.show);
+    const all = view.show.every(n => show.has(n));
+    out += `<div class="chips"><button data-showall="1">All</button>` + view.show.map(n => `<button data-show="${n}" class="${show.has(n) ? "on" : ""}">${show.has(n) ? "☑" : "☐"} ${n}</button>`).join("") + `</div>`;
+    const shown = (r) => all || (r.open ? show.has("Pending") : show.has(String(r.status || "").charAt(0) + String(r.status || "").slice(1).toLowerCase()));
+    const rows = view.rows.filter(shown);
+    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP)).join("") || `<div class="empty">No orders of the statuses checked.</div>`) + `</div>`;
+  } else if (seg === "owned") {
+    out += `<div class="cards">` + (view.owned.map(r => card(r, view.owned_columns, ORDER_SKIP)).join("") || `<div class="empty">No stocks owned.</div>`) + `</div>`;
+  } else {
+    out += `<div class="log">` + (view.log.map(l => `<div>${esc(l)}</div>`).join("") || `<div class="dim">No order news in the period.</div>`) + `</div>`;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- Alerts (view "alerts") ---
+function renderAlerts(view) {
+  if (!view) return `<div class="empty">Waiting for the alerts…</div>`;
+  if (!view.alerts.length) return `<div class="empty">No alerts in this account.</div>`;
+  return `<div class="cards">` + view.alerts.map(a => {
+    const on = a.state === "active";
+    const sub = on ? "Active" + (a.created ? " · since " + String(a.created).replace("T", " ").slice(0, 16) : "") :
+      "Fired " + String(a.triggered_at || "").replace("T", " ").slice(0, 16) + (a.triggered_value != null ? " · at " + a.triggered_value : "");
+    return `<div class="alert" data-ticker="${esc(a.ticker)}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${on ? "#e3b23c" : "#5c6670"}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${TABS[5].icon}"/></svg>` +
+      `<div><div><b style="color:#e3b23c">${esc(a.ticker)}</b> ${esc(a.text)}</div><div class="dim">${esc(sub)}</div></div></div>`;
+  }).join("") + `</div><div class="note">Adding and deleting alerts from the phone: step 4.</div>`;
 }
 
 // ---------------------------------------------------------------- Checklist (view "card": the desktop's panel) ---
@@ -222,6 +273,8 @@ function render() {
   if (S.tab === "favs") html = renderFavs(v("favs"), S);
   else if (S.tab === "trades") html = renderTrades(v("trades"), S);
   else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
+  else if (S.tab === "orders") html = renderOrders(v("orders"), S);
+  else if (S.tab === "alerts") html = renderAlerts(v("alerts"));
   else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range) +
     renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
   else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
@@ -275,7 +328,8 @@ function connect() {
 function subscribe() {
   // (the chart's picture only while it's shown: it's the biggest)
   const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : [])
-    .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : []);
+    .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
+    .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : []);
   if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
 }
 
@@ -292,9 +346,17 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
     if (t.dataset.tab) { S.tab = t.dataset.tab; subscribe(); render(); return; }
+    if (t.dataset.seg) { S.seg = t.dataset.seg; render(); return; }
+    if (t.dataset.show || t.dataset.showall) {
+      const all = ((S.views["orders/" + S.account] || {}).show || []);
+      S.show = S.show || new Set(all);
+      if (t.dataset.showall) S.show = all.every(n => S.show.has(n)) ? new Set() : new Set(all);
+      else if (S.show.has(t.dataset.show)) S.show.delete(t.dataset.show); else S.show.add(t.dataset.show);
+      render(); return;
+    }
     if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
     if (t.dataset.ticker) { openTicker(t.dataset.ticker); return; }
     if (t.dataset.soon) { sheet(`<div class="tip">Sending orders from the phone comes in step 3 of the plan.</div>`); return; }
@@ -347,5 +409,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderCard, renderChart, renderChecklist, renderActions, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

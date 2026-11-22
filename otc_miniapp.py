@@ -34,7 +34,7 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
-VIEWS = ("favs", "trades")       # (and "card:<TICKER>")
+VIEWS = ("favs", "trades", "orders", "alerts")       # (and "card:<TICKER>", "chart:<TICKER>:<RANGE>")
 TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 RANGES = ("1D", "1M", "2M", "1Y")       # the phone's chart ranges (the desktop's buttons)
 

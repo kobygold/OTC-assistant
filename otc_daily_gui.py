@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.119"
+APP_VERSION = "2.7.120"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5276,19 +5276,24 @@ class MainWindow(QMainWindow):
             self.settings["monitor_period"] = days
             save_settings(self.settings)
 
-    def show_order_log(self):
-        """The Order Log: the period's lines, newest first, the box as tall as all of them (the page scrolls)."""
-        days = self.monitor_period.currentData() or 0
+    def order_log_for(self, account, days=None, flt=""):
+        """The Order Log's lines of the account, newest first, of the last `days` (None: the Monitor tab's period;
+        0: all), with the ticker filter: the Monitor tab's and the Mini App's."""
+        days = self.monitor_period.currentData() or 0 if days is None else days
         cutoff = None if not days else datetime.fromtimestamp(time.time() - days * 86400).strftime("%Y-%m-%d %H:%M:%S")
-        flt = self.monitor_filter.text().strip().upper()
-        account = self.checklist.atm.chosen_account()
+        flt = (flt or "").strip().upper()
         lines = []
         for x in reversed(self.order_log_lines):
             text, _, tag = x.partition(ORDER_LOG_TAG)
-            # the chosen account's only (a line from before the lines had their account: shown in every one)
+            # the account's only (a line from before the lines had their account: shown in every one)
             if (cutoff is None or x[:19] >= cutoff) and (not tag or tag == account) \
                     and (not flt or flt in text[19:].strip().split(":")[0].upper()):       # (the line's ticker)
                 lines.append(text)
+        return lines
+
+    def show_order_log(self):
+        """The Order Log: the period's lines, newest first, the box as tall as all of them (the page scrolls)."""
+        lines = self.order_log_for(self.checklist.atm.chosen_account(), None, self.monitor_filter.text())
         self.order_log.setPlainText("\n".join(lines))
         log = self.order_log
         bar = log.horizontalScrollBar()
