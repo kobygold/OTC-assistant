@@ -77,3 +77,46 @@ button { font-family: inherit; color: inherit; }
 #sheet .choice.on { border-color: var(--gold); color: var(--gold); }
 .soon { padding: 40px 24px; text-align: center; color: var(--dim); line-height: 1.6; }
 .soon b { color: var(--text); }
+
+/* the ticker's card */
+.cardPage { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.priceRow { display: flex; justify-content: space-between; align-items: flex-end; }
+.bigTk { font-size: 24px; font-weight: 700; color: var(--gold); display: flex; align-items: center; gap: 6px; }
+.bigPrice { font-size: 26px; font-weight: 700; font-family: var(--mono); }
+.bigPrice span { font-size: 13px; font-weight: 600; font-family: Inter, system-ui, sans-serif; }
+.vol { font-size: 12px; color: var(--dim); }
+.bar { font-weight: 700; font-size: 13px; padding: 8px 10px; border-radius: 8px; }
+.ba2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.box .lab { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; }
+.box .num { font-family: var(--mono); font-size: 16px; font-weight: 600; margin-top: 2px; }
+.box .x { color: var(--dim2); font-size: 12px; }
+.boxHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.orderLine { font-size: 12.5px; color: var(--cyan); }
+.l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 11.5px; }
+.l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
+.l2 .bids .l2row { grid-template-columns: 38px minmax(0, 1fr) 62px; }
+.l2row .mm { color: var(--gold); } .l2row .p { text-align: right; } .l2row .s { text-align: right; }
+.dim { color: var(--dim2); font-size: 12px; }
+.actions { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 10px 12px; background: var(--bg); border-top: 1px solid var(--line); }
+.actions button { height: 48px; border-radius: 12px; border: none; font-size: 14px; font-weight: 700; }
+
+/* the checklist (the desktop's panel) */
+.ck { padding: 10px 12px 16px; }
+.ckHead { display: flex; justify-content: space-between; align-items: center; font-size: 18px; margin-bottom: 4px; }
+.ckHead span { font-size: 13px; font-weight: 700; color: var(--gold); }
+.ckSec { font-size: 14px; font-weight: 700; color: var(--gold); margin: 8px 0 2px; }
+.ckRow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 104px 64px; column-gap: 6px; align-items: center;
+  min-height: 25px; border: none; background: transparent; text-align: right; padding: 0; font-size: 12.5px; }
+.ckCols { font-size: 11px; color: var(--dim); min-height: 16px; }
+.ckRow .lab { display: flex; align-items: center; gap: 5px; }
+.ckRow .val { font-family: var(--mono); font-weight: 700; text-align: center; }
+.ckRow .val.edit { border: 1px solid #2c3136; background: #1b1e21; border-radius: 6px; padding: 2px 0; }
+.ckRow .plan, .ckCols .plan { font-family: var(--mono); font-weight: 700; color: var(--cyan); text-align: left; }
+.ckItem { width: 100%; display: flex; align-items: flex-start; gap: 8px; min-height: 26px; padding: 3px 0; border: none;
+  border-bottom: 1px solid #1a1f25; background: transparent; text-align: right; font-size: 13px; line-height: 1.3; }
+.mark { width: 16px; flex-shrink: 0; font-weight: 700; text-align: center; }
+.split { height: 1px; background: #3a4046; margin: 2px 0; }
+
+.mark.small { font-size: 9px; padding-top: 3px; width: 22px; }
+.itemVal { font-size: 12px; }

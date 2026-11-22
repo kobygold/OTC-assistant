@@ -76,6 +76,9 @@ def min_shares_check(shares, entry):
 # Once Buy ATM was pressed these show the plan sent, fixed, in a cell of their own. Entry and size
 # show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
 # the buy; the gains and losses worked out from them)
+# the thin lines between the panel's groups of rows: above the ticker, and after these (the Mini App draws them too)
+SPLIT_BEFORE = ("ticker",)
+SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "fee", "loss_usd")
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_gross", "loss_gross", "profit_usd", "loss_usd",
           "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
@@ -3595,22 +3598,31 @@ class ChecklistPanel(QWidget):
     ticks_changed = pyqtSignal()
     fee_changed = pyqtSignal(str)       # a ticker's fee read from Schwab (the chart's yellow bar when high)
 
-    def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None):
+    def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None, share=None):
+        """share: the app's checklist panel, for a hidden copy of it (the Mini App's checklist of any ticker): the
+        same ATM trades, Schwab trader and fees (nothing of its own reads or decides), its hooks left as they are."""
         super().__init__(parent)
         self.path, self.settings, self.save_settings = path, settings, save_settings
-        self.fees = {}          # ticker -> (fee or None, details), read from Schwab once a session
-        self.fee_reader = FeeReader(settings, token_path) if token_path else None
-        self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
-        # The ATM trades (atm.json), shared with the Monitor tab and the chart
-        self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
-        self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
-        self.atm.read_fee = self.read_fee
-        self.atm.chart_quote = lambda ticker: ({"bid": (self.bid, self.bid_size), "ask": (self.ask, self.ask_size),
-                                                "bids": self.bids, "asks": self.asks}
-                                               if ticker and ticker == self.ticker else None)
+        self.shared_with = share
+        if share is not None:
+            self.fees, self.fee_reader, self.trader, self.atm = share.fees, share.fee_reader, share.trader, share.atm
+            self.default_usd = lambda: share.default_usd()
+            self.risk_of = lambda t: share.risk_of(t)
+            share.fee_changed.connect(self.shared_fee_read)     # (a method: let go when this copy is deleted)
+        else:
+            self.fees = {}          # ticker -> (fee or None, details), read from Schwab once a session
+            self.fee_reader = FeeReader(settings, token_path) if token_path else None
+            self.trader = SchwabTrader(self.fee_reader) if self.fee_reader else None
+            # The ATM trades (atm.json), shared with the Monitor tab and the chart
+            self.atm = AtmTrades(path.parent / "atm.json", settings, save_settings, self.fee_reader, self.trader)
+            self.atm.fee_of = lambda ticker: self.fees.get(ticker, (None, ""))[0]
+            self.atm.read_fee = self.read_fee
+            self.atm.chart_quote = lambda ticker: ({"bid": (self.bid, self.bid_size), "ask": (self.ask, self.ask_size),
+                                                    "bids": self.bids, "asks": self.asks}
+                                                   if ticker and ticker == self.ticker else None)
         self.atm.changed.connect(self.refresh)
         self.price_tools = {}   # price key -> (its +/- buttons, its reset button)
-        if self.fee_reader:
+        if self.fee_reader and share is None:
             self.fee_reader.done.connect(self.fee_read)
         self.setObjectName("checklist")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -3741,11 +3753,13 @@ class ChecklistPanel(QWidget):
         self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
         self.changing_order = False     # the change-order dialog is open
         self.draft = {}         # new values typed for the open buy: {"id", "entry", "size", "shares", "last"}
-        # the default position $ (the app sets it: the chosen account's, in the shared data)
-        self.default_usd = lambda: default_position(self.settings)
+        # the default position $ (the app sets it: the chosen account's, in the shared data); a hidden copy: the app's
+        if getattr(self, "shared_with", None) is None:
+            self.default_usd = lambda: default_position(self.settings)
         self.draft_tools = {}   # key -> the +/- and reset buttons of its new value's box (an open buy)
         self.boxes = {}         # key -> its live value's box
         self.new_plan_btn = None    # by the ticker: an open buy's plan with the new values copied
+        self.sections = sections        # (the Mini App reads the rows by them)
         for name, items in sections:
             head = QLabel(name)
             head.setObjectName("cl_section")
@@ -3854,11 +3868,11 @@ class ChecklistPanel(QWidget):
                         box = group
                     row.addWidget(box)
                 # thin lines: | the ticker | the amounts | the prices | the % results | the fee | the $ results | section 1
-                if item.key == "ticker":
+                if item.key in SPLIT_BEFORE:
                     lay.addWidget(self.split_line())
                 lay.addLayout(row)
                 self.widgets.append((item, mark, text, value))
-                if item.key in ("ticker", "shares", "stop", "ratio", "fee", "loss_usd"):
+                if item.key in SPLIT_AFTER:
                     lay.addWidget(self.split_line())
         lay.addStretch()
         self.scroll.setWidget(body)
@@ -4658,6 +4672,11 @@ class ChecklistPanel(QWidget):
         if self.fee_reader and ticker and ticker not in self.fees:
             self.fees[ticker] = (None, "Reading the fee from Schwab...")
             self.fee_reader.request(ticker)
+
+    def shared_fee_read(self, ticker):
+        """(a hidden copy) The app's panel read a fee: shown here too when it's this ticker's."""
+        if ticker == self.ticker:
+            self.refresh()
 
     def fee_read(self, ticker, fee, details):
         self.fees[ticker] = (fee, details)

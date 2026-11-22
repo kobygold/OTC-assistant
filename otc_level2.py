@@ -65,6 +65,14 @@ RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at f
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"     # the server's record (otc_recorder)
 
 
+def mm_risk(mm, reloaders):
+    """A market maker's sign on the Ask (MM_TIPS' levels): 2 red (a diluter), 1 yellow (so-so), 3 / 4 a yellow one
+    caught refilling (4: a strong case), 0 none. The Level II box's and the Mini App's."""
+    caught = (reloaders or {}).get(mm)
+    return 2 if mm in MM_RED else ((4 if any(e.get("strong") for e in caught) else 3) if caught else 1) \
+        if mm in MM_YELLOW else 0
+
+
 def reload_text(events):
     """A reloader's events, for its tooltip: the last ones, newest first."""
     lines = []
@@ -752,9 +760,7 @@ class Level2Panel(QWidget):
             if side == "ASK":
                 # The sign column: red for a diluter, yellow for a so-so market maker, red with a
                 # yellow ring for a yellow one caught refilling its offer (a diluter here)
-                caught = self.reloaders.get(mm)
-                risk = 2 if mm in MM_RED else (
-                    (4 if any(e.get("strong") for e in caught) else 3) if caught else 1) if mm in MM_YELLOW else 0
+                risk = mm_risk(mm, self.reloaders)
                 sign = QTableWidgetItem()
                 if risk in self.mm_icons:
                     sign.setIcon(self.mm_icons[risk])

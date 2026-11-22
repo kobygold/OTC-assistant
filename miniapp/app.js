@@ -4,6 +4,8 @@
    Where a change goes (the plan, section 8):
      Favorites  <- view "favs"   (otc_miniapp_views.favs: the Mini Favorites' order and data)    -> renderFavs()
      Trades     <- view "trades" (the Monitor tab's ATM Trades table, cell by cell)             -> renderTrades()
+     Ticker card, Checklist <- view "card" (the desktop's checklist panel row by row, the bar over the chart,
+                Level II with the market makers' signs: otc_miniapp_views.card)          -> renderCard(), renderChecklist()
    A new column or text on the desktop's table comes here by itself (the cards show every column it has).
    Demo: ?demo=1 shows sample views (no server, no Telegram). */
 "use strict";
@@ -18,7 +20,7 @@ const TABS = [
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" }
 ];
-const SOON = { chart: "step 2", checklist: "step 2", orders: "step 4", alerts: "step 4" };
+const SOON = { chart: "step 2b", orders: "step 4", alerts: "step 4" };
 // the trade card's columns not shown as fields (drawn in its top line, or the desktop's buttons)
 const CARD_SKIP = new Set(["▸", "Ticker", "Steps", "State", "Order", "New Price", ""]);
 
@@ -27,6 +29,8 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function fp(p) { return p == null ? "-" : (p < 1 ? Number(p).toFixed(4) : Number(p).toFixed(2)); }
+// a change: the price's own decimals, more when it's smaller than a tick (-0.00005)
+function fchg(v) { const a = Math.abs(v); return (v < 0 ? "-" : "+") + (a && a < 0.0001 ? a.toFixed(6).replace(/0+$/, "") : fp(a)); }
 function moveColor(m) { return m > 0 ? "#1db31d" : m < 0 ? "#e0404f" : "#e3b23c"; }
 
 // the 4 steps as the desktop draws them: green with a check (done), half yellow (partly), empty (to do)
@@ -66,7 +70,7 @@ function renderFavs(view, st) {
     const chgColor = r.change > 0 ? "#1db31d" : r.change < 0 ? "#e0404f" : "#9aa3ad";
     const checks = r.checks == null ? "N/A" : r.checks + "/" + r.total;
     const ckColor = r.checks == null ? "#9aa3ad" : r.checks === r.total ? "#1db31d" : "#c8c8c8";
-    out += `<button class="favRow" data-tip="${esc(favTip(r))}">` + star(r.group_color, 20) +
+    out += `<button class="favRow" data-ticker="${esc(r.ticker)}">` + star(r.group_color, 20) +
       `<div style="min-width:0"><div class="tk">${esc(r.ticker)}${riskBadge(r.risk, 14)}</div>` +
       `<div class="chg" style="color:${chgColor}">${esc(fp(r.last))} ${esc(chg)}</div></div>` +
       `<span>${stepsSvg(r.steps, 6, 18)}</span>` +
@@ -74,7 +78,7 @@ function renderFavs(view, st) {
       `<div class="ba"><div style="color:${moveColor(r.bid_moved)}">${esc(fp(r.bid))}</div><div style="color:${moveColor(r.ask_moved)}">${esc(fp(r.ask))}</div></div></button>`;
   }
   if (!rows.length) out += `<div class="empty">${view.rows.length ? "No favorite holds that text." : "No favorites in this account."}</div>`;
-  return out + `<div class="note">As the desktop's Mini Favorites: the ATM trades first (by their steps), then the groups. Tap one for its details (its card: step 2).</div>`;
+  return out + `<div class="note">As the desktop's Mini Favorites: the ATM trades first (by their steps), then the groups. Tap one for its card.</div>`;
 }
 function favTip(r) {
   return [r.ticker + (r.name ? " · " + r.name : ""), "Favorites " + r.group + " (" + r.group_name + ")",
@@ -96,7 +100,7 @@ function renderTrades(view, st) {
   for (const g of groups) {
     const c = g.trade.cells, open = !!(st.open || {})[g.trade.id];
     const stc = c.State || {};
-    out += `<div class="card"><div class="cardTop"><span class="tk" style="color:${esc((c.Ticker || {}).c || "#e3b23c")}">${esc((c.Ticker || {}).t || g.trade.ticker)}</span>` +
+    out += `<div class="card"><div class="cardTop" data-ticker="${esc(g.trade.ticker)}"><span class="tk" style="color:${esc((c.Ticker || {}).c || "#e3b23c")}">${esc((c.Ticker || {}).t || g.trade.ticker)}</span>` +
       stepsSvg((c.Steps || {}).steps, 6, 18) +
       `<span class="state" style="color:${esc(stc.c || "#fff")};background:${esc(stc.bg || "transparent")}" data-tip="${esc(stc.tip || "")}">${esc(stc.t || "")}</span></div>` +
       `<div class="grid">` + fields(view.columns, c, col => col) + `</div>`;
@@ -127,22 +131,94 @@ function fields(columns, cells, label, all) {
   return out;
 }
 
+// ---------------------------------------------------------------- Ticker card (view "card") ---
+function renderCard(view) {
+  if (!view) return `<div class="empty">Waiting for the ticker…</div>`;
+  const q = view.quote || {}, ck = view.checklist || {};
+  const chg = q.last != null && q.close ? q.last - q.close : null;
+  const chgColor = chg > 0 ? "#1db31d" : chg < 0 ? "#e0404f" : "#9aa3ad";
+  let out = `<div class="cardPage">`;
+  out += `<div class="priceRow"><div><div class="bigTk">${esc(view.ticker)} ${riskBadge(view.risk, 18)}</div>` +
+    `<div class="bigPrice" style="color:${moveColor(view.moved.last)}">${esc(fp(q.last))}` +
+    (chg != null ? ` <span style="color:${chgColor}">${esc(fchg(chg))} ${(chg / q.close * 100).toFixed(2)}%</span>` : "") + `</div></div>` +
+    `<div class="vol">Vol ${q.volume != null ? Number(q.volume).toLocaleString("en-US") : "-"}</div></div>`;
+  if (view.bar) out += `<div class="bar" style="background:${esc(view.bar.bg)};color:${esc(view.bar.fg)}" data-tip="${esc(view.bar.tip || view.bar.text)}">${esc(view.bar.text)}</div>`;
+  out += `<div class="ba2"><div class="box"><div class="lab">Bid</div><div class="num"><span style="color:${moveColor(view.moved.bid)}">${esc(fp(q.bid))}</span>` +
+    ` <span class="x">x</span> ${q.bid_size != null ? Number(q.bid_size).toLocaleString("en-US") : "-"}</div></div>` +
+    `<div class="box"><div class="lab">Ask</div><div class="num"><span style="color:${moveColor(view.moved.ask)}">${esc(fp(q.ask))}</span>` +
+    ` <span class="x">x</span> ${q.ask_size != null ? Number(q.ask_size).toLocaleString("en-US") : "-"}</div></div></div>`;
+  out += `<div class="box"><div class="boxHead"><b>${view.steps ? "ATM trade" : "No ATM trade"}</b>${stepsSvg(view.steps, 8, 24)}</div>` +
+    (ck.order_lines || []).map(l => `<div class="orderLine">${esc(l)}</div>`).join("") + `</div>`;
+  out += renderBook(view.book);
+  return out + `</div>`;
+}
+function renderBook(book) {
+  if (!book) return "";
+  const side = (rows, ask) => rows.slice(0, 12).map(r => `<div class="l2row" style="background:${esc(r.bg)}">` +
+    (ask ? `<span class="sign">${r.sign ? `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(r.sign.tip)}"><circle cx="6" cy="6" r="4.6" fill="${esc(r.sign.color)}" stroke="${esc(r.sign.ring || r.sign.color)}" stroke-width="1.6"/></svg>` : ""}</span>` : "") +
+    `<span class="mm">${esc(r.mm)}</span><span class="p">${esc(r.price)}</span><span class="s" style="color:${r.trend > 0 ? "#1db31d" : r.trend < 0 ? "#e0404f" : "#e3b23c"}">${esc(r.size)}</span></div>`).join("");
+  return `<div class="box"><div class="boxHead"><b>Level II</b></div><div class="l2">` +
+    `<div class="bids">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
+}
+
+// ---------------------------------------------------------------- Checklist (view "card": the desktop's panel) ---
+function renderChecklist(view) {
+  if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
+  const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
+  let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><b>${esc(ck.title)}</b><span dir="ltr">${esc(ck.summary)}</span></div>`;
+  out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
+  const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${esc(r.mark)}</span>`;
+  ck.sections.forEach((sec, i) => {
+    out += `<div class="ckSec">${esc(sec.title)}</div>`;
+    // the trade's details (the first section): Live | Plan columns, as the desktop panel; the others: the item
+    // with its value after it
+    if (i === 0) out += `<div class="ckRow ckCols"><span></span><span dir="ltr">Live</span><span dir="ltr" class="plan">${plan ? "Plan" : ""}</span></div>`;
+    for (const r of sec.rows) {
+      if (r.split_before) out += `<div class="split"></div>`;
+      if (i === 0) {
+        const val = r.value == null ? "" : `<span dir="ltr" class="val${r.editable ? " edit" : ""}" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
+        out += `<button class="ckRow" data-tip="${esc(r.tip)}"><span class="lab">${mark(r)}${esc(r.text)}</span>` +
+          `${val}<span dir="ltr" class="plan">${esc(r.plan || "")}</span></button>`;
+      } else {
+        out += `<button class="ckItem" data-tip="${esc(r.tip)}">${mark(r)}<span>${esc(r.text)}` +
+          (r.value ? ` <span dir="ltr" class="itemVal" style="color:${esc(r.value_color || "#9aa3ad")}">· ${esc(r.value)}</span>` : "") + `</span></button>`;
+      }
+      if (r.split_after) out += `<div class="split"></div>`;
+    }
+  });
+  return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker. Editing (−/+, pins, the manual marks): step 4.</div></div>`;
+}
+function renderActions(view) {
+  const b = ((view || {}).checklist || {}).buttons || [];
+  if (!b.length) return "";
+  const color = { cl_buy: "#1c8a3e", cl_sell: "#c62f3c", cl_cancel: "#e3b23c", cl_bid: "#e3b23c", cl_update: "#2f6fe0", cl_done: "#6a4fb0" };
+  return `<div class="actions" style="grid-template-columns:repeat(${Math.min(b.length, 3)},minmax(0,1fr))">` + b.map(x =>
+    `<button data-soon="1" ${x.enabled ? "" : "disabled "}style="background:${x.enabled ? color[x.name] || "#3a4046" : "#1d2125"};color:${!x.enabled ? "#5c6268" : x.name === "cl_cancel" || x.name === "cl_bid" ? "#111" : "#fff"}">${esc(x.text)}</button>`).join("") + `</div>`;
+}
+
 // ---------------------------------------------------------------- the page ---
-const S = { tab: "favs", filter: "", account: null, accounts: [], views: {}, open: {}, live: false, user: null };
+const S = { tab: "favs", filter: "", account: null, accounts: [], views: {}, open: {}, live: false, user: null,
+  ticker: null, from: "favs" };
 
 function render() {
   const screen = document.getElementById("screen");
   const v = (what) => S.views[what + "/" + S.account];
   let html;
+  const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
   if (S.tab === "favs") html = renderFavs(v("favs"), S);
   else if (S.tab === "trades") html = renderTrades(v("trades"), S);
+  else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
+  else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
   screen.innerHTML = html;
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
-  document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab ? "on" : ""}">` +
+  document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
     `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}</button>`).join("");
-  document.getElementById("title").textContent = TABS.find(t => t.id === S.tab).label;
+  const tab = TABS.find(t => t.id === S.tab);
+  document.getElementById("title").textContent = S.tab === "ticker" || S.tab === "checklist" ? (S.ticker || "") + (S.tab === "checklist" ? " · Checklist" : "") : tab ? tab.label : "";
+  document.getElementById("back").hidden = S.tab !== "ticker";
+  if (TG && TG.BackButton) { try { if (S.tab === "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
   document.getElementById("account").textContent = S.account ? "..." + S.account : "...";
   document.getElementById("dot").className = S.live ? "on" : "";
   document.getElementById("liveText").textContent = S.live ? "Live" : "Off";
@@ -180,18 +256,29 @@ function connect() {
   ws.onclose = () => { S.live = false; render(); banner("Reconnecting…"); setTimeout(connect, wait); wait = Math.min(wait * 2, 15000); };
 }
 function subscribe() {
-  if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views: ["favs", "trades"] }));
+  const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : []);
+  if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
 }
+
+function openTicker(tk) {
+  S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
+  document.getElementById("screen").scrollTop = 0;
+}
+function goBack() { S.tab = S.from || "favs"; render(); }
 
 function setup() {
   if (TG) {
     TG.ready(); TG.expand();
     try { TG.disableVerticalSwipes(); TG.setHeaderColor("#12161b"); TG.setBackgroundColor("#0d1014"); } catch (e) { /* (older Telegram) */ }
+    try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-tab],[data-open],[data-tip],[data-acct],#account,#sheet");
+    const t = e.target.closest("[data-tab],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
     if (t.dataset.tab) { S.tab = t.dataset.tab; render(); return; }
+    if (t.dataset.ticker) { openTicker(t.dataset.ticker); return; }
+    if (t.dataset.soon) { sheet(`<div class="tip">Sending orders from the phone comes in step 3 of the plan.</div>`); return; }
+    if (t.id === "back") { goBack(); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localStorage.setItem("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.id === "account") {
@@ -240,5 +327,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderCard, renderChecklist, renderActions, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

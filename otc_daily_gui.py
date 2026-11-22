@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.117"
+APP_VERSION = "2.7.118"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1490,10 +1490,11 @@ class MainWindow(QMainWindow):
         self.settings["fav_side_split"] = sizes
         save_settings(self.settings)
 
-    def show_fee_bar(self):
-        """The bar over the chart: a dangerous ticker (its 5th letter: bankruptcy, delinquent...) in red, with its
-        fee when high; else a high fee (more than checklist.FEE_HIGH) in yellow."""
-        ticker = self.chart.ticker or ""
+    def fee_bar_for(self, ticker):
+        """The bar over a ticker's chart (the desktop's and the Mini App's): {"text", "bg", "fg", "tip"} for a
+        dangerous ticker (its 5th letter: bankruptcy, delinquent...) in red, with its fee when high, else a high fee
+        (more than checklist.FEE_HIGH) in yellow; None for neither."""
+        ticker = ticker or ""
         fee, details = self.checklist.fees.get(ticker, (None, ""))
         high = fee is not None and fee > checklist.FEE_HIGH + 1e-9
         risk = TICKER_RISKS.get(ticker[-1]) if len(ticker) == 5 else None
@@ -1501,15 +1502,22 @@ class MainWindow(QMainWindow):
         fee_text = (f"fee = ${fee:.2f}   (more than ${checklist.FEE_HIGH:.2f}, on the buy and again on the sell: "
                     f"${2 * fee:.2f} in all)") if high else ""
         if danger:
-            self.fee_bar.setText(f"⚠ DANGEROUS Stock: {risk[0]}!   {ticker[-1]}: {risk[1]}"
-                                 + (f"   ·   {fee_text}" if fee_text else ""))
-            self.fee_bar.setStyleSheet("QLabel { background: #d32f2f; color: #ffffff; font-weight: bold; padding: 3px; }")
-            self.fee_bar.setToolTip(details if high else "")
-        elif high:
-            self.fee_bar.setText(f"⚠ {ticker}: {fee_text}")
-            self.fee_bar.setStyleSheet("QLabel { background: #e3b23c; color: #111111; font-weight: bold; padding: 3px; }")
-            self.fee_bar.setToolTip(details)
-        self.fee_bar.setVisible(danger or high)
+            return {"text": f"⚠ DANGEROUS Stock: {risk[0]}!   {ticker[-1]}: {risk[1]}"
+                            + (f"   ·   {fee_text}" if fee_text else ""),
+                    "bg": "#d32f2f", "fg": "#ffffff", "tip": details if high else ""}
+        if high:
+            return {"text": f"⚠ {ticker}: {fee_text}", "bg": "#e3b23c", "fg": "#111111", "tip": details}
+        return None
+
+    def show_fee_bar(self):
+        """The bar over the chart (fee_bar_for)."""
+        bar = self.fee_bar_for(self.chart.ticker)
+        if bar:
+            self.fee_bar.setText(bar["text"])
+            self.fee_bar.setStyleSheet(f"QLabel {{ background: {bar['bg']}; color: {bar['fg']}; font-weight: bold; "
+                                       f"padding: 3px; }}")
+            self.fee_bar.setToolTip(bar["tip"])
+        self.fee_bar.setVisible(bool(bar))
 
     def on_orders_show(self):
         """All Orders' Show: check boxes (kept for the next start)."""
@@ -2296,6 +2304,22 @@ class MainWindow(QMainWindow):
         back further than the ATM tab so a range of over a month can be seen."""
         if not self.checklist.isVisible() or not self.chart.ticker:
             return
+        days, rng = self.checklist_inputs(self.chart_rows)
+        self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
+
+    def candle_rows(self, ticker):
+        """A ticker's daily candles from the database (cleaned), as the chart has them."""
+        con = db()
+        try:
+            rows = con.execute("SELECT date, open, high, low, close, volume, vwap FROM candles "
+                               "WHERE ticker = ? ORDER BY date", (ticker,)).fetchall()
+        finally:
+            con.close()
+        return zones.clean_rows(rows)
+
+    def checklist_inputs(self, chart_rows):
+        """(the last market days, the bounce range or None) for the checklist of the ticker of these candles (the
+        desktop's and the Mini App's)."""
         con = db()
         try:
             days = [r[0] for r in con.execute("SELECT DISTINCT date FROM candles ORDER BY date DESC LIMIT ?",
@@ -2304,13 +2328,13 @@ class MainWindow(QMainWindow):
         finally:
             con.close()
         rng = None
-        rows = [r for r in self.chart_rows if None not in r[1:5]]
+        rows = [r for r in chart_rows if None not in r[1:5]]
         if rows and first_day:
             dates, data = atm.clean([r[0] for r in rows],
                                     np.array([[*r[1:5], r[5] or 0.0] for r in rows], dtype=float))
             if dates:
                 rng = atm.recent_range(dates, data, first_day, self.af_tol.value() / 100, self.af_gap.value() / 100)
-        self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
+        return days, rng
 
     def on_hold_close_toggled(self, checked):
         self.settings["hold_close"] = checked
@@ -3273,7 +3297,8 @@ class MainWindow(QMainWindow):
                     favs[ticker] = f
         favs = sorted(favs, key=lambda t: (favs[t].get("group", 9), t))
         alerted = sorted({a.get("ticker") for a in self.all_alerts() if a.get("state") == "active" and a.get("ticker")})
-        self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + alerted + favs)))
+        mini = sorted(getattr(self, "mini_tickers", ()))       # (the tickers the Mini App's phones show)
+        self.level2.track(list(dict.fromkeys(self.checklist.atm.tracked_tickers() + alerted + favs + mini)))
 
     # ---- the shared data: favorites, drawings and ATM trades, per account (otc_server_link) ----
     def shared_account(self):

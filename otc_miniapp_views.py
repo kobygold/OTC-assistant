@@ -10,16 +10,26 @@ sent when it changed ({"type": "mini_view", "key", "data"}).
                     which way each moved last), the ticker's risk sign
   trades/<account>  the ATM Trades table, cell by cell (text, color, background, bold, tooltip): a copy of the
                     Monitor tab's table, for that account, with every trade's orders opened under it
+  card/<account>/<ticker>  the ticker's card and checklist: the desktop's checklist panel (a hidden copy of it, fed
+                    the ticker's candles, quote and book), read row by row; the bar over its chart; its Level II
+                    with the market makers' signs (the Level II box's own functions)
 """
 
 import json
+import re
+import threading
 
 from PyQt6.QtCore import QObject, Qt, QTimer
 
 import otc_checklist as checklist
-from otc_trade import steps_score, trade_steps
+from otc_trade import fmt_price, steps_score, trade_steps
 
 TICK_MS = 1000
+CANDLES_S = 300             # a card's candles (and bounce range) read again this often
+RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
+MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
+MARK = re.compile(r"color:\s*([#\w]+)[^>]*>([^<]*)<")
+COLOR = re.compile(r"(?<![-\w])color:\s*([#\w]+)")
 
 
 def color_of(brush):
@@ -64,11 +74,16 @@ class MiniViews(QObject):
         self.quotes = {}            # ticker -> its Level 1 fields so far (the stream's)
         self.moved = {}             # (ticker, field) -> +1 / -1: the way it moved last (green / red)
         self.tables = {}            # account -> the hidden ATM Trades table made for it
+        self.books = {}             # ticker -> (bids, asks): the stream's Level II
+        self.sizes = {}             # (ticker, side, mm) -> (its last size, +1 / -1 its last change)
+        self.cards = {}             # ticker -> {"panel": the hidden checklist, "candles": time read}
+        self.reloads = {}           # ticker -> (time looked, {mm: its refill events})
         self.timer = QTimer(self)
         self.timer.setInterval(TICK_MS)
         self.timer.timeout.connect(self.tick)
         win.server.message.connect(self.on_message)
         win.level2.any_quote.connect(self.on_quote)
+        win.level2.any_book.connect(self.on_book)
 
     # ---- from the server ----
     def on_message(self, msg):
@@ -78,6 +93,12 @@ class MiniViews(QObject):
         self.sent = {k: v for k, v in self.sent.items() if k in self.keys}
         for account in [a for a in self.tables if f"trades/{a}" not in self.keys]:
             self.tables.pop(account).deleteLater()
+        tickers = {k.split("/")[2] for k in self.keys if k.startswith("card/") and k.count("/") == 2}
+        for t in [t for t in self.cards if t not in tickers]:
+            self.cards.pop(t)["panel"].deleteLater()
+        if tickers != getattr(self.win, "mini_tickers", set()):
+            self.win.mini_tickers = tickers         # (streamed: their quote and book live)
+            self.win.update_tracked()
         if self.keys:
             self.timer.start()
             QTimer.singleShot(0, self.tick)
@@ -91,6 +112,14 @@ class MiniViews(QObject):
             if v is not None and old.get(k) is not None and v != old[k]:
                 self.moved[(ticker, k)] = 1 if v > old[k] else -1
         old.update({k: v for k, v in q.items() if v is not None})
+
+    def on_book(self, ticker, bids, asks):
+        for side, rows in (("BID", bids), ("ASK", asks)):
+            for mm, _price, size, *_ in rows:
+                old = self.sizes.get((ticker, side, mm))
+                trend = (1 if size > old[0] else -1) if old and size != old[0] else (old[1] if old else 0)
+                self.sizes[(ticker, side, mm)] = (size, trend)
+        self.books[ticker] = (list(bids), list(asks))
 
     def tick(self):
         atm = self.win.checklist.atm
@@ -114,6 +143,9 @@ class MiniViews(QObject):
             return self.favs(account)
         if what == "trades":
             return self.trades(account)
+        if what == "card":
+            account, _, ticker = account.partition("/")
+            return self.card(account, ticker)
         return None
 
     # ---- the views ----
@@ -187,6 +219,136 @@ class MiniViews(QObject):
                 out.append({"kind": "order", "cells": cells})
         return {"account": account, "columns": [t for t, _ in COLUMNS],
                 "sub_titles": {k: v[0] for k, v in ORDER_SUB_TITLES.items()}, "rows": out}
+
+
+    # ---- a ticker's card and checklist ----
+    def panel_for(self, ticker):
+        """The hidden checklist of the ticker (the desktop's panel, sharing its ATM trades and fees), fed now."""
+        import time
+        w = self.win
+        card = self.cards.get(ticker)
+        if card is None:
+            if len(self.cards) >= MAX_CARDS:
+                self.cards.pop(next(iter(self.cards)))["panel"].deleteLater()
+            panel = checklist.ChecklistPanel(w.checklist.path, w.settings, w.checklist.save_settings, share=w.checklist)
+            panel.hide()
+            card = self.cards[ticker] = {"panel": panel, "candles": 0.0}
+        panel = card["panel"]
+        if time.time() - card["candles"] > CANDLES_S:
+            card["candles"] = time.time()
+            rows = w.candle_rows(ticker)
+            days, rng = w.checklist_inputs(rows)
+            panel.set_chart(ticker, rows, days, rng, w.avg_period.value())
+            panel.read_fee(ticker)
+        q = self.quotes.get(ticker)
+        if q:
+            panel.set_quote(ticker, q)
+        if ticker in self.books:
+            panel.set_book(ticker, *self.books[ticker])
+        panel.reloaders, panel.reloaders_of = self.reloaders(ticker), ticker
+        return panel
+
+    def reloaders(self, ticker):
+        """The ticker's yellow market makers caught refilling (otc_recorder.find_reloads, as the Level II box):
+        looked for in a thread, again after RELOADS_S."""
+        import time
+        when, found = self.reloads.get(ticker, (0.0, {}))
+        if time.time() - when > RELOADS_S:
+            self.reloads[ticker] = (time.time(), found)
+
+            def look():
+                from otc_level2 import MARKET_LOG, MM_YELLOW
+                from otc_recorder import RELOAD_DAYS, find_reloads
+                out = {}
+                try:
+                    for ev in find_reloads(MARKET_LOG, ticker, MM_YELLOW, RELOAD_DAYS):
+                        out.setdefault(ev["mm"], []).append(ev)
+                except Exception:
+                    return
+                self.reloads[ticker] = (time.time(), out)
+            threading.Thread(target=look, daemon=True).start()
+        return found
+
+    def card(self, account, ticker):
+        from otc_chart import LEVEL_COLORS
+        from otc_daily_gui import RISK_COLORS, ticker_risk
+        from otc_level2 import MM_TIPS, Level2Panel, mm_risk
+        w = self.win
+        panel = self.panel_for(ticker)
+        q = self.quotes.get(ticker, {})
+        reloaders = panel.reloaders
+        bids, asks = self.books.get(ticker, ([], []))
+
+        def book(rows, side):
+            out = []
+            for mm, price, size, level, *_ in rows:
+                size_trend = self.sizes.get((ticker, side, mm), (0, 0))[1]
+                row = {"mm": mm, "price": fmt_price(price), "size": f"{size:,}",
+                       "bg": LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)], "trend": size_trend}
+                if side == "ASK":
+                    risk = mm_risk(mm, reloaders)
+                    if risk:
+                        row["sign"] = {"level": risk, "color": RISK_COLORS[risk][0],
+                                       "ring": RISK_COLORS[1][0] if risk in (3, 4) else "", "tip": MM_TIPS[risk]}
+                out.append(row)
+            return out
+        e = panel.order()
+        risk = ticker_risk(ticker)
+        return {
+            "account": account, "ticker": ticker,
+            "risk": {"level": risk[0], "color": RISK_COLORS[risk[0]][0], "tip": _plain(risk[1])} if risk else None,
+            "bar": w.fee_bar_for(ticker),
+            "quote": {k: q.get(f) for k, f in (("last", "LAST_PRICE"), ("close", "CLOSE_PRICE"), ("bid", "BID_PRICE"),
+                                               ("ask", "ASK_PRICE"), ("bid_size", "BID_SIZE"), ("ask_size", "ASK_SIZE"),
+                                               ("volume", "TOTAL_VOLUME"))},
+            "moved": {"bid": self.moved.get((ticker, "BID_PRICE"), 0), "ask": self.moved.get((ticker, "ASK_PRICE"), 0),
+                      "last": self.moved.get((ticker, "LAST_PRICE"), 0)},
+            "steps": trade_steps(panel.atm.live_view(e)) if e else None,
+            "book": {"bids": book(bids, "BID"), "asks": book(Level2Panel.diluters_first(asks, reloaders), "ASK")},
+            "checklist": checklist_view(panel)}
+
+
+def checklist_view(panel):
+    """The desktop's checklist panel as it shows now: its title, the trade's lines, the score, every row of every
+    section (mark, text, the live value - typed or not -, the fixed plan value), the lines between the groups, and
+    the trade's buttons shown."""
+    from PyQt6.QtWidgets import QLineEdit
+    rows_of = {id(item): (mark, text, value) for item, mark, text, value in panel.widgets}
+    sections = []
+    for name, items in getattr(panel, "sections", []):
+        rows = []
+        for item in items:
+            found = rows_of.get(id(item))
+            if not found:
+                continue
+            mark, text, value = found
+            m = MARK.search(mark.text() or "")
+            row = {"key": item.key, "kind": item.kind, "text": text.text(), "mark": m.group(2) if m else "",
+                   "mark_color": m.group(1) if m else "", "tip": mark.toolTip() or text.toolTip(),
+                   "split_before": item.key in checklist.SPLIT_BEFORE, "split_after": item.key in checklist.SPLIT_AFTER}
+            if isinstance(value, QLineEdit):
+                typed = bool(value.text())
+                c = COLOR.search(value.styleSheet() or "")
+                row.update(value=value.text() or value.placeholderText(), typed=typed,
+                           value_color=c.group(1) if c else ("#f0a020" if typed else "#ffffff"),
+                           editable=not value.isReadOnly() and value.isEnabled())
+            elif value is not None:
+                c = COLOR.search(value.styleSheet() or "")
+                row.update(value=value.text(), value_color=c.group(1) if c else "#d8d8d8")
+            locked = panel.locked.get(item.key)
+            if locked is not None and not locked.isHidden() and locked.text():
+                row["plan"] = locked.text()
+            edit = panel.order_edits.get(item.key)
+            if edit is not None and not edit.isHidden():
+                row["plan"] = edit.text() or edit.placeholderText()
+            rows.append(row)
+        sections.append({"title": name, "rows": rows})
+    buttons = [{"name": b.objectName(), "text": b.text(), "enabled": b.isEnabled()}
+               for b in (panel.buy_btn, panel.update_btn, panel.sell_btn, panel.update_sell_btn, panel.bid_btn, panel.done_btn)
+               if not b.isHidden()]
+    return {"title": panel.title.text(), "summary": panel.summary.text(),
+            "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
+            "sections": sections, "buttons": buttons}
 
 
 def _plain(html):

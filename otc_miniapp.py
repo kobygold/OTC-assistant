@@ -7,7 +7,7 @@ button opens the current main server's.
 
 A phone's WebSocket (/ws):
   phone -> {"t": "auth", "initData": Telegram's signed user data}
-           {"t": "sub", "account": "159", "views": ["favs", "trades"]}      (again: replaces them)
+           {"t": "sub", "account": "159", "views": ["favs", "trades", "card:PDIV"]}      (again: replaces them)
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
 
@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import subprocess
 import sys
 import time
@@ -33,7 +34,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
-VIEWS = ("favs", "trades")
+VIEWS = ("favs", "trades")       # (and "card:<TICKER>")
+TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 
 
 def check_init_data(init_data: str, bot_token: str, max_age=AUTH_MAX_AGE_S, now=None):
@@ -219,7 +221,14 @@ class MiniApp:
         if account not in phone.accounts:
             await phone.send({"t": "status", "text": f"Account ...{account} isn't one of yours."})
             return
-        phone.keys = {f"{v}/{account}" for v in msg.get("views") or [] if v in VIEWS}
+        keys = set()
+        for v in msg.get("views") or []:
+            v = str(v)
+            if v in VIEWS:
+                keys.add(f"{v}/{account}")
+            elif v.startswith("card:") and TICKER.fullmatch(v[5:]):      # a ticker's card and checklist
+                keys.add(f"card/{account}/{v[5:]}")
+        phone.keys = keys
         self.update_wanted()
         for key in sorted(phone.keys):
             if key in self.views:
