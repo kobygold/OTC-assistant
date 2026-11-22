@@ -183,3 +183,7 @@ button:disabled { opacity: 0.6; }
 .ckIn::placeholder { color: #ffffff; opacity: 1; }
 .ckIn:focus { outline: none; border-color: var(--gold); }
 .ckRow .lab { cursor: pointer; }
+
+/* − left of the box */
+.ckRow { grid-template-columns: minmax(0, 1fr) auto auto 56px !important; }
+.ckRow .valBox { display: flex; gap: 3px; align-items: center; justify-content: flex-end; min-width: 105px; }

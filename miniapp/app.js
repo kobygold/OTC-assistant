@@ -354,8 +354,11 @@ function renderChecklist(view) {
           : r.value == null ? "<span></span>" : `<span dir="ltr" class="val" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
         const tool = (t) => `<button class="ckTool${t.name === "cl_pin" ? (t.pinned ? " pin on" : " pin") : ""}" data-edtool="${t.i}" data-key="${esc(r.key)}" ` +
           `data-name="${esc(t.name)}"${t.enabled ? "" : " disabled"} aria-label="${esc(t.tip)}">${t.name === "cl_pin" ? PIN : t.name === "cl_reset" ? "↺" : esc(t.text)}</button>`;
+        // − on the box's left, + and the pin on its right
+        const minus = (t) => t.name === "cl_step" && t.text === "−";
         out += `<div class="ckRow"><span class="lab" data-tip="${esc(r.tip)}">${mark(r)}${esc(r.text)}</span>` +
-          `<span class="tools" dir="ltr">${(r.tools || []).map(tool).join("")}</span>${val}<span dir="ltr" class="plan">${esc(r.plan || "")}</span></div>`;
+          `<span class="tools" dir="ltr">${(r.tools || []).filter(t => !minus(t)).map(tool).join("")}</span>` +
+          `<span class="valBox" dir="ltr">${(r.tools || []).filter(minus).map(tool).join("")}${val}</span><span dir="ltr" class="plan">${esc(r.plan || "")}</span></div>`;
       } else {
         out += `<button class="ckItem" ${r.kind === "manual" ? `data-mark="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}>${mark(r)}<span>${esc(r.text)}` +
           (r.value ? ` <span dir="ltr" class="itemVal" style="color:${esc(r.value_color || "#9aa3ad")}">· ${esc(r.value)}</span>` : "") + `</span></button>`;
