@@ -34,6 +34,7 @@ const ORDER_SKIP = new Set(["Ticker", "Side", "Status", "New limit", "Change", "
 const BTN_COLORS = { cl_buy: "#1c8a3e", cl_sell: "#c62f3c", cl_cancel: "#e3b23c", cl_bid: "#e3b23c", cl_update: "#2f6fe0", cl_done: "#6a4fb0",
   Change: "#2f6fe0", Cancel: "#e3b23c", "Sell on Bid": "#c62f3c", "Sell on Ask": "#c62f3c" };
 const DARK_TEXT = new Set(["cl_cancel", "cl_bid", "Cancel"]);
+const PIN = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 3l5 5-3 1-4 4 1 5-2 2-4-4-5 5-1-1 5-5-4-4 2-2 5 1 4-4z"/></svg>`;
 const RANGES = ["1D", "1M", "2M", "1Y"];
 // the trade card's columns not shown as fields (drawn in its top line, or the desktop's buttons)
 const CARD_SKIP = new Set(["▸", "Ticker", "Steps", "State", "Order", "New Price", ""]);
@@ -342,14 +343,19 @@ function renderChecklist(view) {
     out += `<div class="ckSec">${esc(sec.title)}</div>`;
     // the trade's details (the first section): Live | Plan columns, as the desktop panel; the others: the item
     // with its value after it
-    if (i === 0) out += `<div class="ckRow ckCols"><span></span><span dir="ltr">Live</span><span dir="ltr" class="plan">${plan ? "Plan" : ""}</span></div>`;
+    if (i === 0) out += `<div class="ckRow ckCols"><span></span><span></span><span dir="ltr">Live</span><span dir="ltr" class="plan">${plan ? "Plan" : ""}</span></div>`;
     for (const r of sec.rows) {
       if (r.split_before) out += `<div class="split"></div>`;
       if (i === 0) {
-        const val = r.value == null ? "" : `<span dir="ltr" class="val${r.editable ? " edit" : ""}" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
-        const can = (r.boxes || []).some(b => b.editable) || (r.tools || []).length;
-        out += `<button class="ckRow" ${can ? `data-edit="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}><span class="lab">${mark(r)}${esc(r.text)}</span>` +
-          `${val}<span dir="ltr" class="plan">${esc(r.plan || "")}</span></button>`;
+        // the row's boxes (typed in: Enter or leaving it sends it) and buttons (+ / −, the pin, the reset), as shown
+        const boxes = (r.boxes || []).filter(b => b.editable);
+        const val = boxes.length ? boxes.map(b => `<input class="ckIn" dir="ltr" inputmode="decimal" data-key="${esc(r.key)}" data-box="${b.i}" ` +
+            `data-orig="${esc(b.text)}" value="${esc(b.text)}" placeholder="${esc(b.placeholder)}" style="color:${b.text ? "#f0a020" : "#ffffff"}" aria-label="${esc(r.text)}">`).join("")
+          : r.value == null ? "<span></span>" : `<span dir="ltr" class="val" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
+        const tool = (t) => `<button class="ckTool${t.name === "cl_pin" ? (t.pinned ? " pin on" : " pin") : ""}" data-edtool="${t.i}" data-key="${esc(r.key)}" ` +
+          `data-name="${esc(t.name)}"${t.enabled ? "" : " disabled"} aria-label="${esc(t.tip)}">${t.name === "cl_pin" ? PIN : t.name === "cl_reset" ? "↺" : esc(t.text)}</button>`;
+        out += `<div class="ckRow"><span class="lab" data-tip="${esc(r.tip)}">${mark(r)}${esc(r.text)}</span>` +
+          `<span class="tools" dir="ltr">${(r.tools || []).map(tool).join("")}</span>${val}<span dir="ltr" class="plan">${esc(r.plan || "")}</span></div>`;
       } else {
         out += `<button class="ckItem" ${r.kind === "manual" ? `data-mark="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}>${mark(r)}<span>${esc(r.text)}` +
           (r.value ? ` <span dir="ltr" class="itemVal" style="color:${esc(r.value_color || "#9aa3ad")}">· ${esc(r.value)}</span>` : "") + `</span></button>`;
@@ -357,7 +363,7 @@ function renderChecklist(view) {
       if (r.split_after) out += `<div class="split"></div>`;
     }
   });
-  return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker: tap a row to change it (its boxes, −/+, the pin), a manual item to mark it (☐ → ✔ → ✘).</div></div>`;
+  return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker: type in a box (Enter sends it), −/+ and the pin as on the desktop; tap a manual item to mark it (☐ → ✔ → ✘), an item's name for its explanation.</div></div>`;
 }
 // the checklist's trade buttons as the desktop shows them; a tap runs the desktop's button on the main server's app
 // (Update Buy / Update Sell need the checklist's boxes typed: step 4)
@@ -380,6 +386,8 @@ function localSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* (pr
 
 function render() {
   const screen = document.getElementById("screen");
+  const typing = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("ckIn");
+  if (typing) { S.later = true; return; }       // (drawn once the box is left)
   const v = (what) => S.views[what + "/" + S.account];
   let html;
   const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
@@ -534,18 +542,13 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-edit],[data-mark],[data-edset],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
-    if (t.dataset.edit) { S.edit = { ticker: S.ticker, key: t.dataset.edit }; showEdit(); return; }
     if (t.dataset.mark) { startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.mark, what: "mark" }, true); return; }
-    if (t.dataset.edset != null && S.edit) {
-      const v = (document.getElementById("edIn" + t.dataset.edset) || {}).value || "";
-      startAct({ kind: "edit", ticker: S.edit.ticker, key: S.edit.key, what: "typed", box: Number(t.dataset.edset), text: v }, true); return;
-    }
-    if (t.dataset.edtool != null && S.edit) {
-      if (!t.disabled) startAct({ kind: "edit", ticker: S.edit.ticker, key: S.edit.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
+    if (t.dataset.edtool != null) {
+      if (!t.disabled && !(S.act && S.act.wait)) startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
       return;
     }
     if (t.dataset.addalert) { startAct({ kind: "alert", do: "add", ticker: t.dataset.addalert }); return; }
@@ -607,6 +610,14 @@ function setup() {
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
   document.addEventListener("input", (e) => { if (e.target.id === "flt") { S.filter = e.target.value; render(); } });
+  // a checklist box: Enter or leaving it sends the value (the desktop's box takes it: 12 -> 0.0012)
+  document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.classList.contains("ckIn")) e.target.blur(); });
+  document.addEventListener("focusout", (e) => {
+    const b = e.target;
+    if (!b.classList || !b.classList.contains("ckIn")) return;
+    if (b.value.trim() !== b.dataset.orig) startAct({ kind: "edit", ticker: S.ticker, key: b.dataset.key, what: "typed", box: Number(b.dataset.box), text: b.value.trim() }, true);
+    setTimeout(() => { if (S.later) { S.later = false; render(); } }, 0);
+  });
   // a value typed in the order sheet: sent when done (the desktop's box takes it: 12 -> 0.0012)
   document.addEventListener("change", (e) => {
     const r = e.target.dataset && e.target.dataset.typed;
