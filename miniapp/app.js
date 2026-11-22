@@ -236,7 +236,7 @@ function rowButtons(row, table, st) {
   out += `<div class="rowBtns">` + names.map(n => {
     const x = b[n], on = x.enabled || (n === "Change" && b.Change && (st.limits || {})[row.id] != null);
     return `<button data-cell="${esc(n)}" data-table="${table}" data-id="${esc(id)}" data-text="${esc(x.text)}" data-tk="${esc(row.ticker || "")}" ` +
-      `${on ? "" : "disabled "}style="background:${on ? BTN_COLORS[n] || "#3a4046" : "#1d2125"};color:${!on ? "#5c6268" : DARK_TEXT.has(n) ? "#111" : "#fff"}">${esc(x.text)}</button>`;
+      `${on ? "" : "disabled "}style="background:${on ? esc(x.bg || BTN_COLORS[n] || "#3a4046") : "#1d2125"};color:${!on ? "#5c6268" : esc(x.fg || (DARK_TEXT.has(n) ? "#111" : "#fff"))}">${esc(x.text)}</button>`;
   }).join("") + `</div>`;
   return out;
 }
@@ -376,7 +376,7 @@ function renderActions(view) {
   return `<div class="actions" style="grid-template-columns:repeat(${Math.min(b.length, 3)},minmax(0,1fr))">` + b.map(x => {
     const on = x.enabled;
     return `<button data-act="${esc(x.id)}" data-text="${esc(x.text)}" data-tk="${esc(view.ticker)}" ${on ? "" : "disabled "}` +
-      `style="background:${on ? BTN_COLORS[x.name] || "#3a4046" : "#1d2125"};color:${!on ? "#5c6268" : DARK_TEXT.has(x.name) ? "#111" : "#fff"}">${esc(x.text)}</button>`;
+      `style="background:${on ? esc(x.bg || BTN_COLORS[x.name] || "#3a4046") : "#1d2125"};color:${!on ? "#5c6268" : esc(x.fg || (DARK_TEXT.has(x.name) ? "#111" : "#fff"))}">${esc(x.text)}</button>`;
   }).join("") + `</div>`;
 }
 

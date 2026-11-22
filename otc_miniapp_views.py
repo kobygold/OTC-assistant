@@ -72,6 +72,23 @@ def table_rows(table, columns):
     return rows
 
 
+def style_colors(sheet, name=None):
+    """A button's colors {"bg", "fg"} as a Qt style sheet gives them (not its :hover / :disabled): the rules for
+    QPushButton#<name> (the checklist panel's sheet), or a button's own sheet (name None)."""
+    out = {}
+    for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", sheet or ""):
+        sels = [x.strip() for x in sel.split(",")]
+        if name is not None and not any(x.endswith(f"QPushButton#{name}") for x in sels):
+            continue
+        if name is None and not any(x.endswith("QPushButton") or x == "" for x in sels):
+            continue
+        for prop, key in (("background", "bg"), ("color", "fg")):
+            m = re.search(rf"(?<![-\w]){prop}:\s*([#\w]+)", body)
+            if m:
+                out[key] = m.group(1)
+    return out
+
+
 def cell_button(table, row, title, columns):
     """The desktop table's button in that cell (Change, Cancel, Sell on Bid...), or None."""
     from PyQt6.QtWidgets import QPushButton
@@ -88,7 +105,7 @@ def table_buttons(table, row, columns):
     for title, _tip in columns:
         b = cell_button(table, row, title, columns)
         if b is not None and not b.isHidden():
-            out[title] = {"text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip()}
+            out[title] = {"text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip(), **style_colors(b.styleSheet())}
     return out
 
 
@@ -502,7 +519,8 @@ def checklist_view(panel):
                              "pinned": bool(b.property("pinned"))} for i, b in enumerate(row_tools(panel, box))]
             rows.append(row)
         sections.append({"title": name, "rows": rows})
-    buttons = [{"id": attr, "name": b.objectName(), "text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip()}
+    buttons = [{"id": attr, "name": b.objectName(), "text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip(),
+                **style_colors(checklist.PANEL_STYLE, b.objectName())}         # (the desktop's colors)
                for attr in ("buy_btn", "update_btn", "sell_btn", "update_sell_btn", "bid_btn", "done_btn")
                for b in [getattr(panel, attr)] if not b.isHidden()]
     return {"title": panel.title.text(), "summary": panel.summary.text(),
