@@ -525,10 +525,15 @@ class CandleChart(DrawingsMixin, QWidget):
             asks = self._ask_lines_now() if self.intraday and self.show_ask_lines else None
             if asks:
                 seen = [v for s in asks[0][i0:i1 + 1] if s for v in s.values()]
-                if seen:
+                if seen:            # (the candles step aside: the scale is the asks', from the lowest one)
                     room = 2 * (hi - lo)
                     hi = max(hi, min(max(seen), hi + room))
-                    lo = min(lo, max(min(seen), lo - room))
+                    lo = max(min(seen), lo - room)
+                    if hi <= lo:
+                        pad = abs(hi) * 0.02 or 0.0001
+                        lo, hi = lo - pad, hi + pad
+                    pad = (hi - lo) * 0.04
+                    lo, hi = lo - pad, hi + pad
         # the open orders don't stretch the scale: one off it is a tag on the pane's edge
         orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
         self._scale = (lo, hi)
@@ -590,12 +595,14 @@ class CandleChart(DrawingsMixin, QWidget):
         legend = None
         if self.intraday and self.show_ask_lines:
             legend = self._draw_ask_lines(p, price, py, i0, i1)
+        # with the L2 Ask lines shown, the price candles (and their Hi / Lo) step aside: the volume bars stay
+        candles = legend is None
 
         # Candles and volume bars
         bw = self._bar_w(price)
         body_w = max(1.0, bw * 0.68)
         p.setClipRect(price.adjusted(1, 1, -1, -1))
-        for i in range(i0, i1 + 1):
+        for i in range(i0, i1 + 1) if candles else ():
             color = self._color(i)
             x = self._x(i, price)
             p.setPen(QPen(color, 1))
@@ -627,7 +634,7 @@ class CandleChart(DrawingsMixin, QWidget):
         p.setClipping(False)
 
         # Hi / Lo markers for the visible range
-        if i1 >= i0:
+        if i1 >= i0 and candles:
             ih = max(range(i0, i1 + 1), key=lambda i: self.h[i])
             il = min(range(i0, i1 + 1), key=lambda i: self.l[i])
             # Only when the price is on screen (a zoomed price axis can leave it out)
