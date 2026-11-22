@@ -526,7 +526,8 @@ class MiniViews(QObject):
         c = self.charts.get(key)
         if c is None:
             chart = CandleChart()
-            chart.wrap_info = True              # (the phone's narrow chart: the info line in two rows)
+            chart.wrap_info = True
+            chart.info_on_cursor = True         # (the ticker, its risk and steps: the page's line over the picture)              # (the phone's narrow chart: the info line in two rows)
             chart.hide()
             chart.setMinimumSize(0, 0)          # (the desktop's is 500 wide at least)
             chart.resize(CHART_W, CHART_H)

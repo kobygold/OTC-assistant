@@ -191,7 +191,12 @@ function renderChart(view, card, range) {
   const img = view && view.png ? `<img class="chartImg" alt="${esc(view.ticker)} chart, ${esc(view.range)}" src="data:image/png;base64,${view.png}">`
     : `<div class="chartWait">Drawing the chart…</div>`;
   const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
-  return `<div class="chartBox">${img}<div class="xhair" hidden><i class="xv"></i><i class="xh"></i></div><div class="ranges">${ranges}</div></div>` +
+  // (the picture's info line only shows the cursor's candle: the ticker, its risk and the ATM trade's steps here,
+  // as the checklist's title, with the ranges)
+  const tk = (view && view.ticker) || (card && card.ticker) || S.ticker || "";
+  const head = `<div class="chHead"><span class="chName"><b class="ckTicker">${esc(tk)}</b>${riskBadge(card && card.risk, 20)}` +
+    `${card && card.steps ? `<span class="chSteps">${stepsSvg(card.steps, 8, 24)}</span>` : ""}</span><div class="ranges">${ranges}</div></div>`;
+  return head + `<div class="chartBox">${img}<div class="xhair" hidden><i class="xv"></i><i class="xh"></i></div></div>` +
     `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
 }
 
@@ -504,7 +509,7 @@ function renderChecklist(view) {
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
   // (the title, and at the left edge the ATM trade's 4 steps, as the desktop panel; no score: the phone's choice)
   let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><span class="ckName"><b>${esc(ck.title)}</b>` +
-    `<b class="ckTicker" dir="ltr">${esc(view.ticker || "")}</b></span>` +
+    `<b class="ckTicker" dir="ltr">${esc(view.ticker || "")}</b>${riskBadge(view.risk, 20)}</span>` +
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;

@@ -116,7 +116,7 @@ button { font-family: inherit; color: inherit; }
 .ckHead { display: flex; justify-content: space-between; align-items: center; font-size: 18px; margin-bottom: 4px; }
 .ckHead span { font-size: 13px; font-weight: 700; color: var(--gold); }
 .ckSteps svg { display: block; }
-.ckHead .ckName { display: flex; align-items: baseline; gap: 10px; font-size: 18px; color: var(--text); }
+.ckHead .ckName { display: flex; align-items: center; gap: 10px; font-size: 18px; color: var(--text); }
 .ckHead .ckTicker { font-size: 22px; font-weight: 800; color: #f3c400; }
 .ckSec { font-size: 14px; font-weight: 700; color: var(--gold); margin: 8px 0 2px; }
 .ckRow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 104px 64px; column-gap: 6px; align-items: center;
@@ -145,7 +145,13 @@ button { font-family: inherit; color: inherit; }
 .xhair .xv { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed rgba(220, 220, 220, 0.75); }
 .xhair .xh { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed rgba(220, 220, 220, 0.75); }
 .chartWait { height: 300px; display: flex; align-items: center; justify-content: center; color: var(--dim); }
-.ranges { position: absolute; top: 30px; right: 58px; display: flex; gap: 3px; background: rgba(13, 16, 20, 0.85); border-radius: 8px; padding: 2px; }
+/* over the picture: the ticker (as the checklist's title), its risk, the ATM trade's steps; the ranges */
+.chHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; background: #000; }
+.chName { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chName svg, .ckName svg { display: block; flex-shrink: 0; }
+.chHead .ckTicker { font-size: 22px; font-weight: 800; color: #f3c400; }
+.chSteps { margin-inline-start: 4px; }
+.ranges { display: flex; gap: 3px; flex-shrink: 0; }
 .ranges button { min-width: 30px; height: 26px; padding: 0 5px; border-radius: 6px; border: 1px solid #2c3136; background: transparent;
   color: var(--dim); font-size: 11px; font-weight: 700; }
 .ranges button.on { border-color: var(--gold); color: var(--gold); background: #2b2414; }
