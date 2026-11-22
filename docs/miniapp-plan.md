@@ -1,0 +1,126 @@
+# Telegram Mini App: the desktop on the phone (plan)
+
+A Telegram Mini App (a web page Telegram opens in its own browser on the phone) showing what the desktop
+shows - favorites, chart, Level II, checklist, ATM trades, orders, alerts - laid out for a phone, with the
+order buttons working. The design is the clickable mockup of 2026-11-20 (390x844, "OTC Mini App Mockup"),
+updated with what the desktop gained since (section 6).
+
+Status: **step 0** (the mockup). Decisions made are marked **(decided)**; open ones **(to decide)**.
+
+## 1. Rule number one: one logic, the desktop's
+
+The phone must show the same numbers and follow the same rules as the desktop, and every later desktop fix
+must reach it without being written twice. So the phone **doesn't compute anything of its own**:
+
+- Every number, mark and color the phone shows is worked out by the **main server's app** (the desktop app
+  on the computer that is the main server - kobyssd81 normally), with the desktop's own code: the
+  checklist (plan(), the checks, the fee, the risk sign), the ATM trades' steps and texts, Estimate$ /
+  Actual$, the L2 Ask lines, the refill signs...
+- Every order the phone sends is carried out by that app's own order code - the code behind the desktop's
+  Buy ATM, Buy More, Update Buy, Sell ATM, Sell on Bid, Sell Partial, Update / Cancel - so the ATM trade is
+  followed exactly as if it was clicked there.
+- The phone page only draws what it's given, and sends what was tapped.
+
+The desktop's order code today opens its dialogs (QMessageBox, the order sheets) as it goes. Step 3 splits
+each action in two: **work out the order** (no dialog; the numbers the dialog shows) and **send it**. The
+desktop's dialogs then show the first and call the second; the phone shows the first in its own sheet and
+calls the second. One code, two faces.
+
+The checklist of any ticker (not only the one on the desktop's chart) is worked out by a hidden checklist
+of its own in that app, fed the ticker's candles, quote and book: the same ChecklistPanel code, not shown.
+
+## 2. The way in: Tailscale Serve **(decided)**
+
+Telegram loads the page on the phone from an `https://` address.
+
+- **Tailscale Serve (decided):** the main server serves the page and its live data at
+  `https://<computer>.<tailnet>.ts.net`, with a certificate from Tailscale. Only devices on the tailnet
+  reach it: the iPhone runs the Tailscale app. Nothing is open to the internet.
+- (Not Tailscale Funnel: that would open it to the internet.)
+
+Either way, on top: every request carries Telegram's signed user data (initData), checked with the bot's
+token; only chats linked to an account (the Telegram tab's phones) get in, and see only their accounts
+(the last 3 digits). Orders need the phone in **trade** mode on an account that allows selling - and,
+new, buying - from Telegram (section 5).
+
+The main server can move (failover): each computer serves the Mini App only while it is the main server,
+and the bot points its menu button (and the "Open" buttons on its messages) to the current main server's
+address. A one-time `tailscale serve` command on each computer (I give the command; you run it).
+
+## 3. How it's built
+
+- **Server (otc_server.py, plain Python):** a new port (e.g. 8790), only on 127.0.0.1 - Tailscale Serve
+  forwards to it. It serves the page's files and one WebSocket for the live data, checks initData, and
+  passes each phone's request to the main server's app over the link they already share, and the app's
+  answers back. Live L1 / L2 of the tickers a phone shows come from the stream the server has anyway.
+- **The main server's app (otc_daily_gui.py & co):** a "mini app" part answering the phone's requests
+  with the desktop's code (section 1): the favorites with their steps and checks, a ticker's card, chart
+  data, checklist, the trades, orders, alerts - and carrying out the orders.
+- **The page (miniapp/: HTML, CSS, JavaScript, no build step):** the mockup's screens made real; the chart
+  drawn with TradingView's Lightweight Charts (pinch to zoom, drag to scroll); Telegram's Back button,
+  safe areas, full height, no swipe-to-close, haptics.
+
+The Mini App works while the main server's app is open - as the bot does now.
+
+## 4. The screens (the mockup's, with the desktop's changes)
+
+Bottom bar: **Favorites · Chart · Checklist · Trades · Alerts** (+ **Orders**, section 6). A slide-out
+Mini Favorites tab on Chart and Checklist. The action buttons at the bottom by the trade's step.
+
+- **Favorites:** the desktop's Mini Favorites, in its order (ATM trades first by their steps - a yellow
+  half circle 0.5 -, then the groups), star colors, steps, Checks, Bid / Ask live, the red risk sign.
+- **Ticker card:** price and change, Bid / Ask x size, the DANGEROUS (red) / fee (yellow) bar, the ATM
+  trade line ("Bought so far (5 times, 3 orders)..."), the top of Level II.
+- **Chart:** candles + volume (VolAvg, MedianVolume), 1D (the last 2 trading days) · 1M · 2M · 1Y over the
+  empty right side, the orders / alerts / bounce / exit / safety net lines with their tags, Bid / Ask
+  tags, Hi / Lo; the **L2 Ask lines** (1D) with their legend and a tap to highlight one; a price axis
+  zoomed by hand stays until another range. Level II under it, with the yellow / red market maker signs
+  and the refill sign.
+- **Checklist:** the desktop's panel as it is now: Plan (cyan) | Live, the editable Live boxes with −/+
+  and the pin, the % lines, the ratio, the fee, the 4 $ lines (without / with fees, a sale's commission
+  capped), the marks and the score, sections 1-5, manual items tapped ☐ → ✔ → ✘.
+- **Trades:** the ATM trades as cards, sorted as the desktop; a tap opens its orders (Side, Status,
+  Order #, Placed, Filled / Ordered, Limit, Filled at, Safety net then, P/L with the commission - Schwab's
+  when read -, Bid / Ask then, the Level II then on a tap).
+- **Orders** (the Monitor tab's): All Open Orders with Change / Cancel; All Orders with the Show filter
+  (Pending, Filled, Replaced, Canceled, Rejected, Expired), Estimate$ and Actual$; the Order Log of the
+  account; Stocks owned with Sell on Bid / Ask.
+- **Alerts:** active and fired, add, delete, the order alerts.
+- **Order sheets:** the desktop dialogs' values and rules - white the plan, yellow changed, ↺, −/+,
+  All or none, the $ with the commission (capped on a sale), the profit after both fees - then a confirm
+  ("Send BUY 150,000 PDIV @ 0.0010 GTC?") and Send.
+
+## 5. Orders from the phone: safety
+
+- Only phones in trade mode, on an account that allows trading from Telegram (the Telegram tab: "Allow
+  selling from Telegram" becomes "Allow trading from Telegram": one switch for buys and sells **(decided)**).
+- Every order: the sheet, then a confirm step; nothing is sent by one tap.
+- A sale is never sent below the price approved (the bot's rule, section 4 of telegram-plan.md): the price
+  is worked out again on Send.
+- The trade is locked while sending (the bot's `sending:` lock): the desktop and the bot see "Sending...".
+- Each request done once (an id), logged in server_log.txt and the trade's note ("from the Mini App by
+  <name>").
+
+## 6. Desktop changes since the mockup, to carry over
+
+Checklist: Plan | Live, the 4 $ lines and the ratio above the fee, the lines between groups, the loss's
+mark, the dangerous ticker's ✘ (red only), condensed rows, the down arrow when there's more, Buy More,
+Update Buy while partly bought, the label's "(x times, y orders)", "Bought / Sold" on a sold trade.
+Orders: All Open Orders (Change / Cancel), All Orders (Show filter, Order #, Bid / Ask then, Estimate$ /
+Actual$, no $ for an order not filled), the sale commission's cap, the Order Log per account. ATM Trades:
+the desktop's sorting, the order rows under a trade. Chart: 1D = 2 days, L2 Ask lines (the lowest ask
+in each minute, a highlight, the candles stepping aside), the price axis kept when zoomed by hand, the
+DANGEROUS bar. Level II: the refill signs (a refill counts only when the offer is still there 5 s after).
+
+## 7. Steps
+
+| Step | What | Server update |
+|---|---|---|
+| 0 | The mockup brought up to date (section 6, without the L2 Ask lines **(decided)**); your OK on the design | - |
+| 1 | The way in: Tailscale Serve, the server's port and page, initData, the bot's menu button, failover; **Favorites** and **Trades**, live, read-only | **Yes, all computers** + `tailscale serve` once on each |
+| 2 | **Chart** (+ L2 Ask lines), **Level II**, the ticker card, **Checklist** (the hidden checklist), read-only | Yes (the main server's app) |
+| 3 | The orders: the desktop's order code split (work out / send), the order sheets, confirm, the lock; Buy ATM, Buy More, Update / Cancel Buy, Sell ATM, Sell on Bid, Sell Partial, Update / Cancel Sell | Yes |
+| 4 | Checklist editing (the Live boxes, −/+, pins, manual marks), **Orders** (Monitor), **Alerts** (add / delete) | Yes |
+
+Each step is usable on its own and tested as the bot was: a fake Telegram (initData signed with a test
+token), the server's fake modes, a fake order sender - never real orders, never the real cluster.
