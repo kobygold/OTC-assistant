@@ -4,6 +4,8 @@
    Where a change goes (the plan, section 8):
      Favorites  <- view "favs"   (otc_miniapp_views.favs: the Mini Favorites' order and data)    -> renderFavs()
      Trades     <- view "trades" (the Monitor tab's ATM Trades table, cell by cell)             -> renderTrades()
+     Chart      <- view "chart" (the desktop's chart widget itself, drawn at the phone's size: otc_miniapp_views.chart)
+                                                                                           -> renderChart()
      Ticker card, Checklist <- view "card" (the desktop's checklist panel row by row, the bar over the chart,
                 Level II with the market makers' signs: otc_miniapp_views.card)          -> renderCard(), renderChecklist()
    A new column or text on the desktop's table comes here by itself (the cards show every column it has).
@@ -20,7 +22,8 @@ const TABS = [
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" }
 ];
-const SOON = { chart: "step 2b", orders: "step 4", alerts: "step 4" };
+const SOON = { orders: "step 4", alerts: "step 4" };
+const RANGES = ["1D", "1M", "2M", "1Y"];
 // the trade card's columns not shown as fields (drawn in its top line, or the desktop's buttons)
 const CARD_SKIP = new Set(["▸", "Ticker", "Steps", "State", "Order", "New Price", ""]);
 
@@ -161,6 +164,15 @@ function renderBook(book) {
     `<div class="bids">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
 }
 
+// ---------------------------------------------------------------- Chart (view "chart": the desktop's chart) ---
+function renderChart(view, card, range) {
+  const img = view && view.png ? `<img class="chartImg" alt="${esc(view.ticker)} chart, ${esc(view.range)}" src="data:image/png;base64,${view.png}">`
+    : `<div class="chartWait">Drawing the chart…</div>`;
+  const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
+  return `<div class="chartBox">${img}<div class="ranges">${ranges}</div></div>` +
+    `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
+}
+
 // ---------------------------------------------------------------- Checklist (view "card": the desktop's panel) ---
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
@@ -198,7 +210,9 @@ function renderActions(view) {
 
 // ---------------------------------------------------------------- the page ---
 const S = { tab: "favs", filter: "", account: null, accounts: [], views: {}, open: {}, live: false, user: null,
-  ticker: null, from: "favs" };
+  ticker: null, from: "favs", range: localGet("range") || "2M" };
+function localGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function localSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* (private mode) */ } }
 
 function render() {
   const screen = document.getElementById("screen");
@@ -208,6 +222,8 @@ function render() {
   if (S.tab === "favs") html = renderFavs(v("favs"), S);
   else if (S.tab === "trades") html = renderTrades(v("trades"), S);
   else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
+  else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range) +
+    renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
   else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
@@ -216,7 +232,8 @@ function render() {
   document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
     `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}</button>`).join("");
   const tab = TABS.find(t => t.id === S.tab);
-  document.getElementById("title").textContent = S.tab === "ticker" || S.tab === "checklist" ? (S.ticker || "") + (S.tab === "checklist" ? " · Checklist" : "") : tab ? tab.label : "";
+  document.getElementById("title").textContent = ["ticker", "chart", "checklist"].includes(S.tab) && S.ticker ?
+    S.ticker + (S.tab === "checklist" ? " · Checklist" : S.tab === "chart" ? " · Chart" : "") : tab ? tab.label : "";
   document.getElementById("back").hidden = S.tab !== "ticker";
   if (TG && TG.BackButton) { try { if (S.tab === "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
   document.getElementById("account").textContent = S.account ? "..." + S.account : "...";
@@ -242,7 +259,7 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.t === "hello") {
       S.user = m.user; S.accounts = m.accounts; S.live = true; banner("");
-      const saved = localStorage.getItem("account");
+      const saved = localGet("account");
       S.account = (m.accounts.find(a => a.tail === saved) || m.accounts[0]).tail;
       subscribe(); render();
     } else if (m.t === "view") {
@@ -256,7 +273,9 @@ function connect() {
   ws.onclose = () => { S.live = false; render(); banner("Reconnecting…"); setTimeout(connect, wait); wait = Math.min(wait * 2, 15000); };
 }
 function subscribe() {
-  const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : []);
+  // (the chart's picture only while it's shown: it's the biggest)
+  const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : [])
+    .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : []);
   if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
 }
 
@@ -273,14 +292,15 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-tab],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
-    if (t.dataset.tab) { S.tab = t.dataset.tab; render(); return; }
+    if (t.dataset.tab) { S.tab = t.dataset.tab; subscribe(); render(); return; }
+    if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
     if (t.dataset.ticker) { openTicker(t.dataset.ticker); return; }
     if (t.dataset.soon) { sheet(`<div class="tip">Sending orders from the phone comes in step 3 of the plan.</div>`); return; }
     if (t.id === "back") { goBack(); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
-    if (t.dataset.acct) { S.account = t.dataset.acct; localStorage.setItem("account", S.account); sheet(""); subscribe(); render(); return; }
+    if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.id === "account") {
       sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
       return;
@@ -327,5 +347,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderCard, renderChecklist, renderActions, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderCard, renderChart, renderChecklist, renderActions, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

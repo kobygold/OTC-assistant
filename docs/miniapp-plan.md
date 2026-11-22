@@ -5,7 +5,7 @@ shows - favorites, chart, Level II, checklist, ATM trades, orders, alerts - laid
 order buttons working. The design is the clickable mockup of 2026-11-20 (390x844, "OTC Mini App Mockup"),
 updated with what the desktop gained since (section 6).
 
-Status: **step 2a built** (v2.7.118: the ticker card, its Level II and the Checklist, live, read-only); step 1 (v2.7.117: the way in, Favorites, Trades) and step 0 (the mockup) done. Next: 2b, the Chart. Decisions made are marked **(decided)**; open ones **(to decide)**.
+Status: **step 2 built** (v2.7.119: the Chart; v2.7.118: the ticker card, its Level II and the Checklist - live, read-only); step 1 (v2.7.117: the way in, Favorites, Trades) and step 0 (the mockup) done. Next: step 3, the orders. Decisions made are marked **(decided)**; open ones **(to decide)**.
 
 ## 1. Rule number one: one logic, the desktop's
 
@@ -133,6 +133,7 @@ The phone shows the desktop's own output, so most desktop fixes need **no phone 
 |---|---|---|---|
 | Favorites | `otc_miniapp_views.MiniViews.favs` | `fav_order`, `fav_atm_trade` (otc_daily_gui), `trade_steps`, the Check L1/L2 results, `ticker_risk` | `renderFavs` |
 | Ticker card, Checklist | `MiniViews.card` | **a hidden copy of the desktop's checklist panel** (`otc_checklist.ChecklistPanel(share=...)`: the same ATM trades, fees and code), read row by row (`checklist_view`); `fee_bar_for` (the bar over the chart); the Level II box's `mm_risk` and `diluters_first`; the panel's `SPLIT_BEFORE` / `SPLIT_AFTER` lines | `renderCard`, `renderChecklist`, `renderActions` (the panel's buttons as shown) |
+| Chart | `MiniViews.chart` | **a hidden copy of the desktop's chart widget** (`otc_chart.CandleChart`), dressed by `dress_chart` (the same drawings, orders, alerts, display choices), `bounce_for`, `candle_rows`, the desktop's `MinuteLoader` (1D); drawn at the phone's size (390 x 440, twice the pixels) as a picture | `renderChart` (the picture, the range buttons, Level II) |
 | Trades (+ its orders) | `MiniViews.trades` | **a hidden copy of the Monitor tab's ATM Trades table** (`otc_atm_trades.AtmTable`), read cell by cell: text, color, background, bold, tooltip | `renderTrades` (every column the table has, in its order) |
 
 - A fix in how the desktop **computes or words** something (a P/L, a fee, a sort, a state's name or color): done

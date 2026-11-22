@@ -10,6 +10,8 @@ sent when it changed ({"type": "mini_view", "key", "data"}).
                     which way each moved last), the ticker's risk sign
   trades/<account>  the ATM Trades table, cell by cell (text, color, background, bold, tooltip): a copy of the
                     Monitor tab's table, for that account, with every trade's orders opened under it
+  chart/<account>/<ticker>/<range>  its chart: the desktop's chart widget (a hidden copy, dressed as the desktop's:
+                    the same drawings, orders, alerts, bounce range, tags), drawn at the phone's size as a picture
   card/<account>/<ticker>  the ticker's card and checklist: the desktop's checklist panel (a hidden copy of it, fed
                     the ticker's candles, quote and book), read row by row; the bar over its chart; its Level II
                     with the market makers' signs (the Level II box's own functions)
@@ -28,6 +30,8 @@ TICK_MS = 1000
 CANDLES_S = 300             # a card's candles (and bounce range) read again this often
 RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
 MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
+CHART_W, CHART_H, CHART_DPR = 390, 440, 2       # the phone's chart: its size in points, drawn at twice the pixels
+MINUTES_S = 60              # a 1D chart's 1-minute candles read again this often (as the desktop's)
 MARK = re.compile(r"color:\s*([#\w]+)[^>]*>([^<]*)<")
 COLOR = re.compile(r"(?<![-\w])color:\s*([#\w]+)")
 
@@ -78,6 +82,9 @@ class MiniViews(QObject):
         self.sizes = {}             # (ticker, side, mm) -> (its last size, +1 / -1 its last change)
         self.cards = {}             # ticker -> {"panel": the hidden checklist, "candles": time read}
         self.reloads = {}           # ticker -> (time looked, {mm: its refill events})
+        self.charts = {}            # (ticker, range) -> {"chart": the hidden chart, "read": time its candles were read}
+        self.minutes = {}           # ticker -> its 1-minute candles (the Mini App's own reader: the desktop's is its chart's)
+        self.minute_loader = None
         self.timer = QTimer(self)
         self.timer.setInterval(TICK_MS)
         self.timer.timeout.connect(self.tick)
@@ -93,7 +100,10 @@ class MiniViews(QObject):
         self.sent = {k: v for k, v in self.sent.items() if k in self.keys}
         for account in [a for a in self.tables if f"trades/{a}" not in self.keys]:
             self.tables.pop(account).deleteLater()
-        tickers = {k.split("/")[2] for k in self.keys if k.startswith("card/") and k.count("/") == 2}
+        wanted_charts = {tuple(k.split("/")[2:4]) for k in self.keys if k.startswith("chart/") and k.count("/") == 3}
+        for c in [c for c in self.charts if c not in wanted_charts]:
+            self.charts.pop(c)["chart"].deleteLater()
+        tickers = {k.split("/")[2] for k in self.keys if k.startswith(("card/", "chart/")) and k.count("/") >= 2}
         for t in [t for t in self.cards if t not in tickers]:
             self.cards.pop(t)["panel"].deleteLater()
         if tickers != getattr(self.win, "mini_tickers", set()):
@@ -146,6 +156,9 @@ class MiniViews(QObject):
         if what == "card":
             account, _, ticker = account.partition("/")
             return self.card(account, ticker)
+        if what == "chart":
+            account, ticker, rng = account.split("/")
+            return self.chart(account, ticker, rng)
         return None
 
     # ---- the views ----
@@ -306,6 +319,71 @@ class MiniViews(QObject):
             "steps": trade_steps(panel.atm.live_view(e)) if e else None,
             "book": {"bids": book(bids, "BID"), "asks": book(Level2Panel.diluters_first(asks, reloaders), "ASK")},
             "checklist": checklist_view(panel)}
+
+
+    # ---- a ticker's chart: the desktop's chart widget, drawn for the phone ----
+    def chart(self, account, ticker, rng):
+        import base64
+        import time
+        from PyQt6.QtCore import QBuffer, QIODevice
+        from PyQt6.QtGui import QPixmap
+        from otc_chart import CandleChart
+        from otc_daily_gui import RANGES, ticker_risk
+        w = self.win
+        key = (ticker, rng)
+        c = self.charts.get(key)
+        if c is None:
+            chart = CandleChart()
+            chart.hide()
+            chart.setMinimumSize(0, 0)          # (the desktop's is 500 wide at least)
+            chart.resize(CHART_W, CHART_H)
+            c = self.charts[key] = {"chart": chart, "read": 0.0, "rows": None}
+        chart = c["chart"]
+        w.dress_chart(chart)
+        risk = ticker_risk(ticker)
+        chart.set_risk(w.risk_icons[risk[0]], risk[1]) if risk else chart.set_risk()
+        if time.time() - c["read"] > (MINUTES_S if rng == "1D" else CANDLES_S):
+            c["read"] = time.time()
+            c["rows"] = w.candle_rows(ticker)
+            if rng == "1D":
+                self.read_minutes(ticker)
+            else:
+                chart.set_data(ticker, c["rows"], dict(RANGES).get(rng, 12), rng,
+                               message="" if c["rows"] else f"No data for {ticker} in the database.")
+            chart.set_bounce(w.bounce_for(c["rows"]))
+        if rng == "1D" and ticker in self.minutes and self.minutes[ticker] is not c.get("minutes"):
+            c["minutes"] = self.minutes[ticker]
+            chart.set_intraday(ticker, c["minutes"], keep_view=True,
+                               message="" if c["minutes"] else f"No 1-minute candles for {ticker} in the last days.")
+            chart.set_bounce(w.bounce_for(c["rows"] or []))
+        elif rng == "1D" and not chart.intraday:
+            chart.set_intraday(ticker, [], message=f"Reading {ticker}'s 1-minute candles from Schwab...")
+        q = self.quotes.get(ticker)
+        if q:
+            chart.set_live(q)
+        if ticker in self.books:
+            chart.set_book(ticker, *self.books[ticker])
+        pix = QPixmap(CHART_W * CHART_DPR, CHART_H * CHART_DPR)
+        pix.setDevicePixelRatio(CHART_DPR)
+        chart.render(pix)
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        pix.save(buf, "PNG")
+        return {"ticker": ticker, "range": rng, "w": CHART_W, "h": CHART_H,
+                "png": base64.b64encode(bytes(buf.data())).decode("ascii")}
+
+    def read_minutes(self, ticker):
+        """The ticker's 1-minute candles from Schwab (the desktop's reader, an instance of its own)."""
+        if self.minute_loader is None:
+            from otc_daily_gui import APP_DIR
+            from otc_intraday import MinuteLoader
+            self.minute_loader = MinuteLoader(self.win.settings, APP_DIR / "schwab_token.json")
+            self.minute_loader.done.connect(self.minutes_read)
+        self.minute_loader.request(ticker)
+
+    def minutes_read(self, ticker, rows, error):
+        if rows or ticker not in self.minutes:
+            self.minutes[ticker] = list(rows)
 
 
 def checklist_view(panel):

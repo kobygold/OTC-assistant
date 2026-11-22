@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.118"
+APP_VERSION = "2.7.119"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2375,7 +2375,14 @@ class MainWindow(QMainWindow):
 
     def chart_bounce(self):
         """The current chart's range with the ATM tab's settings, or None."""
-        if not self.bounces_show.isChecked() or not self.chart.ticker or not self.chart_rows:
+        if not self.chart.ticker:
+            return None
+        return self.bounce_for(self.chart_rows)
+
+    def bounce_for(self, chart_rows):
+        """The bounce range of a ticker's daily candles with the ATM tab's settings (Bounces on), or None: the
+        desktop chart's and the Mini App's."""
+        if not self.bounces_show.isChecked() or not chart_rows:
             return None
         con = db()
         try:
@@ -2384,7 +2391,7 @@ class MainWindow(QMainWindow):
             con.close()
         if not first_day:
             return None
-        rows = [r for r in self.chart_rows if None not in r[1:5]]
+        rows = [r for r in chart_rows if None not in r[1:5]]
         if not rows:
             return None
         dates, data = atm.clean([r[0] for r in rows], np.array([[*r[1:5], r[5] or 0.0] for r in rows], dtype=float))
@@ -3588,6 +3595,17 @@ class MainWindow(QMainWindow):
                 self.drop_order_alerts(account, ticker, ("buy",))
             if e.get("state") == "sold":
                 self.drop_order_alerts(account, ticker, ("sell",))
+
+    def dress_chart(self, chart):
+        """Another chart (the Mini App's, hidden) showing what the desktop chart shows: the same drawings, open
+        orders, alerts and display choices."""
+        chart.drawing_store = self.chart.drawing_store
+        chart.order_lines = self.chart_orders
+        chart.alert_lines = self.chart_alerts
+        for flag in ("show_expirations", "show_last_tags", "show_bid_ask_tags", "held"):
+            setattr(chart, flag, getattr(self.chart, flag))
+        if chart.avg_period != self.chart.avg_period:
+            chart.set_avg_period(self.chart.avg_period)
 
     def chart_orders(self, ticker):
         """The ticker's open orders for the chart: its ATM trade's, and the chosen account's others."""

@@ -7,7 +7,7 @@ button opens the current main server's.
 
 A phone's WebSocket (/ws):
   phone -> {"t": "auth", "initData": Telegram's signed user data}
-           {"t": "sub", "account": "159", "views": ["favs", "trades", "card:PDIV"]}      (again: replaces them)
+           {"t": "sub", "account": "159", "views": ["favs", "trades", "card:PDIV", "chart:PDIV:2M"]}  (again: replaces them)
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
 
@@ -36,6 +36,7 @@ AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is droppe
 ACCOUNTS = "telegram/accounts/"
 VIEWS = ("favs", "trades")       # (and "card:<TICKER>")
 TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
+RANGES = ("1D", "1M", "2M", "1Y")       # the phone's chart ranges (the desktop's buttons)
 
 
 def check_init_data(init_data: str, bot_token: str, max_age=AUTH_MAX_AGE_S, now=None):
@@ -228,6 +229,10 @@ class MiniApp:
                 keys.add(f"{v}/{account}")
             elif v.startswith("card:") and TICKER.fullmatch(v[5:]):      # a ticker's card and checklist
                 keys.add(f"card/{account}/{v[5:]}")
+            elif v.startswith("chart:") and v.count(":") == 2:               # its chart, in a range
+                _, ticker, rng = v.split(":")
+                if TICKER.fullmatch(ticker) and rng in RANGES:
+                    keys.add(f"chart/{account}/{ticker}/{rng}")
         phone.keys = keys
         self.update_wanted()
         for key in sorted(phone.keys):
