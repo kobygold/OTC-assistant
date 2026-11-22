@@ -169,7 +169,7 @@ class MiniViews(QObject):
 
     def on_quote(self, ticker, q):
         old = self.quotes.setdefault(ticker, {})
-        for k in ("BID_PRICE", "ASK_PRICE", "LAST_PRICE"):
+        for k in ("BID_PRICE", "ASK_PRICE", "LAST_PRICE", "BID_SIZE", "ASK_SIZE"):
             v = q.get(k)
             if v is not None and old.get(k) is not None and v != old[k]:
                 self.moved[(ticker, k)] = 1 if v > old[k] else -1
@@ -506,7 +506,10 @@ class MiniViews(QObject):
                                                ("volume", "TOTAL_VOLUME"))},
             "moved": {} if held else {"bid": self.moved.get((ticker, "BID_PRICE"), 0),
                                       "ask": self.moved.get((ticker, "ASK_PRICE"), 0),
-                                      "last": self.moved.get((ticker, "LAST_PRICE"), 0)},
+                                      "last": self.moved.get((ticker, "LAST_PRICE"), 0),
+                                      "bid_size": self.moved.get((ticker, "BID_SIZE"), 0),
+                                      "ask_size": self.moved.get((ticker, "ASK_SIZE"), 0)},
+            "held": held,           # (the Level II's quote bar in gray then, as the desktop's)
             "steps": trade_steps(panel.atm.live_view(e)) if e else None,
             "book": {"bids": book(bids, "BID"), "asks": book(Level2Panel.diluters_first(asks, reloaders), "ASK"),
                      "note": note},

@@ -205,7 +205,25 @@ function tickerHead(card, right) {
 // ---- the Level II tab (view "card": its book, as the desktop's Level II panel) ----
 function renderL2(card) {
   if (!card) return tickerHead(null) + `<div class="empty">Waiting for the ticker…</div>`;
-  return tickerHead(card) + `<div class="cardPage">` + renderBook(card.book) + `</div>`;
+  return tickerHead(card) + l2Bar(card) + `<div class="cardPage">` + renderBook(card.book) + `</div>`;
+}
+// the desktop Level II's quote bar: the last price (and its change from yesterday's close), the bid and the ask,
+// price and size each green after it went up, red after it went down, yellow before any change; gray while held
+function l2Bar(card) {
+  const q = card.quote || {}, m = card.moved || {};
+  const tone = (k) => card.held ? "#8c8c8c" : m[k] ? moveColor(m[k]) : "#f3c400";
+  const cells = [];
+  if (q.last != null) {
+    const chg = q.close ? q.last - q.close : null, cc = chg > 0 ? "#1db31d" : chg < 0 ? "#e0404f" : "#d8d8d8";
+    cells.push(`<span class="l2last" style="color:#f3c400">${esc(fp(q.last))}</span>` +
+      (chg != null ? `<span class="l2chg" style="color:${cc}"><span>${esc(fchg(chg))}</span><span>${(chg / q.close * 100 >= 0 ? "+" : "") + (chg / q.close * 100).toFixed(2)}%</span></span>` : ""));
+  }
+  for (const [side, lab] of [["bid", "Bid"], ["ask", "Ask"]]) {
+    if (q[side] == null) continue;
+    const size = q[side + "_size"] ? Number(q[side + "_size"]).toLocaleString("en-US") : "N/A";
+    cells.push(`${lab}: <span style="color:${tone(side)}">${esc(fp(q[side]))}</span> x <span style="color:${tone(side + "_size")}">${esc(size)}</span>`);
+  }
+  return cells.length ? `<div class="l2bar">${cells.map(c => `<div class="l2cell">${c}</div>`).join("")}</div>` : "";
 }
 
 // ---- the chart's pinch and pan: the picture moved at once under the fingers, and the desktop's chart drawn so
