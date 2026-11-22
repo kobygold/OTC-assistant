@@ -57,7 +57,7 @@ address. A one-time `tailscale serve` command on each computer (I give the comma
   with the desktop's code (section 1): the favorites with their steps and checks, a ticker's card, chart
   data, checklist, the trades, orders, alerts - and carrying out the orders.
 - **The page (miniapp/: HTML, CSS, JavaScript, no build step):** the mockup's screens made real; the chart
-  drawn with TradingView's Lightweight Charts (pinch to zoom, drag to scroll); Telegram's Back button,
+  the desktop's own chart, drawn as a picture (pinch to zoom, drag to scroll: section 12); Telegram's Back button,
   safe areas, full height, no swipe-to-close, haptics.
 
 The Mini App works while the main server's app is open - as the bot does now.
@@ -133,7 +133,7 @@ The phone shows the desktop's own output, so most desktop fixes need **no phone 
 |---|---|---|---|
 | Favorites | `otc_miniapp_views.MiniViews.favs` | `fav_order`, `fav_atm_trade` (otc_daily_gui), `trade_steps`, the Check L1/L2 results, `ticker_risk` | `renderFavs` |
 | Ticker card, Checklist | `MiniViews.card` | **a hidden copy of the desktop's checklist panel** (`otc_checklist.ChecklistPanel(share=...)`: the same ATM trades, fees and code), read row by row (`checklist_view`); `fee_bar_for` (the bar over the chart); the Level II box's `mm_risk` and `diluters_first`; the panel's `SPLIT_BEFORE` / `SPLIT_AFTER` lines | `renderCard`, `renderChecklist`, `renderActions` (the panel's buttons as shown) |
-| Chart | `MiniViews.chart` | **a hidden copy of the desktop's chart widget** (`otc_chart.CandleChart`), dressed by `dress_chart` (the same drawings, orders, alerts, display choices), `bounce_for`, `candle_rows`, the desktop's `MinuteLoader` (1D); drawn at the phone's size (390 x 440, twice the pixels) as a picture | `renderChart` (the picture, the range buttons, Level II) |
+| Chart | `MiniViews.chart` | **a hidden copy of the desktop's chart widget** (`otc_chart.CandleChart`), dressed by `dress_chart` (the same drawings, orders, alerts, display choices), `bounce_for`, `candle_rows`, the desktop's `MinuteLoader` (1D); drawn at the phone's size (390 x 440, twice the pixels) as a picture; pinched / panned: `MiniViews.zoom` sets its `first` / `count` (the desktop's limits: `_clamp_first`) | `renderChart` (the picture, the range buttons, Level II); the gestures: `startGesture` / `moveGesture` / `endGesture`, `applyZoom` |
 | Orders | `MiniViews.orders` | **hidden copies of the Monitor tab's All Orders and Stocks owned tables** (`SchwabOrdersTable`, `PositionsTable`; every status: the phone filters), `order_log_for` (the Order Log) | `renderOrders` |
 | Alerts | `MiniViews.alerts` | the account's alerts (`alerts`), worded by `otc_alerts.describe` | `renderAlerts` |
 | Orders sheet (step 3) | `otc_miniapp_orders.MiniOrders` | **the desktop's own buttons and order code**: the checklist's buttons (`buy_clicked`, `sell_clicked`, `sell_on_bid`, `reset_done`) on the hidden checklist, the Monitor tab's table buttons (Change / Cancel, Sell on Bid / Ask) on its hidden tables, clicked; **their dialogs read and answered** (`DialogBridge`: `_order_dialog`'s rows and boxes, the question boxes, the warnings) | `renderDialog`, `renderActions`, `rowButtons` |
@@ -214,3 +214,20 @@ Delete (its question). The bridge presses the dialog's own button (Create, Save,
 on it runs.
 
 Who: the checklist's editing needs trading allowed (it changes the plan the orders use); the alerts, any linked phone.
+
+## 12. The chart's pinch and pan (built in 2.7.129)
+
+Decided: the desktop's chart stays the one drawn (zones, bounce, order and alert tags, expirations, L2 Ask lines,
+drawings), not a phone-drawn chart.
+
+- Under the fingers the phone stretches and moves the picture it has (a CSS transform, the time axis only), so it
+  follows at once; meanwhile it sends `{"t": "zoom", "key": "chart/159/PDIV/2M", "first", "count"}` (the candles
+  wanted, one request at a time, the last wish sent once the picture comes); the server passes it on as `mini_zoom`
+  (only for a chart that phone is shown); the main server's app sets the hidden chart's `first` / `count` with the
+  desktop's limits and draws it at once. The picture carries its `view` (`first`, `count`, `n`, the candles' area),
+  so the phone can place the next one.
+- One finger sideways: pan (up / down still scrolls the page); two: pinch (the candle between the fingers stays
+  there); a double tap: the range's view again (`reset_view`, the desktop's double-click). The price axis fits the
+  candles shown, as on the desktop.
+- The view is the hidden chart's: two phones on the same chart and range share it; it stays through the live
+  redraws and is dropped when no phone shows that chart.

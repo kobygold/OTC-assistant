@@ -186,6 +186,95 @@ function renderChart(view, card, range) {
     `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
 }
 
+// ---- the chart's pinch and pan: the picture moved at once under the fingers, and the desktop's chart drawn so
+// by the main server's app (its own view: the candles shown, its limits) a moment later; a double tap: as it was ----
+const Z = { g: null, target: null, busy: 0, again: false, tap: 0, last: 0 };
+function chartKey() { return "chart/" + S.account + "/" + S.ticker + "/" + S.range; }
+function chartView() { const v = S.tab === "chart" && S.ticker ? S.views[chartKey()] : null; return v && v.view && v.png ? v : null; }
+function zoomClamp(z, first, count) {        // (the desktop chart's: at least 12 candles, a little empty room)
+  count = Math.min(Math.max(count, z.min), z.n + z.right);
+  first = Math.min(Math.max(first, -count * 0.5), z.n - 5, z.n + z.right - count);
+  return { first, count };
+}
+function applyZoom() {
+  const img = document.querySelector(".chartImg"), v = chartView();
+  if (!img) return;
+  const t = v && Z.target && Z.target.key === chartKey() ? Z.target : null;
+  if (!t) { img.style.transform = ""; return; }
+  // the picture's candles (z.first, z.count) stretched and moved to show the wanted ones (t.first, t.count)
+  const z = v.view, k = img.parentNode.clientWidth / v.w, s = z.count / t.count;
+  const tx = z.left * (1 - s) + (z.first - t.first) * z.width / t.count;
+  img.style.transformOrigin = "0 0";
+  img.style.transform = `translateX(${(tx * k).toFixed(1)}px) scaleX(${s.toFixed(4)})`;
+}
+function sendZoom(msg) {
+  if (!ws || ws.readyState !== 1) return;
+  if (Z.busy && Date.now() - Z.busy < 700) {      // (one at a time: the last wish sent when it's drawn)
+    Z.again = true; setTimeout(flushZoom, 720); return;
+  }
+  Z.busy = Date.now(); Z.again = false; Z.last = Date.now();
+  ws.send(JSON.stringify(Object.assign({ t: "zoom", key: chartKey() }, msg)));
+}
+function flushZoom() { if (Z.again && Z.target && Z.target.key === chartKey()) { Z.busy = 0; sendZoom({ first: Z.target.first, count: Z.target.count }); } }
+function onChartView(data) {
+  Z.busy = 0;
+  const z = data && data.view, t = Z.target;
+  if (t && z && !Z.g && !Z.again && Math.abs(z.first - t.first) < 0.05 && Math.abs(z.count - t.count) < 0.05) Z.target = null;
+  flushZoom();
+}
+function touchPts(e, box, v) {
+  const r = box.getBoundingClientRect(), k = r.width / v.w;
+  return Array.from(e.touches).map(t => ({ x: (t.clientX - r.left) / k, y: (t.clientY - r.top) / k }));
+}
+function startGesture(e, img, v) {
+  const p = touchPts(e, img.parentNode, v);
+  if (!p.length) { Z.g = null; return; }
+  const b = Z.target && Z.target.key === chartKey() ? Z.target : v.view;
+  const two = p.length > 1;
+  Z.g = { img, two, moved: Z.g ? Z.g.moved : false, base: { first: b.first, count: b.count },
+          c0: two ? (p[0].x + p[1].x) / 2 : p[0].x, d0: two ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : 0,
+          x0: p[0].x, y0: p[0].y };
+}
+function moveGesture(e) {
+  const g = Z.g, v = chartView();
+  if (!g || !v) return;
+  const p = touchPts(e, g.img.parentNode, v);
+  if (!p.length) return;
+  if ((p.length > 1) !== g.two) { startGesture(e, g.img, v); return; }
+  if (!g.moved) {
+    const dx = Math.abs(p[0].x - g.x0), dy = Math.abs(p[0].y - g.y0);
+    if (!g.two && dx < 6) return;               // (not yet: a tap, or the page scrolled up / down)
+    if (!g.two && dy > dx) { Z.g = null; return; }
+    g.moved = true;
+  }
+  if (e.cancelable) e.preventDefault();
+  const z = v.view;
+  const c = g.two ? (p[0].x + p[1].x) / 2 : p[0].x;
+  const s = g.two && g.d0 > 10 ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) / g.d0 : 1;
+  const slot = g.base.first + (g.c0 - z.left) / z.width * g.base.count;   // (the candle under the fingers stays so)
+  const count = g.base.count / Math.max(s, 0.05);
+  const t = zoomClamp(z, slot - (c - z.left) / z.width * Math.min(Math.max(count, z.min), z.n + z.right), count);
+  Z.target = { key: chartKey(), first: t.first, count: t.count };
+  applyZoom();
+  sendZoom({ first: t.first, count: t.count });
+}
+function endGesture(e) {
+  const g = Z.g, v = chartView();
+  if (!g) return;
+  if (e.touches && e.touches.length && v) { startGesture(e, g.img, v); return; }     // (a finger still on it)
+  Z.g = null;
+  if (!g.moved && !g.two) {
+    if (Date.now() - Z.tap < 350) {           // a double tap: the range's view again (the desktop's double-click)
+      Z.tap = 0; Z.target = null; Z.again = false; Z.busy = 0; applyZoom(); sendZoom({ reset: true });
+    } else Z.tap = Date.now();
+  }
+  flushZoom();
+  setTimeout(() => {         // (a wish the chart couldn't take: what it shows is shown)
+    if (!Z.g && !Z.again && Z.target && Date.now() - Z.last > 2400) { Z.target = null; applyZoom(); }
+  }, 2500);
+  if (S.later) { S.later = false; render(); }
+}
+
 // ---------------------------------------------------------------- Orders (view "orders": the Monitor tab) ---
 function renderOrders(view, st) {
   if (!view) return `<div class="empty">Waiting for the orders…</div>`;
@@ -389,7 +478,7 @@ function localSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* (pr
 function render() {
   const screen = document.getElementById("screen");
   const typing = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("ckIn");
-  if (typing) { S.later = true; return; }       // (drawn once the box is left)
+  if (typing || Z.g) { S.later = true; return; }       // (drawn once the box is left, or the chart let go)
   const v = (what) => S.views[what + "/" + S.account];
   let html;
   const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
@@ -415,6 +504,7 @@ function render() {
   document.getElementById("account").textContent = S.account ? "..." + S.account : "...";
   document.getElementById("dot").className = S.live ? "on" : "";
   document.getElementById("liveText").textContent = S.live ? "Live" : "Off";
+  applyZoom();
 }
 function banner(text, bad) {
   const b = document.getElementById("banner");
@@ -510,7 +600,13 @@ function connect() {
       S.account = (m.accounts.find(a => a.tail === saved) || m.accounts[0]).tail;
       subscribe(); render();
     } else if (m.t === "view") {
-      S.views[m.key] = m.data; render();
+      S.views[m.key] = m.data;
+      if (m.key === chartKey()) onChartView(m.data);
+      if (Z.g && m.key === chartKey()) {         // (pinching: only the picture changes)
+        const img = document.querySelector(".chartImg");
+        if (img && m.data && m.data.png) img.src = "data:image/png;base64," + m.data.png;
+        applyZoom(); S.later = true;
+      } else render();
       // the editing sheet follows its row (not while a box is being typed in)
       if (S.edit && !S.act && m.key === "card/" + S.account + "/" + S.edit.ticker && !(document.activeElement && document.activeElement.classList.contains("dlgIn"))) showEdit();
     } else if (m.t === "result") {
@@ -529,6 +625,7 @@ function subscribe() {
     .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
     .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : []);
   if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
+  Z.target = null; Z.again = false;          // (another chart: drawn as its range shows it)
 }
 
 function openTicker(tk) {
@@ -611,6 +708,13 @@ function setup() {
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
+  document.addEventListener("touchstart", (e) => {
+    const img = e.target.closest && e.target.closest(".chartImg"), v = chartView();
+    if (img && v) startGesture(e, img, v);
+  }, { passive: true });
+  document.addEventListener("touchmove", moveGesture, { passive: false });
+  document.addEventListener("touchend", endGesture);
+  document.addEventListener("touchcancel", endGesture);
   document.addEventListener("input", (e) => { if (e.target.id === "flt") { S.filter = e.target.value; render(); } });
   // a checklist box: Enter or leaving it sends the value (the desktop's box takes it: 12 -> 0.0012)
   document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.classList.contains("ckIn")) e.target.blur(); });

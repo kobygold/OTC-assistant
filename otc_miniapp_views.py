@@ -134,6 +134,9 @@ class MiniViews(QObject):
 
     # ---- from the server ----
     def on_message(self, msg):
+        if msg.get("type") == "mini_zoom":
+            self.zoom(msg)
+            return
         if msg.get("type") != "mini_want":
             return
         self.keys = {str(k) for k in msg.get("keys") or []}
@@ -189,6 +192,34 @@ class MiniViews(QObject):
             if self.sent.get(key) != text:
                 self.sent[key] = text
                 self.win.server.send({"type": "mini_view", "key": key, "data": data})
+
+    def zoom(self, msg):
+        """A phone pinched or panned its chart: the hidden chart shows those candles (as the desktop's wheel and
+        drag: the same limits), drawn and sent at once (even if the same: the phone waits for it)."""
+        from otc_chart import MAX_RIGHT_EMPTY_BARS
+        key = str(msg.get("key") or "")
+        parts = key.split("/")
+        if key not in self.keys or len(parts) != 4 or not self.win.checklist.atm.decides():
+            return
+        c = self.charts.get((parts[2], parts[3]))
+        if c is None:
+            return
+        chart = c["chart"]
+        if not chart.dates:
+            return
+        if msg.get("reset"):
+            chart.reset_view()
+        else:
+            chart.count = min(max(float(msg["count"]), 12.0), len(chart.dates) + MAX_RIGHT_EMPTY_BARS)
+            chart.first = chart._clamp_first(float(msg["first"]))
+        self.sent.pop(key, None)
+        try:
+            data = self.build(key)
+        except Exception as e:          # (never stops the app)
+            data = {"error": f"{type(e).__name__}: {e}"}
+        if data is not None:
+            self.sent[key] = json.dumps(data, sort_keys=True, default=str)
+            self.win.server.send({"type": "mini_view", "key": key, "data": data})
 
     def build(self, key):
         what, _, account = key.partition("/")
@@ -417,7 +448,7 @@ class MiniViews(QObject):
         import time
         from PyQt6.QtCore import QBuffer, QIODevice
         from PyQt6.QtGui import QPixmap
-        from otc_chart import CandleChart
+        from otc_chart import CandleChart, MAX_RIGHT_EMPTY_BARS
         from otc_daily_gui import RANGES, ticker_risk
         w = self.win
         key = (ticker, rng)
@@ -459,7 +490,11 @@ class MiniViews(QObject):
         buf = QBuffer()
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
         pix.save(buf, "PNG")
+        price, _vol = chart._layout()
         return {"ticker": ticker, "range": rng, "w": CHART_W, "h": CHART_H,
+                # the candles shown (for the phone's pinch and pan): first slot, how many, of n; the candles' area
+                "view": {"first": chart.first, "count": chart.count, "n": len(chart.dates), "left": price.left(),
+                         "width": price.width(), "min": 12, "right": MAX_RIGHT_EMPTY_BARS},
                 "png": base64.b64encode(bytes(buf.data())).decode("ascii")}
 
     def read_minutes(self, ticker):

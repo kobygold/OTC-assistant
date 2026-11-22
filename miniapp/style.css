@@ -122,8 +122,9 @@ button { font-family: inherit; color: inherit; }
 .itemVal { font-size: 12px; }
 
 /* the chart: the desktop's, as a picture; the ranges over its empty right side (as the mockup) */
-.chartBox { position: relative; background: #000; }
-.chartImg { display: block; width: 100%; height: auto; }
+.chartBox { position: relative; background: #000; overflow: hidden; }
+.chartImg { display: block; width: 100%; height: auto; touch-action: pan-y; user-select: none; -webkit-user-select: none;
+            -webkit-user-drag: none; -webkit-touch-callout: none; will-change: transform; }
 .chartWait { height: 300px; display: flex; align-items: center; justify-content: center; color: var(--dim); }
 .ranges { position: absolute; top: 30px; right: 58px; display: flex; gap: 3px; background: rgba(13, 16, 20, 0.85); border-radius: 8px; padding: 2px; }
 .ranges button { min-width: 30px; height: 26px; padding: 0 5px; border-radius: 6px; border: 1px solid #2c3136; background: transparent;

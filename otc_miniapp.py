@@ -10,6 +10,8 @@ A phone's WebSocket (/ws):
            {"t": "sub", "account": "159", "views": ["favs", "trades", "card:PDIV", "chart:PDIV:2M"]}  (again: replaces them)
            {"t": "act", "req": 7, "account", "act", "answers"}   an order (otc_miniapp_orders.py: the desktop's order
                                                                  code, its dialogs answered by the phone)
+           {"t": "zoom", "key": "chart/159/PDIV/2M", "first", "count"}   its chart pinched / panned (the candles shown:
+                                                                 the desktop chart's own view), or {"reset": true}
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
             {"t": "result", "req", "result"}
@@ -185,6 +187,8 @@ class MiniApp:
                     await self.subscribe(phone, msg)
                 elif msg.get("t") == "act":
                     await self.act(phone, msg)
+                elif msg.get("t") == "zoom":
+                    self.zoom(phone, msg)
         except Exception:
             pass
         finally:
@@ -280,6 +284,24 @@ class MiniApp:
         self.acts[key] = (phone, req, now)
         out = {"type": "mini_act", "req": key, "account": account, "act": act,
                "answers": msg.get("answers") if isinstance(msg.get("answers"), list) else [], "who": phone.name}
+        for conn in list(self.server.conns):
+            conn.put(out)
+
+    def zoom(self, phone, msg):
+        """A chart the phone is shown, pinched or panned: to the main server's app, which draws it so at once."""
+        key = str(msg.get("key") or "")
+        if key not in phone.keys or not key.startswith("chart/") or not self.server.leader:
+            return
+        out = {"type": "mini_zoom", "key": key}
+        if msg.get("reset"):
+            out["reset"] = True
+        else:
+            try:
+                out["first"], out["count"] = float(msg["first"]), float(msg["count"])
+            except (KeyError, TypeError, ValueError):
+                return
+            if not all(abs(v) < 1e6 for v in (out["first"], out["count"])):
+                return
         for conn in list(self.server.conns):
             conn.put(out)
 
