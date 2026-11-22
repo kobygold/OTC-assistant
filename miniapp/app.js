@@ -26,7 +26,8 @@ const TABS = [
   { id: "checklist", label: "Checklist", icon: "M9 6h11M9 12h11M9 18h11M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5" },
   { id: "trades", label: "Trades", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
-  { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" }
+  { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" },
+  { id: "news", label: "Inbox", icon: "M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" }
 ];
 const SOON = {};
 // the Monitor tab's columns not shown as a card's fields (its buttons and boxes: drawn as buttons under it)
@@ -459,6 +460,32 @@ function renderEdit(card, key) {
 }
 
 // ---------------------------------------------------------------- Alerts (view "alerts") ---
+// ---------------------------------------------------------------- Inbox (view "news": the bot's messages) ---
+function newsSeen() { return Number(localGet("seen:" + S.account) || 0); }
+function newsUnread() {
+  const v = S.views["news/" + S.account];
+  if (!v) return 0;
+  const seen = newsSeen();
+  return v.items.filter(x => x.t > seen).length;
+}
+function newsWhen(t) {
+  const d = new Date(t * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (d.toDateString() === now.toDateString()) return hm;
+  return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) + " " + hm;
+}
+function renderNews(view) {
+  if (!view) return `<div class="empty">Waiting for the messages…</div>`;
+  if (!view.items.length) return `<div class="empty">No messages yet. The bot's news (orders filled, alerts, …) shows here as it comes.</div>`;
+  const seen = S.newsSeenShown != null ? S.newsSeenShown : newsSeen();
+  return `<div class="news">` + view.items.map(x => {
+    const lines = String(x.text).split("\n");
+    return `<button class="newsRow${x.t > seen ? " new" : ""}"${x.ticker ? ` data-news="${esc(x.ticker)}"` : ""}>` +
+      `<div class="newsTop"><b>${esc(lines[0])}</b><span class="when">${esc(newsWhen(x.t))}</span></div>` +
+      (lines.length > 1 ? `<div class="newsBody">${esc(lines.slice(1).join("\n"))}</div>` : "") + `</button>`;
+  }).join("") + `</div>`;
+}
+
 function renderAlerts(view) {
   if (!view) return `<div class="empty">Waiting for the alerts…</div>`;
   if (!view.alerts.length) return `<div class="empty">No alerts in this account. Add one from a ticker's card (Add alert).</div>`;
@@ -539,6 +566,13 @@ function render() {
   else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
   else if (S.tab === "orders") html = renderOrders(v("orders"), S);
   else if (S.tab === "alerts") html = renderAlerts(v("alerts"));
+  else if (S.tab === "news") {
+    // (the new ones marked while the tab is shown; seen from now on)
+    const nv = v("news");
+    if (S.newsSeenShown == null) S.newsSeenShown = newsSeen();
+    html = renderNews(nv);
+    if (nv && nv.items.length && nv.items[0].t > newsSeen()) localSet("seen:" + S.account, String(nv.items[0].t));
+  }
   else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range) +
     renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
   else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
@@ -548,8 +582,11 @@ function render() {
   const shown = S.tab + "|" + (S.ticker || "");
   if (shown !== S.shown) { S.shown = shown; screen.scrollTop = 0; }     // (another tab or ticker: from its top)
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
+  if (S.tab !== "news") S.newsSeenShown = null;
+  const unread = S.tab === "news" ? 0 : newsUnread();
   document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
-    `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}</button>`).join("");
+    `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}` +
+    (t.id === "news" && unread ? `<span class="badge">${unread > 99 ? "99+" : unread}</span>` : "") + `</button>`).join("");
   // (no top bar: Telegram's Back button; a lost connection: the banner, "Reconnecting…")
   if (TG && TG.BackButton) { try { if (S.tab === "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
   applyZoom();
@@ -671,7 +708,8 @@ function subscribe() {
   // (the chart's picture only while it's shown: it's the biggest)
   const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : [])
     .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
-    .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : []);
+    .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : [])
+    .concat(["news"]);         // (always: the Inbox tab's count of new ones)
   if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
   Z.target = null; Z.again = false; Z.want = {}; Z.local = null; Z.cur = null;   // (another chart: as its range shows it)
 }
@@ -694,7 +732,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -754,6 +792,9 @@ function setup() {
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.dataset.accts) { chooseAccount(); return; }
+    if (t.dataset.news) {      // an Inbox line: its ticker's checklist
+      S.from = "news"; S.ticker = t.dataset.news; S.tab = "checklist"; subscribe(); render(); return;
+    }
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
@@ -817,5 +858,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderNews, renderCard, renderChart, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

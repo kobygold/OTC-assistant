@@ -282,6 +282,8 @@ class MiniViews(QObject):
             return self.orders(account)
         if what == "alerts":
             return self.alerts(account)
+        if what == "news":
+            return self.news(account)
         if what == "card":
             account, _, ticker = account.partition("/")
             return self.card(account, ticker)
@@ -405,6 +407,13 @@ class MiniViews(QObject):
                         "state": a.get("state"), "created": a.get("created"), "by": a.get("by"),
                         "triggered_at": a.get("triggered_at"), "triggered_value": a.get("triggered_value")})
         return {"account": account, "alerts": out}
+
+    def news(self, account):
+        """The Inbox: the messages the bot sent the account's phones (otc_telegram's telegram/news), newest first."""
+        items = [dict(d, id=k) for k, d in self.win.shared.get(f"telegram/news/{account}/").items()
+                 if isinstance(d, dict) and d.get("text")]
+        items.sort(key=lambda d: -(d.get("t") or 0))
+        return {"account": account, "items": items}
 
     # ---- a ticker's card and checklist ----
     def panel_for(self, ticker):

@@ -17,11 +17,23 @@ button { font-family: inherit; color: inherit; }
 #banner.bad { background: #3a1a20; color: #ffb3bd; border-color: #6b2a35; }
 #screen { flex: 1; overflow-y: auto; overflow-x: hidden; }
 
-#tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 1px solid var(--line);
+#tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--line);
   background: var(--bar); padding-bottom: env(safe-area-inset-bottom); }
 #tabs button { height: 60px; border: none; background: transparent; color: #8a939c; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 3px; font-size: 10px; font-weight: 600; padding: 0; }
 #tabs button.on { color: var(--gold); }
+#tabs button { position: relative; }
+#tabs .badge { position: absolute; top: 6px; left: 50%; margin-left: 4px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+/* the Inbox: the bot's messages, newest first; a tap: the ticker's checklist */
+.news { padding: 8px 0; }
+.newsRow { display: block; width: 100%; text-align: left; padding: 10px 14px; border: none; border-bottom: 1px solid var(--line2);
+  background: transparent; }
+.newsRow.new { background: #16202a; box-shadow: inset 3px 0 0 var(--cyan); }
+.newsTop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.newsTop b { font-size: 14px; }
+.newsTop .when { flex-shrink: 0; font-size: 11px; color: var(--dim); }
+.newsBody { margin-top: 4px; font-size: 12.5px; color: var(--dim); white-space: pre-line; }
 
 /* the favorites */
 .filter { padding: 12px 12px 4px 12px; display: flex; gap: 8px; align-items: center; }

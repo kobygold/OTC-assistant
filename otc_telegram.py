@@ -19,6 +19,9 @@ In the shared data (otc_shared.py; on every computer, so it moves over with ever
   telegram/codes/<code>               {"account", "until"}: an Add phone code (the app's), 10 minutes
   telegram/sent/<account>/<trade id>  {"events": [...]}: the news sent about a trade (never twice,
                                       also when another computer takes over)
+  telegram/news/<account>/<id>        {"t", "ticker", "text"}: a message the bot sent the account's phones (the
+                                      trades' news, the alerts, the login and main server ones), for the Mini
+                                      App's Inbox; the last NEWS_KEEP of each account
   telegram/state                      {"offset", "login", "term", "bot", "by"}: the next Telegram update
                                       to read, the logins warned of, the main server's term told,
                                       the bot's @name and the computer that runs it
@@ -102,6 +105,8 @@ CODES = "telegram/codes/"
 SENT = "telegram/sent/"
 ACTIONS = "telegram/actions/"
 DEMO = "telegram/demo/"
+NEWS = "telegram/news/"
+NEWS_KEEP = 100             # the Mini App's Inbox: the last messages of each account kept
 TICKER_RE = r"[A-Za-z0-9.\-]{1,12}"   # a ticker in a button's data
 
 
@@ -372,6 +377,23 @@ class TelegramBot:
             self.server.log(f"Telegram: couldn't change a message in {chat_id} ({type(e).__name__}: {e})")
             return False
 
+    def remember(self, tails, text, ticker=""):
+        """A message sent to the accounts' phones, kept for the Mini App's Inbox (the last NEWS_KEEP of each)."""
+        now = time.time()
+        for tail in tails:
+            prefix = f"{NEWS}{tail}/"
+            self.server.put_shared(f"{prefix}{int(now * 1000)}-{secrets.token_hex(2)}",
+                                   {"t": now, "ticker": ticker, "text": text})
+            kept = sorted(k for k, it in self.server.store.items.items()
+                          if k.startswith(prefix) and it.get("data") is not None)
+            for k in kept[:-NEWS_KEEP]:
+                self.server.put_shared(k, None)
+
+    def linked_tails(self):
+        """The accounts with a phone linked."""
+        return sorted(key[len(ACCOUNTS):] for key, it in self.server.store.items.items()
+                      if key.startswith(ACCOUNTS) and ((it.get("data") or {}).get("phones")))
+
     def send_to(self, chats, text):
         for c in chats:
             asyncio.create_task(self.send(c, text))
@@ -403,6 +425,7 @@ class TelegramBot:
                 late = t is not None and now - t > LATE_AFTER_S
                 if late:
                     text += f"\n(late: {ago(now - t)})"
+                self.remember([tail], text, str(e.get("ticker") or ""))
                 if ev == "bought" and not late and e.get("state") == "bought" and sellers:
                     self.send_to([c for c in chats if c not in sellers], text)
                     for c in chats:
@@ -500,8 +523,11 @@ class TelegramBot:
         chats = [p["chat_id"] for p in self.phones(tail)]
         ticker = str(a.get("ticker") or "")
         buttons = info.alert_buttons(tail, ticker) if re.fullmatch(TICKER_RE, ticker) else None
+        text = otc_alerts.fired_text(a, now, tail)
+        if chats:
+            self.remember([tail], text, ticker)
         for c in chats:
-            asyncio.create_task(self.send(c, otc_alerts.fired_text(a, now, tail), buttons))
+            asyncio.create_task(self.send(c, text, buttons))
 
     # ---- the Schwab login, the main server ----
     async def login_loop(self):
@@ -519,8 +545,10 @@ class TelegramBot:
             return
         self.update_state(login=(self.state().get("login") or [])[-9:] + [mark])
         left = max(0.0, (TOKEN_DAYS - age) * 24)
-        self.send_to(self.all_chats(), f"🔑 The Schwab login runs out in {left:.0f} h: renew it in OTC Assistant "
-                                       f"(Monitor tab → Renew Schwab login).")
+        text = (f"🔑 The Schwab login runs out in {left:.0f} h: renew it in OTC Assistant "
+                f"(Monitor tab → Renew Schwab login).")
+        self.remember(self.linked_tails(), text)
+        self.send_to(self.all_chats(), text)
 
     def login_needed(self, why):
         w = self.server.wrapped or self.server.read_token()
@@ -528,15 +556,18 @@ class TelegramBot:
         if mark in (self.state().get("login") or []):
             return
         self.update_state(login=(self.state().get("login") or [])[-9:] + [mark])
-        self.send_to(self.all_chats(), f"🔑 Schwab needs a new login: {why}\nOpen OTC Assistant to log in. "
-                                       f"Until then there's no stream and no orders.")
+        text = f"🔑 Schwab needs a new login: {why}\nOpen OTC Assistant to log in. Until then there's no stream and no orders."
+        self.remember(self.linked_tails(), text)
+        self.send_to(self.all_chats(), text)
 
     def leader_moved(self, term, why):
         if term <= (self.state().get("term") or 0):
             return
         self.update_state(term=term)
         if why:
-            self.send_to(self.all_chats(), f"🔁 The main server is now {self.server.name}{why}")
+            text = f"🔁 The main server is now {self.server.name}{why}"
+            self.remember(self.linked_tails(), text)
+            self.send_to(self.all_chats(), text)
 
     # ---- from the phones ----
     async def on_update(self, u):

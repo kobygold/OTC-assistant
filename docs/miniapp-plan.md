@@ -236,3 +236,12 @@ drawings), not a phone-drawn chart.
   follows the finger, stays when the finger is lifted (live), and a tap takes it away. The phone draws a thin
   crosshair of its own until the picture with the desktop's comes. Sent as `"cursor": [x, y]` (the chart's points) or
   `null` in the same `zoom` message.
+
+## 13. The Inbox (built in 2.7.138)
+
+The bot keeps every message it sends an account's phones (`otc_telegram.remember`): the ATM trades' news (bought,
+partly bought, canceled, sell ended, sold), the alerts fired, the Schwab login's warnings, the main server moved, in
+the shared data `telegram/news/<account>/<id>` = `{"t", "ticker", "text"}` (the last `NEWS_KEEP` = 100 of each
+account; on every computer, so it moves with the main server). The view `news/<account>` (`MiniViews.news`) lists
+them newest first; the page's Inbox tab (`renderNews`) shows them, the new ones marked (since the tab was last
+opened: `seen:<account>` in the phone's storage) and counted on the tab; a line with a ticker opens its checklist.
