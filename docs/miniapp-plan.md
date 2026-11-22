@@ -175,7 +175,7 @@ none; Review → the confirm → Send, which asks the main server's app to `prep
 (checks: linked, trade mode, the account allows trading) → the main server's app → the result back to the phone
 and in the trade's note ("from the Mini App by <name>").
 
-To decide:
-- the checklist not all green: the same question as the desktop's ("לא כל הצ'ק ליסט ירוק...") before the sheet?
-- Cancel Buy / Cancel Sell: a confirm step on the phone too (the desktop asks)?
-- the phone's −/+ steps and the amount's limits: the desktop dialogs' (0.0001; 1,000 shares under $1, else 10)?
+Decided (2026-11-22, all yes):
+- the checklist not all green: the same question as the desktop's ("לא כל הצ'ק ליסט ירוק...") before the sheet.
+- Cancel Buy / Cancel Sell: a confirm step on the phone too, as the desktop asks.
+- the phone's −/+ steps and the amount's limits: the desktop dialogs' (0.0001; 1,000 shares under $1, else 10).
