@@ -465,7 +465,7 @@ class MiniViews(QObject):
         return found
 
     def buyers(self, ticker):
-        """The ticker's good market makers caught keeping their bid while sold to (the Level II's cyan sign);
+        """The ticker's good market makers caught keeping their bid while sold to (the Level II's magenta sign);
         looked for with the reloaders."""
         return self.reloads.get(ticker, (0.0, {}, {}))[2]
 
@@ -500,7 +500,7 @@ class MiniViews(QObject):
                     if risk:
                         row["sign"] = {"level": risk, "color": RISK_COLORS[risk][0],
                                        "ring": RISK_COLORS[1][0] if risk in (3, 4) else "", "tip": MM_TIPS[risk]}
-                elif mm in buyers:          # (the Bid: a strong buyer, cyan)
+                elif mm in buyers:          # (the Bid: "Probably Unsolicited Stock", magenta)
                     row["sign"] = {"level": BUYER, "color": RISK_COLORS[BUYER][0], "ring": "",
                                    "tip": f"{MM_TIPS[BUYER]}\n\n{reload_text(buyers[mm], 'BID')}"}
                 out.append(row)

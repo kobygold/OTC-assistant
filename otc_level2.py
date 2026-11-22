@@ -59,8 +59,9 @@ MM_TIPS = {4: "A dilutive market maker here: it refills its offer while it's bou
            3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
            2: "Dilutive Market Maker! Don't buy this stock!",
            1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks.",
-           5: "A strong buyer here: it keeps its bid (or refills it) while it's sold to, on the highest Bid."}
-BUYER = 5               # the Bid's sign: a good market maker caught keeping / refilling its bid (cyan)
+           5: "Probably Unsolicited Stock: this market maker keeps its bid (or refills it) while it's sold to, "
+              "on the highest Bid."}
+BUYER = 5               # the Bid's sign: a good market maker caught keeping / refilling its bid (magenta): "Probably Unsolicited Stock"
 SIGN_W = 16             # the Ask table's sign column
 HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
 RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at for reloaders, in the session
@@ -75,7 +76,7 @@ def good_mm(mm):
 
 def find_buyers(folder, ticker, days=RELOAD_DAYS):
     """{good market maker: its events} that kept / refilled its bid on the highest Bid while it was sold to
-    (otc_recorder.find_reloads on the Bid): the Level II's cyan sign, the desktop's and the Mini App's."""
+    (otc_recorder.find_reloads on the Bid): the Level II's magenta sign, the desktop's and the Mini App's."""
     found = {}
     for ev in find_reloads(folder, ticker, good_mm, days, side="BID"):
         found.setdefault(ev["mm"], []).append(ev)
@@ -417,7 +418,7 @@ class Level2Panel(QWidget):
             hdr.resizeSection(0, SIGN_W)
             t.setIconSize(QSize(SIGN_W - 4, SIGN_W - 4))
             t.horizontalHeaderItem(0).setToolTip(
-                "Cyan: a strong buyer (it keeps or refills its bid while it's sold to)." if bid else
+                "Magenta: Probably Unsolicited Stock (a market maker keeps or refills its bid while it's sold to)." if bid else
                 "Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker.")
         t.horizontalHeaderItem(first).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in (first + 1, first + 2):
@@ -786,8 +787,8 @@ class Level2Panel(QWidget):
             if mine:
                 cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
             # The sign column. The Ask: red for a diluter, yellow for a so-so market maker, red with a
-            # yellow ring for a yellow one caught refilling its offer (a diluter here). The Bid: cyan for a
-            # good one caught keeping / refilling its bid while it's sold to (a strong buyer)
+            # yellow ring for a yellow one caught refilling its offer (a diluter here). The Bid: magenta for a
+            # good one caught keeping / refilling its bid while it's sold to ("Probably Unsolicited Stock")
             sign = QTableWidgetItem()
             if side == "ASK":
                 risk = mm_risk(mm, self.reloaders)
