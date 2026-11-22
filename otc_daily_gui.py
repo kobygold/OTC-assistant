@@ -9,6 +9,7 @@ Keep these files in the SAME FOLDER:
   otc_chart.py       the candlestick chart
   otc_zones.py       support and resistance zones, and the channel search
   app_icon.ico       the window, taskbar and shortcut icon
+  otc_markets_logo.png  the Chart tab's OTCMarkets button's face
 
 Install once:   pip install PyQt6 numpy schwab-py
                 (Windows only: also  pip install tzdata)
@@ -68,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.151"
+APP_VERSION = "2.7.152"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -82,6 +83,7 @@ DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
+OTC_LOGO_PATH = APP_DIR / "otc_markets_logo.png"   # the OTCMarkets button's face (white "OTC": for the dark theme)
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
 # we reached the oldest date the plan allows (free plan: about 2 years).
@@ -1100,12 +1102,24 @@ class MainWindow(QMainWindow):
         self.chart_fav_ticker = ""
         self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
-        # (Enter in the box shows the chart) News: the ticker's news on OTC Markets, in the browser
-        self.news_btn = news_btn = QPushButton("News")
-        news_btn.setToolTip("The chart's ticker's news: the News panel under the chart")
-        news_btn.clicked.connect(self.open_news)
+        # (Enter in the box shows the chart) OTCMarkets: the ticker's overview page on OTC Markets, in the
+        # browser (its news: the News tab under the chart)
+        self.otc_btn = otc_btn = QToolButton()
+        logo = QPixmap(str(OTC_LOGO_PATH))
+        if logo.isNull():
+            otc_btn.setText("OTCMarkets")
+        else:
+            otc_btn.setIcon(QIcon(logo))
+            otc_btn.setIconSize(QSize(round(logo.width() * 18 / logo.height()), 18))
+        # (on its own dark face: the logo's "OTC" is white, unseen on a light toolbar)
+        otc_btn.setStyleSheet("QToolButton { background: #1b1f23; border: 1px solid #3a4046; border-radius: 4px;"
+                              " padding: 2px 6px; } QToolButton:hover { background: #2a3036; border-color: #5c6670; }"
+                              " QToolButton:pressed { background: #111417; }")
+        otc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        otc_btn.setToolTip("OTCMarkets: the chart's ticker's overview page on otcmarkets.com, in the browser")
+        otc_btn.clicked.connect(self.open_otc_markets)
         self.news_told = set()          # the news keys a message was shown for (once)
-        row.addWidget(news_btn)
+        row.addWidget(otc_btn)
         row.addSpacing(16)
 
         self.range_group = QButtonGroup(self)
@@ -2538,36 +2552,13 @@ class MainWindow(QMainWindow):
                         f"({', '.join(why)}): {first}", 30000)
 
     def show_news_button(self):
-        """The Chart tab's News button: orange with the ticker's news of the last days (a warning: red), the
-        news in its tooltip; the News panel the ticker's."""
+        """The News panel: the chart's ticker's (its count: the News tab's, show_news_count)."""
         panel = getattr(self, "news_panel", None)
         if panel is not None:
             if panel.ticker != (self.chart.ticker or "").upper():
                 panel.set_ticker(self.chart.ticker or "")
             else:
                 panel.refresh()
-        btn = getattr(self, "news_btn", None)
-        if btn is None:
-            return
-        ticker = (self.chart.ticker or "").upper()
-        news = self.news_of(ticker, days=7)
-        base = "Click: the News panel under the chart (all its news, months of it)"
-        months = self.news_history(ticker) if ticker else None
-        if not news:
-            btn.setText("News")
-            btn.setStyleSheet("")
-            btn.setToolTip((f"<b>{ticker}</b>: {html.escape(months)}<br><br>" if months else "") + base)
-            return
-        warn = any(d.get("level") == "warn" for d in news)
-        btn.setText(f"News ({len(news)})")
-        btn.setStyleSheet(f"QPushButton {{ color: {'#ff5050' if warn else '#f0a020'}; font-weight: bold; }}")
-        lines = ([f"<b>{ticker}</b>: {html.escape(months)}", ""] if months else []) + \
-            [f"<b>{ticker}: the news channel, the last 7 days</b>"]
-        for d in news[:8]:
-            when = str(d.get("time", "")).replace("T", " ")[5:16]
-            text = html.escape(d.get("summary") or "").replace("\n", "<br>")
-            lines.append(f"<span style='color:#a8a8a8'>{when}</span> {text}")
-        btn.setToolTip("<br>".join(lines) + "<br><br>Click: the News panel under the chart")
 
     # ---- under the chart: Level II or the News panel ----
     def on_bottom_tab(self, index):
@@ -2597,18 +2588,14 @@ class MainWindow(QMainWindow):
         self.bottom_tabs.setTabText(1, f"News ({n})" if n else "News")
         self.bottom_tabs.setTabTextColor(1, QColor("#ff5050" if warn else "#f0a020") if n else QColor("#d8d8d8"))
 
-    def open_news(self):
-        """The News button: the News panel under the chart (the OTC Markets page is a button in it)."""
-        self.bottom_tabs.setCurrentIndex(1)
-        self.show_bottom()
-
-    def open_news_web(self):
-        """The chart's ticker (else the one typed) on OTC Markets' News tab, in the default browser."""
+    def open_otc_markets(self):
+        """The OTCMarkets button: the chart's ticker (else the one typed) on OTC Markets' overview page, in the
+        default browser."""
         ticker = (self.chart.ticker or self.chart_ticker.text()).strip().upper()
         if not ticker:
             self.notify("Type a ticker first.", 4000)
             return
-        QDesktopServices.openUrl(QUrl(f"https://www.otcmarkets.com/stock/{ticker}/news"))
+        QDesktopServices.openUrl(QUrl(f"https://www.otcmarkets.com/stock/{ticker}/overview"))
 
     def chart_from_box(self, ticker: str):
         """A ticker typed or picked in the Chart tab's box: shown (and so in the history, if it has data)."""
