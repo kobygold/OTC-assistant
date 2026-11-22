@@ -157,3 +157,25 @@ The phone shows the desktop's own output, so most desktop fixes need **no phone 
    **Open app**, to `https://<that computer>.<tailnet>.ts.net/`; it moves with the main server.
 5. In the bot's chat: the menu button opens the app; it shows the accounts the phone is linked to (the Telegram
    tab) - the account chip at the top switches between them.
+
+## 10. Step 3, the orders: how (proposal, to go over before it's built)
+
+The desktop's order code works out an order and asks with its dialogs in one go (`ChecklistPanel.buy`: the score
+warning, `confirm_order`; `AtmTrades.ask_sell`, `ask_buy_more`, `ask_sell_partial`, `ask_move`; Update Buy / Sell,
+Cancel). Each is split in two, the desktop's dialogs then calling the two parts as they do now:
+
+1. **prepare** (no dialog): the order's values and the rows the dialog shows (`fee_rows`, the profit after both
+   fees...), the warnings (the checklist not all green, a high fee, a dangerous ticker), what Send would do.
+2. **send**: the order with the values approved, through the same code (`send_buy`, the sell / replace / cancel
+   paths), the lock, the order alert.
+
+The phone: its sheet shows `prepare`'s rows (the desktop dialog's words), −/+ and ↺ on the price and shares, All or
+none; Review → the confirm → Send, which asks the main server's app to `prepare` again with the values approved
+(the market may have moved: never a sale below the price approved) and `send`. The request goes phone → server
+(checks: linked, trade mode, the account allows trading) → the main server's app → the result back to the phone
+and in the trade's note ("from the Mini App by <name>").
+
+To decide:
+- the checklist not all green: the same question as the desktop's ("לא כל הצ'ק ליסט ירוק...") before the sheet?
+- Cancel Buy / Cancel Sell: a confirm step on the phone too (the desktop asks)?
+- the phone's −/+ steps and the amount's limits: the desktop dialogs' (0.0001; 1,000 shares under $1, else 10)?
