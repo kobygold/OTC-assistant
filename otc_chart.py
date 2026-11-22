@@ -4,7 +4,8 @@ candles, volume pane with a 50-day volume average, info bar, crosshair with axis
 labels, Hi/Lo markers, monthly expiration lines and a last-price tag. Mouse wheel
 zooms, dragging pans, double-click resets the view. As in thinkorswim, dragging a ruler zooms
 that axis around the point grabbed: the price or volume ruler up = in, down = out; the time
-ruler left = in, right = out (and the prices fit themselves again). Double-click a ruler for auto.
+ruler left = in, right = out. A price axis zoomed or panned by hand stays so (no auto-fit) until another
+range or ticker is shown. Double-click a ruler for auto.
 The 1D view shows 1-minute candles instead (set_intraday): only minutes with trades, side by
 side, in Israel time, with a dashed line where a trading day starts.
 """
@@ -1603,7 +1604,7 @@ class CandleChart(DrawingsMixin, QWidget):
             count = count0 * math.exp((pos.x() - start.x()) / RULER_ZOOM_PX)      # right: more bars, zoomed out
             self.count = min(max(count, 12), len(self.dates) + MAX_RIGHT_EMPTY_BARS)
             self.first = self._clamp_first(slot - (start.x() - price.left()) / price.width() * self.count)
-            self.y_zoom = None      # the prices fit the candles shown
+            # (a price axis zoomed or panned by hand stays so, until another range / ticker or its double-click)
 
     def mouseMoveEvent(self, e):
         self.mouse = e.position()
@@ -1735,7 +1736,7 @@ class CandleChart(DrawingsMixin, QWidget):
         new_count = min(max(self.count * factor, 12), len(self.dates) + MAX_RIGHT_EMPTY_BARS)
         self.count = new_count
         self.first = self._clamp_first(anchor - (x - price.left()) / price.width() * new_count)
-        self.y_zoom = None          # a time zoom: the prices fit the candles shown
+        # (a price axis zoomed or panned by hand stays so, until another range / ticker or its double-click)
         self.update()
 
     def _clamp_first(self, first):
