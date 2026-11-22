@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.148"
+APP_VERSION = "2.7.149"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -165,7 +165,8 @@ TICKER_RISKS = {
 }
 RISK_COLORS = {1: ("#f5c518", "#202020"), 2: ("#d32f2f", "#ffffff"),     # badge, mark
                3: ("#d32f2f", "#000000"),   # a yellow market maker caught refilling: red, a yellow ring, a black "!"
-               4: ("#d32f2f", "#ffffff")}   # ...a strong case (at least half its amount): a white "!"
+               4: ("#d32f2f", "#ffffff"),   # ...a strong case (at least half its amount): a white "!"
+               5: ("#00bcd4", "#000000")}   # the Bid: a good market maker caught keeping its bid (a strong buyer)
 ZONE_DEFAULTS = {
     "score": 45, "legs": 4, "gain": 15, "days": 120, "pmin": 0.0001, "pmax": 0.05, "dollar": 500, "age": 3, "window": 6,
     "status": [zones.ACTIVE, zones.RETURNED, zones.PAST_ABOVE], "skip_types": True, "tiers": core.TIER_GROUPS,

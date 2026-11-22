@@ -124,7 +124,7 @@ class MiniViews(QObject):
         self.close_asked = {}       # ticker -> when it was asked
         self.sizes = {}             # (ticker, side, mm) -> (its last size, +1 / -1 its last change)
         self.cards = {}             # ticker -> {"panel": the hidden checklist, "candles": time read}
-        self.reloads = {}           # ticker -> (time looked, {mm: its refill events})
+        self.reloads = {}           # ticker -> (time looked, {mm: its refill events}, {mm: its bid's events})
         self.charts = {}            # (ticker, range) -> {"chart": the hidden chart, "read": time its candles were read}
         self.minutes = {}           # ticker -> its 1-minute candles (the Mini App's own reader: the desktop's is its chart's)
         self.minute_loader = None
@@ -446,32 +446,39 @@ class MiniViews(QObject):
         """The ticker's yellow market makers caught refilling (otc_recorder.find_reloads, as the Level II box):
         looked for in a thread, again after RELOADS_S."""
         import time
-        when, found = self.reloads.get(ticker, (0.0, {}))
+        when, found, buyers = self.reloads.get(ticker, (0.0, {}, {}))
         if time.time() - when > RELOADS_S:
-            self.reloads[ticker] = (time.time(), found)
+            self.reloads[ticker] = (time.time(), found, buyers)
 
             def look():
-                from otc_level2 import MARKET_LOG, MM_YELLOW
+                from otc_level2 import MARKET_LOG, MM_YELLOW, find_buyers
                 from otc_recorder import RELOAD_DAYS, find_reloads
                 out = {}
                 try:
                     for ev in find_reloads(MARKET_LOG, ticker, MM_YELLOW, RELOAD_DAYS):
                         out.setdefault(ev["mm"], []).append(ev)
+                    good = find_buyers(MARKET_LOG, ticker, RELOAD_DAYS)
                 except Exception:
                     return
-                self.reloads[ticker] = (time.time(), out)
+                self.reloads[ticker] = (time.time(), out, good)
             threading.Thread(target=look, daemon=True).start()
         return found
+
+    def buyers(self, ticker):
+        """The ticker's good market makers caught keeping their bid while sold to (the Level II's cyan sign);
+        looked for with the reloaders."""
+        return self.reloads.get(ticker, (0.0, {}, {}))[2]
 
     def card(self, account, ticker):
         from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS
         from otc_daily_gui import RISK_COLORS, ticker_risk
-        from otc_level2 import MINE, MM_TIPS, Level2Panel, mm_risk
+        from otc_level2 import BUYER, MINE, MM_TIPS, Level2Panel, mm_risk, reload_text
         w = self.win
         panel = self.panel_for(ticker)
         q, bids, asks, note = self.market(ticker)
         held = self.held()
         reloaders = panel.reloaders
+        buyers = self.buyers(ticker)
 
         # my open orders' rows (green, after the market makers at their price) and the colors: the desktop's
         # Level II (gray while it holds the last close); the orders are the chosen account's, as there
@@ -493,6 +500,9 @@ class MiniViews(QObject):
                     if risk:
                         row["sign"] = {"level": risk, "color": RISK_COLORS[risk][0],
                                        "ring": RISK_COLORS[1][0] if risk in (3, 4) else "", "tip": MM_TIPS[risk]}
+                elif mm in buyers:          # (the Bid: a strong buyer, cyan)
+                    row["sign"] = {"level": BUYER, "color": RISK_COLORS[BUYER][0], "ring": "",
+                                   "tip": f"{MM_TIPS[BUYER]}\n\n{reload_text(buyers[mm], 'BID')}"}
                 out.append(row)
             return out
         e = panel.order()

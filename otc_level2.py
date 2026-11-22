@@ -58,11 +58,28 @@ MM_TIPS = {4: "A dilutive market maker here: it refills its offer while it's bou
               "amount at a time)! Don't buy this stock!",
            3: "A dilutive market maker here: it refills its offer while it's bought from! Don't buy this stock!",
            2: "Dilutive Market Maker! Don't buy this stock!",
-           1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks."}
+           1: "Might sometimes be a Dilutive Market Maker.\nIf it's first check if it auto refills the stocks.",
+           5: "A strong buyer here: it keeps its bid (or refills it) while it's sold to, on the highest Bid."}
+BUYER = 5               # the Bid's sign: a good market maker caught keeping / refilling its bid (cyan)
 SIGN_W = 16             # the Ask table's sign column
 HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
 RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at for reloaders, in the session
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"     # the server's record (otc_recorder)
+
+
+def good_mm(mm):
+    """A good (green) market maker: neither a diluter (MM_RED) nor a so-so one (MM_YELLOW). Its bid is watched for
+    the buyer's refills (the diluter's check, on the Bid)."""
+    return mm not in MM_RED and mm not in MM_YELLOW
+
+
+def find_buyers(folder, ticker, days=RELOAD_DAYS):
+    """{good market maker: its events} that kept / refilled its bid on the highest Bid while it was sold to
+    (otc_recorder.find_reloads on the Bid): the Level II's cyan sign, the desktop's and the Mini App's."""
+    found = {}
+    for ev in find_reloads(folder, ticker, good_mm, days, side="BID"):
+        found.setdefault(ev["mm"], []).append(ev)
+    return found
 
 
 def mm_risk(mm, reloaders):
@@ -73,14 +90,15 @@ def mm_risk(mm, reloaders):
         if mm in MM_YELLOW else 0
 
 
-def reload_text(events):
-    """A reloader's events, for its tooltip: the last ones, newest first."""
+def reload_text(events, side="ASK"):
+    """A reloader's events, for its tooltip: the last ones, newest first (side "BID": a buyer's, sold to it)."""
     lines = []
     for e in reversed(events[-4:]):
         when = datetime.fromtimestamp(e["t"] / 1000).strftime("%a %b %d, %H:%M:%S")
         how = ("its amount didn't get smaller" if e["kind"] == "kept" else
                f"its amount came back to {e['size']:,} within seconds")
-        lines.append(f"{when}: {e['traded']:,} bought at {fmt_price(e['price'])} while it showed "
+        lines.append(f"{when}: {e['traded']:,} {'sold' if side == 'BID' else 'bought'} at {fmt_price(e['price'])} "
+                     f"while it showed "
                      f"{e['size']:,}; {how}" + (" (strong)" if e.get("strong") else ""))
     more = f"\n(and {len(events) - 4} more)" if len(events) > 4 else ""
     return "\n".join(lines) + more
@@ -273,7 +291,7 @@ class Level2Panel(QWidget):
     streamed = pyqtSignal(int, int, int)          # tickers streamed, wanted, Schwab's most
     held_changed = pyqtSignal(bool)               # showing the last close (True), or the live stream again
     reloaders_changed = pyqtSignal(str, dict)     # ticker, {yellow market maker: its reload events}
-    _reloads_found = pyqtSignal(str, list)        # (from the reading thread)
+    _reloads_found = pyqtSignal(str, list, dict)  # (from the reading thread: the reloads, the buyers)
     market_reset = pyqtSignal()                   # the shown ticker's quote and book start over (held / live)
 
     """The Level II box under the chart, styled after thinkorswim: a quote bar, then bids and asks
@@ -304,6 +322,7 @@ class Level2Panel(QWidget):
         self.held = False                      # showing the close now
         self.close_info = None                 # the shown ticker's close (the server's answer), when held
         self.reloaders = {}                    # yellow market maker -> its reload events (the shown ticker)
+        self.buyers = {}                       # good market maker -> its events keeping its bid (the shown ticker)
         self.market_log = MARKET_LOG
         self.live_q = {}                       # the shown ticker's latest streamed quote and book
         self.live_book = ([], [])
@@ -360,7 +379,7 @@ class Level2Panel(QWidget):
         sides = QHBoxLayout()
         sides.setContentsMargins(0, 0, 0, 0)
         sides.setSpacing(6)
-        self.bid_table = self._table(["Ex", "Bid", "BS"])
+        self.bid_table = self._table(["", "Ex", "Bid", "BS"], sign_col=True, bid=True)
         self.ask_table = self._table(["", "Ex", "Ask", "AS"], sign_col=True)
         sides.addWidget(self.bid_table)
         sides.addWidget(self.ask_table)
@@ -375,7 +394,7 @@ class Level2Panel(QWidget):
         self.reload_timer.start(RELOAD_CHECK_MS)
 
     @staticmethod
-    def _table(titles, sign_col=False):
+    def _table(titles, sign_col=False, bid=False):
         """sign_col: a narrow first column for the market maker signs."""
         t = QTableWidget(0, len(titles))
         t.setHorizontalHeaderLabels(titles)
@@ -397,7 +416,9 @@ class Level2Panel(QWidget):
             hdr.setMinimumSectionSize(SIGN_W)     # the style's minimum would keep it twice as wide
             hdr.resizeSection(0, SIGN_W)
             t.setIconSize(QSize(SIGN_W - 4, SIGN_W - 4))
-            t.horizontalHeaderItem(0).setToolTip("Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker.")
+            t.horizontalHeaderItem(0).setToolTip(
+                "Cyan: a strong buyer (it keeps or refills its bid while it's sold to)." if bid else
+                "Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker.")
         t.horizontalHeaderItem(first).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in (first + 1, first + 2):
             t.horizontalHeaderItem(col).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -418,7 +439,7 @@ class Level2Panel(QWidget):
             self.ticker, self.name = ticker, name
             self.shown_book = ([], [])
             self.live_q, self.live_book, self.close_info = {}, ([], []), None
-            self.reloaders = {}
+            self.reloaders, self.buyers = {}, {}
             self.reloaders_changed.emit(ticker, {})
             self.check_reloads()
             self.refresh_mine()                # my orders show until the book comes
@@ -482,17 +503,25 @@ class Level2Panel(QWidget):
             except Exception:
                 events = []
             try:
-                self._reloads_found.emit(ticker, events)
+                buyers = find_buyers(folder, ticker, RELOAD_DAYS)
+            except Exception:
+                buyers = {}
+            try:
+                self._reloads_found.emit(ticker, events, buyers)
             except RuntimeError:        # (the panel is gone: the app closed)
                 pass
         threading.Thread(target=run, daemon=True).start()
 
-    def _on_reloads(self, ticker, events):
+    def _on_reloads(self, ticker, events, buyers):
         if ticker != self.ticker:
             return
         found = {}
         for e in events:
             found.setdefault(e["mm"], []).append(e)
+        if buyers != self.buyers:
+            self.buyers = buyers
+            if found == self.reloaders:
+                self.refresh_mine()
         if found != self.reloaders:
             self.reloaders = found
             self.refresh_mine()
@@ -756,18 +785,21 @@ class Level2Panel(QWidget):
             cells = [QTableWidgetItem(mm), QTableWidgetItem(tos_price(price)), QTableWidgetItem(f"{size:,}")]
             if mine:
                 cells[0].setToolTip("My open order (from Schwab; not part of the market's book)")
-            first = 0
+            # The sign column. The Ask: red for a diluter, yellow for a so-so market maker, red with a
+            # yellow ring for a yellow one caught refilling its offer (a diluter here). The Bid: cyan for a
+            # good one caught keeping / refilling its bid while it's sold to (a strong buyer)
+            sign = QTableWidgetItem()
             if side == "ASK":
-                # The sign column: red for a diluter, yellow for a so-so market maker, red with a
-                # yellow ring for a yellow one caught refilling its offer (a diluter here)
                 risk = mm_risk(mm, self.reloaders)
-                sign = QTableWidgetItem()
                 if risk in self.mm_icons:
                     sign.setIcon(self.mm_icons[risk])
                     sign.setToolTip(MM_TIPS[risk] if risk < 3 else
                                     f"{MM_TIPS[risk]}\n\n{reload_text(self.reloaders[mm])}")
-                cells.insert(0, sign)
-                first = 1
+            elif not mine and mm in self.buyers and BUYER in self.mm_icons:
+                sign.setIcon(self.mm_icons[BUYER])
+                sign.setToolTip(f"{MM_TIPS[BUYER]}\n\n{reload_text(self.buyers[mm], 'BID')}")
+            cells.insert(0, sign)
+            first = 1
             for col, item in enumerate(cells):
                 item.setBackground(bg)
                 item.setForeground(QColor(HELD if self.held and not mine else GOLD))

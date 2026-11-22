@@ -455,7 +455,7 @@ def market_days_back(n=RELOAD_DAYS, millis=None):
     return out
 
 
-def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None):
+def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None, side="ASK"):
     """The times, in the last `days` market days' record, one of the market makers `mms` kept its
     offer on the lowest Ask while it was bought from: [{"mm", "t" (ms), "price", "size" (shown),
     "traded", "kind", "strong"}], oldest first. kind "kept": shares traded at its price (beyond what
@@ -463,18 +463,22 @@ def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None):
     "refilled": its amount dropped with the trade and came back to the same within REFILL_S. strong:
     what it sold was at least RELOAD_STRONG of its amount. Only in the regular session, only round
     amounts; and only when its offer is still at the price CONFIRM_S seconds after (gone within them: a late book
-    showed it before it was bought out - not a refill)."""
+    showed it before it was bought out - not a refill).
+    side "BID": the same on the highest Bid - a buyer that kept (or refilled) its bid while it was sold to (a
+    strong buyer, the good side of it). mms: a set, or a function of a market maker's name (which to look at)."""
     out = []
+    want = mms if callable(mms) else set(mms).__contains__
     for day in reversed(market_days_back(days, millis)):
-        out += _reloads_in(read_day(folder, day.isoformat(), ticker), set(mms), session(day))
+        out += _reloads_in(read_day(folder, day.isoformat(), ticker), want, session(day), side)
     return out
 
 
-def _reloads_in(lines, mms, times):
-    books = {}          # service -> {mm: (price, size)} of the Ask (each one's best)
-    history = []        # (time, the merged Ask) of the books lately
+def _reloads_in(lines, want, times, side="ASK"):
+    bid_side = side == "BID"
+    books = {}          # service -> {mm: (price, size)} of the side (each one's best)
+    history = []        # (time, the merged side) of the books lately
     last_vol = last_price = None
-    pending = None      # trades at the lowest Ask since the last book: {"p", "vol", "before", "t"}
+    pending = None      # trades at the best price (the lowest Ask / the highest Bid) since the last book
     watch = {}          # mm -> {"p", "size", "t", "traded"}: its amount dropped with a trade
     out = []
     waiting = []        # [(deadline ms, event)]: counted once its offer is still at the price CONFIRM_S after
@@ -495,7 +499,7 @@ def _reloads_in(lines, mms, times):
         cur = {}
         for asks in books.values():
             for mm, (price, size) in asks.items():
-                if mm not in cur or price < cur[mm][0]:
+                if mm not in cur or (price > cur[mm][0] if bid_side else price < cur[mm][0]):
                     cur[mm] = (price, size)
         return cur
 
@@ -518,8 +522,8 @@ def _reloads_in(lines, mms, times):
             if kind == "L1" and last_vol is not None and vol > last_vol and times and times[0] <= t < times[1]:
                 before = next((asks for when, asks in reversed(history) if when <= t - BOOK_LAG_MS), None)
                 if before and last_price is not None:
-                    best = min(price for price, _ in before.values())
-                    if abs(last_price - best) < 1e-9:      # bought at the lowest Ask
+                    best = (max if bid_side else min)(price for price, _ in before.values())
+                    if abs(last_price - best) < 1e-9:      # bought at the lowest Ask (sold at the highest Bid)
                         traded = vol - last_vol
                         if pending is not None and abs(pending["p"] - best) < 1e-9:
                             pending["vol"] += traded
@@ -531,7 +535,7 @@ def _reloads_in(lines, mms, times):
             last_vol = vol      # (a "Q": Schwab's whole quote, the count from there)
         elif kind == "L2":
             books[d.get("s", "N")] = {}
-            for price, sizes in d.get("a") or []:
+            for price, sizes in d.get("b" if bid_side else "a") or []:
                 for mm, size in sizes:
                     books[d.get("s", "N")].setdefault(mm, (price, size))
             cur = merged()
@@ -551,7 +555,7 @@ def _reloads_in(lines, mms, times):
                 p, before = pending["p"], pending["before"]
                 after = at(cur, p)
                 for mm, size in before.items():
-                    if mm not in mms or not is_round(size):
+                    if not want(mm) or not is_round(size):
                         continue
                     others = sum(max(0, s - after.get(m, 0)) for m, s in before.items() if m != mm)
                     mine = pending["vol"] - others          # what the others there don't explain

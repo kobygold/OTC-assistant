@@ -104,7 +104,6 @@ button { font-family: inherit; color: inherit; }
 .orderLine { font-size: 12.5px; color: var(--cyan); }
 .l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 11.5px; }
 .l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
-.l2 .bids .l2row { grid-template-columns: 38px minmax(0, 1fr) 62px; }
 .l2row .p { text-align: right; } .l2row .s { text-align: right; }
 .l2row.mine .mm { white-space: nowrap; overflow: visible; }      /* "Me ...159": over the price's empty left side */
 .dim { color: var(--dim2); font-size: 12px; }
