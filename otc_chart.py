@@ -210,6 +210,7 @@ class CandleChart(DrawingsMixin, QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.ticker = ""
         self.subtitle = ""
+        self.wrap_info = False      # the info line in two rows (a narrow chart: the Mini App's)
         self.range_label = "1Y"
         self.show_expirations = True
         self.show_last_tags = True     # the last price tag on the right axis
@@ -445,10 +446,11 @@ class CandleChart(DrawingsMixin, QWidget):
     def _layout(self):
         w, h = self.width(), self.height()
         left, right = LEFT_W, w - RIGHT_W
-        body_h = h - INFO_H - AXIS_H
+        info_h = 2 * INFO_H - 3 if self.wrap_info else INFO_H
+        body_h = h - info_h - AXIS_H
         vol_h = max(int(body_h * 0.24), 90)
-        price = QRectF(left, INFO_H, right - left, body_h - vol_h)
-        vol = QRectF(left, INFO_H + body_h - vol_h, right - left, vol_h)
+        price = QRectF(left, info_h, right - left, body_h - vol_h)
+        vol = QRectF(left, info_h + body_h - vol_h, right - left, vol_h)
         return price, vol
 
     def _bar_w(self, plot: QRectF) -> float:
@@ -1026,14 +1028,18 @@ class CandleChart(DrawingsMixin, QWidget):
             return DOWN
         return NEUTRAL
 
-    def _boxes(self, p, x, y, h, items, gap=3):
-        """Draw a row of boxed text items: [(text, color, bold)]. With gap=0 neighbours share a border."""
+    def _boxes(self, p, x, y, h, items, gap=3, wrap_at=None):
+        """Draw a row of boxed text items: [(text, color, bold)]. With gap=0 neighbours share a border; with
+        wrap_at, a box that would pass it goes on the next row."""
         fm_normal = QFontMetrics(p.font())
+        x0 = x
         for text, color, bold in items:
             f = QFont(p.font())
             f.setBold(bold)
             p.setFont(f)
             tw = QFontMetrics(f).horizontalAdvance(text) + 12
+            if wrap_at is not None and x > x0 and x + tw > wrap_at:
+                x, y = x0, y + h + gap
             r = QRectF(x, y, tw, h)
             p.setPen(QPen(INFO_BOX, 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1072,7 +1078,7 @@ class CandleChart(DrawingsMixin, QWidget):
             items.append((f"{chg:+.2f}%", UP if chg > 0 else DOWN if chg < 0 else INFO_TEXT, False))
         if y_text:
             items.append((f"Y: {y_text}", INFO_TEXT, False))
-        self._boxes(p, INFO_X, 3, INFO_H - 6, items)
+        self._boxes(p, INFO_X, 3, INFO_H - 6, items, wrap_at=self.width() - 4 if self.wrap_info else None)
         if self.risk_icon is not None:
             self.risk_icon.paint(p, self._risk_rect())
 

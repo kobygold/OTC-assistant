@@ -173,9 +173,15 @@ function renderBook(book) {
   const side = (rows, ask) => rows.slice(0, 12).map(r => `<div class="l2row" style="background:${esc(r.bg)}">` +
     (ask ? `<span class="sign">${r.sign ? `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(r.sign.tip)}"><circle cx="6" cy="6" r="4.6" fill="${esc(r.sign.color)}" stroke="${esc(r.sign.ring || r.sign.color)}" stroke-width="1.6"/></svg>` : ""}</span>` : "") +
     `<span class="mm">${esc(r.mm)}</span><span class="p">${esc(r.price)}</span><span class="s" style="color:${r.trend > 0 ? "#1db31d" : r.trend < 0 ? "#e0404f" : "#e3b23c"}">${esc(r.size)}</span></div>`).join("");
-  return `<div class="box"><div class="boxHead"><b>Level II</b></div><div class="l2">` +
+  return `<div class="box"><div class="boxHead"><b>Level II</b>${book.note ? `<span class="l2note">${esc(book.note)}</span>` : ""}</div><div class="l2">` +
     `<div class="bids">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
 }
+
+// the checklist's ✔ and ✘ drawn in their color (as text, phones draw ✔ as a gray emoji)
+const MARK_SVG = {
+  "✔": `<svg width="13" height="13" viewBox="0 0 14 14" role="img" aria-label="✔"><path d="M2 7.5l3.2 3.2L12 3.6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  "✘": `<svg width="12" height="12" viewBox="0 0 14 14" role="img" aria-label="✘"><path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>`,
+};
 
 // ---------------------------------------------------------------- Chart (view "chart": the desktop's chart) ---
 function renderChart(view, card, range) {
@@ -469,7 +475,7 @@ function renderChecklist(view) {
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
   let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><b>${esc(ck.title)}</b><span dir="ltr">${esc(ck.summary)}</span></div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
-  const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${esc(r.mark)}</span>`;
+  const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
     out += `<div class="ckSec">${esc(sec.title)}</div>`;
     // the trade's details (the first section): Live | Plan columns, as the desktop panel; the others: the item

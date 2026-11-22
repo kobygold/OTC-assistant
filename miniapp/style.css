@@ -116,6 +116,8 @@ button { font-family: inherit; color: inherit; }
 .ckItem { width: 100%; display: flex; align-items: flex-start; gap: 8px; min-height: 26px; padding: 3px 0; border: none;
   border-bottom: 1px solid #1a1f25; background: transparent; text-align: right; font-size: 13px; line-height: 1.3; }
 .mark { width: 16px; flex-shrink: 0; font-weight: 700; text-align: center; }
+.mark svg { display: block; margin: 0 auto; }
+.l2note { margin-inline-start: 8px; font-size: 11px; color: var(--dim); font-weight: 400; }
 .split { height: 1px; background: #3a4046; margin: 2px 0; }
 
 .mark.small { font-size: 9px; padding-top: 3px; width: 22px; }

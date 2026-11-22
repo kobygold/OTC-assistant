@@ -33,7 +33,8 @@ TICK_MS = 1000
 CANDLES_S = 300             # a card's candles (and bounce range) read again this often
 RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
 MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
-CHART_W, CHART_H, CHART_DPR = 390, 440, 2       # the phone's chart: its size in points, drawn at twice the pixels
+CHART_W, CHART_H, CHART_DPR = 390, 460, 2       # the phone's chart: its size in points, drawn at twice the pixels
+CLOSE_ASK_S = 20            # a ticker's last close asked of the server again (no answer yet) after this long
 MINUTES_S = 60              # a 1D chart's 1-minute candles read again this often (as the desktop's)
 MARK = re.compile(r"color:\s*([#\w]+)[^>]*>([^<]*)<")
 COLOR = re.compile(r"(?<![-\w])color:\s*([#\w]+)")
@@ -119,6 +120,8 @@ class MiniViews(QObject):
         self.moved = {}             # (ticker, field) -> +1 / -1: the way it moved last (green / red)
         self.tables = {}            # account -> the hidden ATM Trades table made for it
         self.books = {}             # ticker -> (bids, asks): the stream's Level II
+        self.closes = {}            # ticker -> its market at the last close (the server's at_close), when held
+        self.close_asked = {}       # ticker -> when it was asked
         self.sizes = {}             # (ticker, side, mm) -> (its last size, +1 / -1 its last change)
         self.cards = {}             # ticker -> {"panel": the hidden checklist, "candles": time read}
         self.reloads = {}           # ticker -> (time looked, {mm: its refill events})
@@ -136,6 +139,9 @@ class MiniViews(QObject):
     def on_message(self, msg):
         if msg.get("type") == "mini_zoom":
             self.zoom(msg)
+            return
+        if msg.get("type") == "at_close" and msg.get("ticker") in self.close_asked:
+            self.closes[msg["ticker"]] = msg
             return
         if msg.get("type") != "mini_want":
             return
@@ -176,6 +182,43 @@ class MiniViews(QObject):
                 trend = (1 if size > old[0] else -1) if old and size != old[0] else (old[1] if old else 0)
                 self.sizes[(ticker, side, mm)] = (size, trend)
         self.books[ticker] = (list(bids), list(asks))
+
+    # ---- the market shown: the stream's, or outside the market's hours the last close's (as the desktop) ----
+    def held(self):
+        """Outside the market's hours with "Hold last L1/L2 at end of day" on: the desktop's Level II shows the
+        last close's market, and so does the phone."""
+        return self.win.live_held()
+
+    def close_of(self, ticker):
+        """The ticker's market at the last close (from the server's record), asked once a close."""
+        import time
+        from otc_recorder import last_close
+        day, _ = last_close()
+        day = day.isoformat() if day else None
+        c = self.closes.get(ticker)
+        if c is not None and c.get("day") == day:
+            return c
+        if time.time() - self.close_asked.get(ticker, 0) > CLOSE_ASK_S:
+            self.close_asked[ticker] = time.time()
+            self.win.server.send({"type": "at_close", "ticker": ticker})
+        return None
+
+    def market(self, ticker):
+        """(quote, bids, asks, note): what the desktop's Level II would show for the ticker now; note: its
+        "Held at the close" line (empty when live)."""
+        from datetime import datetime
+        if not self.held():
+            bids, asks = self.books.get(ticker, ([], []))
+            return self.quotes.get(ticker, {}), bids, asks, ""
+        c = self.close_of(ticker)
+        if c is None:
+            return {}, [], [], f"Held at the close · reading {ticker}'s close..."
+        close, at = c.get("close"), c.get("at")
+        when = datetime.fromtimestamp(close / 1000).strftime("%a %b %d, %H:%M") if close else "?"
+        if c.get("q") is None:
+            return {}, [], [], f"Held at the close ({when}) · {ticker} wasn't recorded before it"
+        note = f"Held at the close ({when})" + (f" · last update {datetime.fromtimestamp(at / 1000):%H:%M:%S}" if at else "")
+        return (c.get("q") or {}, [tuple(r) for r in c.get("bids") or []], [tuple(r) for r in c.get("asks") or []], note)
 
     def tick(self):
         atm = self.win.checklist.atm
@@ -382,11 +425,11 @@ class MiniViews(QObject):
             days, rng = w.checklist_inputs(rows)
             panel.set_chart(ticker, rows, days, rng, w.avg_period.value())
             panel.read_fee(ticker)
-        q = self.quotes.get(ticker)
-        if q:
+        q, bids, asks, _note = self.market(ticker)
+        if q or self.held():
             panel.set_quote(ticker, q)
-        if ticker in self.books:
-            panel.set_book(ticker, *self.books[ticker])
+        if bids or asks or ticker in self.books or self.held():
+            panel.set_book(ticker, bids, asks)
         panel.reloaders, panel.reloaders_of = self.reloaders(ticker), ticker
         return panel
 
@@ -417,9 +460,9 @@ class MiniViews(QObject):
         from otc_level2 import MM_TIPS, Level2Panel, mm_risk
         w = self.win
         panel = self.panel_for(ticker)
-        q = self.quotes.get(ticker, {})
+        q, bids, asks, note = self.market(ticker)
+        held = self.held()
         reloaders = panel.reloaders
-        bids, asks = self.books.get(ticker, ([], []))
 
         def book(rows, side):
             out = []
@@ -443,10 +486,12 @@ class MiniViews(QObject):
             "quote": {k: q.get(f) for k, f in (("last", "LAST_PRICE"), ("close", "CLOSE_PRICE"), ("bid", "BID_PRICE"),
                                                ("ask", "ASK_PRICE"), ("bid_size", "BID_SIZE"), ("ask_size", "ASK_SIZE"),
                                                ("volume", "TOTAL_VOLUME"))},
-            "moved": {"bid": self.moved.get((ticker, "BID_PRICE"), 0), "ask": self.moved.get((ticker, "ASK_PRICE"), 0),
-                      "last": self.moved.get((ticker, "LAST_PRICE"), 0)},
+            "moved": {} if held else {"bid": self.moved.get((ticker, "BID_PRICE"), 0),
+                                      "ask": self.moved.get((ticker, "ASK_PRICE"), 0),
+                                      "last": self.moved.get((ticker, "LAST_PRICE"), 0)},
             "steps": trade_steps(panel.atm.live_view(e)) if e else None,
-            "book": {"bids": book(bids, "BID"), "asks": book(Level2Panel.diluters_first(asks, reloaders), "ASK")},
+            "book": {"bids": book(bids, "BID"), "asks": book(Level2Panel.diluters_first(asks, reloaders), "ASK"),
+                     "note": note},
             "checklist": checklist_view(panel)}
 
 
@@ -463,6 +508,7 @@ class MiniViews(QObject):
         c = self.charts.get(key)
         if c is None:
             chart = CandleChart()
+            chart.wrap_info = True              # (the phone's narrow chart: the info line in two rows)
             chart.hide()
             chart.setMinimumSize(0, 0)          # (the desktop's is 500 wide at least)
             chart.resize(CHART_W, CHART_H)
@@ -487,11 +533,12 @@ class MiniViews(QObject):
             chart.set_bounce(w.bounce_for(c["rows"] or []))
         elif rng == "1D" and not chart.intraday:
             chart.set_intraday(ticker, [], message=f"Reading {ticker}'s 1-minute candles from Schwab...")
-        q = self.quotes.get(ticker)
-        if q:
+        q, bids, asks, _note = self.market(ticker)
+        chart.set_held(self.held())
+        if q or self.held():
             chart.set_live(q)
-        if ticker in self.books:
-            chart.set_book(ticker, *self.books[ticker])
+        if bids or asks or ticker in self.books or self.held():
+            chart.set_book(ticker, bids, asks)
         pix = QPixmap(CHART_W * CHART_DPR, CHART_H * CHART_DPR)
         pix.setDevicePixelRatio(CHART_DPR)
         chart.render(pix)
