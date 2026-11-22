@@ -8,8 +8,11 @@ button opens the current main server's.
 A phone's WebSocket (/ws):
   phone -> {"t": "auth", "initData": Telegram's signed user data}
            {"t": "sub", "account": "159", "views": ["favs", "trades", "card:PDIV", "chart:PDIV:2M"]}  (again: replaces them)
+           {"t": "act", "req": 7, "account", "act", "answers"}   an order (otc_miniapp_orders.py: the desktop's order
+                                                                 code, its dialogs answered by the phone)
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
+            {"t": "result", "req", "result"}
 
 Only the main server answers, and only phones linked to an account (the Telegram tab's), each seeing only its
 accounts. The views are made by the main server's app with the desktop's code (otc_miniapp_views.py): the
@@ -34,6 +37,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
+ACT_WAIT_S = 30                 # an order's answer from the main server's app waited this long
+ACT_KINDS = ("button", "cell")
 VIEWS = ("favs", "trades", "orders", "alerts")       # (and "card:<TICKER>", "chart:<TICKER>:<RANGE>")
 TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 RANGES = ("1D", "1M", "2M", "1Y")       # the phone's chart ranges (the desktop's buttons)
@@ -98,6 +103,7 @@ class Phone:
         self.user = None            # Telegram's user, once signed in
         self.accounts = {}          # tail -> {"tail", "mode", "trading"}
         self.keys = set()           # the views it wants ("favs/159")
+        self.name = ""
 
     async def send(self, msg):
         try:
@@ -117,6 +123,8 @@ class MiniApp:
         self.wanted = set()         # the keys asked of the apps, as last sent
         self.listener = None
         self.dns_name = None        # this computer's tailnet name: the page's https:// address
+        self.acts = {}              # req -> (phone, its req number, time): orders waiting for the app's answer
+        self.act_n = 0
 
     # ---- running ----
     async def start(self):
@@ -174,6 +182,8 @@ class MiniApp:
                     continue
                 if msg.get("t") == "sub":
                     await self.subscribe(phone, msg)
+                elif msg.get("t") == "act":
+                    await self.act(phone, msg)
         except Exception:
             pass
         finally:
@@ -198,6 +208,7 @@ class MiniApp:
                                                     "app's Telegram tab (/link with the code)."})
             return False
         name = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) or str(user["id"])
+        phone.name = name
         s.log(f"Mini App: {name} signed in (accounts {', '.join('...' + t for t in phone.accounts)})")
         await phone.send({"t": "hello", "user": {"id": user["id"], "name": name},
                           "accounts": sorted(phone.accounts.values(), key=lambda a: a["tail"]),
@@ -240,6 +251,47 @@ class MiniApp:
                 await phone.send({"t": "view", "key": key, "data": self.views[key]})
         if not self.server.conns:
             await phone.send({"t": "status", "text": "The main server's app isn't open: nothing to show."})
+
+    # ---- orders: checked here, sent by the main server's app (otc_miniapp_orders) ----
+    async def act(self, phone, msg):
+        req = msg.get("req")
+
+        async def no(text):
+            await phone.send({"t": "result", "req": req, "result": {"state": "done", "sent": False, "messages": [
+                {"icon": "warning", "title": "Not sent", "text": text}]}})
+        account = str(msg.get("account") or "")
+        phone.accounts = self.accounts_of(phone.user["id"])     # (as the Telegram tab has it now)
+        a = phone.accounts.get(account)
+        act = msg.get("act")
+        if a is None:
+            return await no(f"Account ...{account} isn't one of yours.")
+        if a["mode"] != "trade" or not a["trading"]:
+            return await no(f"This phone may not send orders of ...{account}: on the app's Telegram tab, allow trading "
+                            "from Telegram and set the phone to news + trading.")
+        if not isinstance(act, dict) or act.get("kind") not in ACT_KINDS or len(json.dumps(msg)) > 20000:
+            return await no("Not an order the phone sends.")
+        if not self.server.leader or not self.server.conns:
+            return await no("The main server's app isn't open.")
+        self.act_n += 1
+        key = f"a{self.act_n}"
+        now = time.time()
+        self.acts = {k: v for k, v in self.acts.items() if now - v[2] < ACT_WAIT_S}
+        self.acts[key] = (phone, req, now)
+        out = {"type": "mini_act", "req": key, "account": account, "act": act,
+               "answers": msg.get("answers") if isinstance(msg.get("answers"), list) else [], "who": phone.name}
+        for conn in list(self.server.conns):
+            conn.put(out)
+
+    def on_result(self, msg):
+        """The main server's app's answer to an order: to its phone (and the server's log when sent)."""
+        found = self.acts.pop(str(msg.get("req") or ""), None)
+        if found is None:
+            return
+        phone, req, _t = found
+        result = msg.get("result") or {}
+        if result.get("sent"):
+            self.server.log(f"Mini App: {phone.name} sent: {result.get('what', '')}")
+        asyncio.ensure_future(phone.send({"t": "result", "req": req, "result": result}))
 
     # ---- the views, from the main server's app ----
     def update_wanted(self):

@@ -513,6 +513,8 @@ class Server:
                     asyncio.create_task(self.on_at_close(conn, str(msg.get("ticker") or "")))
                 elif kind == "mini_view":
                     self.mini.on_view(msg)
+                elif kind == "mini_result":
+                    self.mini.on_result(msg)
                 elif kind == "telegram_token":
                     self.on_telegram_token(msg.get("token"))
                 elif kind == "news_login":

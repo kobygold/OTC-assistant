@@ -11,7 +11,10 @@
      Alerts     <- view "alerts" (the account's alerts, worded by otc_alerts.describe)  -> renderAlerts()
      Ticker card, Checklist <- view "card" (the desktop's checklist panel row by row, the bar over the chart,
                 Level II with the market makers' signs: otc_miniapp_views.card)          -> renderCard(), renderChecklist()
-   A new column or text on the desktop's table comes here by itself (the cards show every column it has).
+     Orders sheet <- "result" (the desktop's own order dialog as it opened on the main server's app, answered here:
+                otc_miniapp_orders)                                                     -> renderDialog()
+   A new column or text on the desktop's table comes here by itself (the cards show every column it has); a new row
+   or box in a desktop order dialog shows in the sheet by itself.
    Demo: ?demo=1 shows sample views (no server, no Telegram). */
 "use strict";
 
@@ -26,8 +29,11 @@ const TABS = [
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" }
 ];
 const SOON = {};
-// the Monitor tab's columns not shown on a phone's card (its buttons and boxes: the orders come in step 3)
+// the Monitor tab's columns not shown as a card's fields (its buttons and boxes: drawn as buttons under it)
 const ORDER_SKIP = new Set(["Ticker", "Side", "Status", "New limit", "Change", "Cancel", "Sell on Bid", "Sell on Ask", "ATM"]);
+const BTN_COLORS = { cl_buy: "#1c8a3e", cl_sell: "#c62f3c", cl_cancel: "#e3b23c", cl_bid: "#e3b23c", cl_update: "#2f6fe0", cl_done: "#6a4fb0",
+  Change: "#2f6fe0", Cancel: "#e3b23c", "Sell on Bid": "#c62f3c", "Sell on Ask": "#c62f3c" };
+const DARK_TEXT = new Set(["cl_cancel", "cl_bid", "Cancel"]);
 const RANGES = ["1D", "1M", "2M", "1Y"];
 // the trade card's columns not shown as fields (drawn in its top line, or the desktop's buttons)
 const CARD_SKIP = new Set(["▸", "Ticker", "Steps", "State", "Order", "New Price", ""]);
@@ -186,29 +192,105 @@ function renderOrders(view, st) {
   const seg = st.seg || "open";
   let out = `<div class="segs">` + segs.map(([id, l]) => `<button data-seg="${id}" class="${id === seg ? "on" : ""}">${l}</button>`).join("") + `</div>` +
     `<div class="note" style="padding-top:2px">Period: ${esc(view.period)} (the desktop's Monitor tab)</div>`;
-  const card = (row, cols, skip) => {
+  const card = (row, cols, skip, table) => {
     const c = row.cells, side = c.Side || {}, status = c.Status || {};
     return `<div class="card"><div class="cardTop"${row.ticker ? ` data-ticker="${esc(row.ticker)}"` : ""}><span class="tk" style="color:#e3b23c">${esc((c.Ticker || {}).t || row.ticker || "")}</span>` +
       (side.t ? `<span style="color:${esc(side.c || "#e6e9ec")};font-weight:700">${esc(side.t)}</span>` : "") +
       `<span class="state" style="color:${esc(status.c || "#e6e9ec")}">${esc(status.t || "")}</span></div>` +
-      `<div class="grid">` + fields(cols, c, col => col, false, skip) + `</div></div>`;
+      `<div class="grid">` + fields(cols, c, col => col, false, skip) + `</div>` + rowButtons(row, table, st) + `</div>`;
   };
   if (seg === "open") {
     const rows = view.rows.filter(r => r.open);
-    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP)).join("") || `<div class="empty">No open orders.</div>`) + `</div>`;
+    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP, "orders")).join("") || `<div class="empty">No open orders.</div>`) + `</div>`;
   } else if (seg === "all") {
     const show = st.show || new Set(view.show);
     const all = view.show.every(n => show.has(n));
     out += `<div class="chips"><button data-showall="1">All</button>` + view.show.map(n => `<button data-show="${n}" class="${show.has(n) ? "on" : ""}">${show.has(n) ? "☑" : "☐"} ${n}</button>`).join("") + `</div>`;
     const shown = (r) => all || (r.open ? show.has("Pending") : show.has(String(r.status || "").charAt(0) + String(r.status || "").slice(1).toLowerCase()));
     const rows = view.rows.filter(shown);
-    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP)).join("") || `<div class="empty">No orders of the statuses checked.</div>`) + `</div>`;
+    out += `<div class="cards">` + (rows.map(r => card(r, view.columns, ORDER_SKIP, "orders")).join("") || `<div class="empty">No orders of the statuses checked.</div>`) + `</div>`;
   } else if (seg === "owned") {
-    out += `<div class="cards">` + (view.owned.map(r => card(r, view.owned_columns, ORDER_SKIP)).join("") || `<div class="empty">No stocks owned.</div>`) + `</div>`;
+    out += `<div class="cards">` + (view.owned.map(r => card(r, view.owned_columns, ORDER_SKIP, "owned")).join("") || `<div class="empty">No stocks owned.</div>`) + `</div>`;
   } else {
     out += `<div class="log">` + (view.log.map(l => `<div>${esc(l)}</div>`).join("") || `<div class="dim">No order news in the period.</div>`) + `</div>`;
   }
   return out;
+}
+
+// a Monitor tab row's buttons, as the desktop shows them (All Orders: the New limit with −/+ and ↺, Change, Cancel;
+// Stocks owned: Sell on Bid / Ask): a tap runs the desktop's button itself on the main server's app
+function rowButtons(row, table, st) {
+  const b = row.buttons || {}, names = Object.keys(b);
+  if (!names.length) return "";
+  let out = "";
+  const id = table === "orders" ? row.id : row.ticker;
+  if (b.Change) {
+    const lim = (st.limits || {})[row.id] != null ? st.limits[row.id] : row.limit != null ? Number(row.limit) : null;
+    const same = lim == null || Math.abs(lim - Number(row.price)) < 1e-9;
+    out += `<div class="limitRow"><span class="dim">New limit</span><button data-limit="${esc(row.id)}" data-d="-1"${b.Change.enabled || b.Cancel ? "" : " disabled"}>−</button>` +
+      `<span class="limitVal" style="color:${same ? "#ffffff" : "#f0a020"}">${esc(lim == null ? "-" : fp(lim))}</span>` +
+      `<button data-limit="${esc(row.id)}" data-d="1">+</button><button data-limit="${esc(row.id)}" data-d="0" aria-label="Back to the order's limit">↺</button></div>`;
+  }
+  out += `<div class="rowBtns">` + names.map(n => {
+    const x = b[n], on = x.enabled || (n === "Change" && b.Change && (st.limits || {})[row.id] != null);
+    return `<button data-cell="${esc(n)}" data-table="${table}" data-id="${esc(id)}" data-text="${esc(x.text)}" data-tk="${esc(row.ticker || "")}" ` +
+      `${on ? "" : "disabled "}style="background:${on ? BTN_COLORS[n] || "#3a4046" : "#1d2125"};color:${!on ? "#5c6268" : DARK_TEXT.has(n) ? "#111" : "#fff"}">${esc(x.text)}</button>`;
+  }).join("") + `</div>`;
+  return out;
+}
+
+// ---------------------------------------------------------------- the order sheet (the desktop's dialog) ---
+// The dialog the desktop's order code opened on the main server's app, as it is now: its rows, its boxes (−/+ and
+// ↺ by the desktop's own steps, a change sent there and the dialog read again), its Send. Send asks once more here.
+function renderDialog(a) {
+  if (!a) return "";
+  if (a.wait && !a.dialog) return `<div class="tip">Asking the main server's app…</div>`;
+  if (a.done) {
+    const r = a.done, msgs = (r.messages || []);
+    return (r.sent ? `<div class="sentOk">✔ Sent to Schwab</div><div class="tip">${esc(r.what || "")}</div>` :
+      !msgs.length ? `<div class="tip">${r.nothing ? "Done." : "Not sent."}</div>` : "") +
+      msgs.map(m => `<div class="msg ${esc(m.icon)}"><b>${esc(m.title)}</b><div>${esc(m.text)}</div></div>`).join("") +
+      `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">OK</button></div>`;
+  }
+  const d = a.dialog, busy = a.wait ? " disabled" : "";
+  let out = d.changed ? `<div class="msg warning"><b>It changed</b><div>The order isn't what you saw (the market moved): check it and send again.</div></div>` : "";
+  if (d.kind === "question") {
+    return out + `<div class="dlgTitle">${esc(d.title)}</div><div class="qText"${d.rtl ? ` dir="rtl" lang="he"` : ""}>${esc(d.text)}</div>` +
+      (d.more ? `<div class="tip" dir="ltr">${esc(d.more)}</div>` : "") +
+      `<div class="dlgBtns"><button class="dlgSend" style="background:#1c8a3e" data-dlg="yes"${busy}>Yes</button><button class="dlgCancel" data-dlg="close">No</button></div>`;
+  }
+  if (a.confirm) {
+    return `<div class="dlgTitle">Send it?</div><div class="qText">${esc(d.title)}</div>` +
+      `<div class="tip">Account ${esc(((d.rows || [])[0] || {}).text || "")}</div>` +
+      `<div class="dlgBtns"><button class="dlgSend" style="background:${esc(d.send_color || "#1c8a3e")}" data-dlg="go"${busy}>Yes, ${esc(d.send)}</button>` +
+      `<button class="dlgCancel" data-dlg="back">Back</button></div>`;
+  }
+  out += `<div class="dlgTitle">${esc(d.title)}</div><div class="dlgRows">`;
+  for (const r of d.rows) {
+    const lab = `<span class="dlgLab">${esc(r.label)}</span>`;
+    const dis = (r.enabled === false ? " disabled" : "") + busy;
+    if (r.kind === "text") out += `<div class="dlgRow">${lab}<span class="dlgVal" style="color:${esc(r.color || "#e6e9ec")}">${esc(r.text)}</span></div>`;
+    else if (r.kind === "price" || r.kind === "amount") {
+      const changed = r.text && r.text.replace(/,/g, "") !== String(r.default).replace(/,/g, "");
+      out += `<div class="dlgRow">${lab}<span class="stepper"><button data-op="step" data-row="${esc(r.label)}" data-d="-1"${dis} aria-label="Down">−</button>` +
+        `<input class="dlgIn" inputmode="decimal" data-typed="${esc(r.label)}" value="${esc(r.shown)}" style="color:${changed ? "#f0a020" : "#ffffff"}"${dis}>` +
+        `<button data-op="step" data-row="${esc(r.label)}" data-d="1"${dis} aria-label="Up">+</button>` +
+        `<button data-op="reset" data-row="${esc(r.label)}"${dis} aria-label="${esc(r.tip || "Back")}">↺</button></span></div>`;
+    } else if (r.kind === "spin") {
+      out += `<div class="dlgRow">${lab}<span class="stepper"><button data-op="step" data-row="${esc(r.label)}" data-d="-1"${dis}>−</button>` +
+        `<input class="dlgIn" inputmode="numeric" data-typed="${esc(r.label)}" value="${esc(Number(r.value).toLocaleString("en-US"))}"${dis}>` +
+        `<button data-op="step" data-row="${esc(r.label)}" data-d="1"${dis}>+</button>` +
+        (r.all ? `<button data-op="all" data-row="${esc(r.label)}"${dis}>All</button>` : "") + `</span></div>`;
+    } else if (r.kind === "check") {
+      out += `<div class="dlgRow">${lab}<button class="chk${r.checked ? " on" : ""}" data-check="${esc(r.label)}"${dis}>${r.checked ? "☑" : "☐"} ${esc(r.text)}</button></div>`;
+    } else if (r.kind === "choice") {
+      out += `<div class="dlgRow">${lab}<span class="choices">` + r.options.map((o, i) => `<button class="${i === r.index ? "on" : ""}" data-choice="${esc(r.label)}" data-i="${i}"${dis}>${esc(o)}</button>`).join("") + `</span></div>`;
+    }
+  }
+  out += `</div>`;
+  if (!d.can_send && d.why) out += `<div class="tip">${esc(d.why)}</div>`;
+  return out + `<div class="dlgBtns"><button class="dlgSend" style="background:${d.can_send ? esc(d.send_color || "#1c8a3e") : "#1d2125"};color:${d.can_send ? "#fff" : "#5c6268"}" data-dlg="send"${d.can_send ? "" : " disabled"}${busy}>${esc(d.send)}</button>` +
+    `<button class="dlgCancel" data-dlg="close">Cancel</button></div>`;
 }
 
 // ---------------------------------------------------------------- Alerts (view "alerts") ---
@@ -251,12 +333,17 @@ function renderChecklist(view) {
   });
   return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker. Editing (−/+, pins, the manual marks): step 4.</div></div>`;
 }
+// the checklist's trade buttons as the desktop shows them; a tap runs the desktop's button on the main server's app
+// (Update Buy / Update Sell need the checklist's boxes typed: step 4)
 function renderActions(view) {
   const b = ((view || {}).checklist || {}).buttons || [];
   if (!b.length) return "";
-  const color = { cl_buy: "#1c8a3e", cl_sell: "#c62f3c", cl_cancel: "#e3b23c", cl_bid: "#e3b23c", cl_update: "#2f6fe0", cl_done: "#6a4fb0" };
-  return `<div class="actions" style="grid-template-columns:repeat(${Math.min(b.length, 3)},minmax(0,1fr))">` + b.map(x =>
-    `<button data-soon="1" ${x.enabled ? "" : "disabled "}style="background:${x.enabled ? color[x.name] || "#3a4046" : "#1d2125"};color:${!x.enabled ? "#5c6268" : x.name === "cl_cancel" || x.name === "cl_bid" ? "#111" : "#fff"}">${esc(x.text)}</button>`).join("") + `</div>`;
+  const phone = (x) => x.id !== "update_btn" && x.id !== "update_sell_btn";
+  return `<div class="actions" style="grid-template-columns:repeat(${Math.min(b.length, 3)},minmax(0,1fr))">` + b.map(x => {
+    const on = x.enabled && phone(x);
+    return `<button ${phone(x) ? `data-act="${esc(x.id)}" data-text="${esc(x.text)}" data-tk="${esc(view.ticker)}"` : `data-soon="1"`} ${on ? "" : "disabled "}` +
+      `style="background:${on ? BTN_COLORS[x.name] || "#3a4046" : "#1d2125"};color:${!on ? "#5c6268" : DARK_TEXT.has(x.name) ? "#111" : "#fff"}">${esc(x.text)}</button>`;
+  }).join("") + `</div>`;
 }
 
 // ---------------------------------------------------------------- the page ---
@@ -303,6 +390,71 @@ function sheet(html) {
   s.innerHTML = html ? `<div class="box"><div class="grip"></div>${html}</div>` : "";
 }
 
+// ---- an order: the desktop's code runs on the main server's app; each dialog it opens comes here to answer ----
+let actN = 0, actTimer = null;
+function startAct(act) {
+  if (!ws || ws.readyState !== 1) { sheet(`<div class="tip">Not connected to the main server.</div>`); return; }
+  S.act = { act, answers: [], dialog: null };
+  sendAct();
+}
+function sendAct() {
+  const a = S.act;
+  a.req = ++actN; a.wait = true;
+  ws.send(JSON.stringify({ t: "act", req: a.req, account: S.account, act: a.act, answers: a.answers }));
+  clearTimeout(actTimer);
+  actTimer = setTimeout(() => { if (S.act === a && a.wait) { a.wait = false; a.done = { sent: false, messages: [{ icon: "warning", title: "No answer", text: "The main server's app didn't answer. Check the order on the Orders tab before trying again." }] }; showAct(); } }, 35000);
+  showAct();
+}
+function showAct() { if (S.act) sheet(renderDialog(S.act)); else sheet(""); }
+function onResult(m) {
+  const a = S.act;
+  if (!a || m.req !== a.req) return;
+  clearTimeout(actTimer);
+  a.wait = false;
+  const r = m.result || {};
+  if (r.state === "ask") {
+    a.dialog = r.dialog; a.confirm = false;
+    a.answers = a.answers.slice(0, r.dialog.step);
+    if (r.messages && r.messages.length) a.notes = r.messages;
+  } else {
+    a.done = r;
+    if (TG && TG.HapticFeedback) { try { TG.HapticFeedback.notificationOccurred(r.sent ? "success" : "warning"); } catch (e) { /* (older Telegram) */ } }
+  }
+  showAct();
+}
+// the dialog's boxes as they show now (sent with each change: the desktop's dialog is made again with them)
+function dlgValues(d) {
+  const v = {};
+  for (const r of d.rows || []) {
+    if (r.kind === "price" || r.kind === "amount") v[r.label] = r.text;
+    else if (r.kind === "check") v[r.label] = r.checked;
+    else if (r.kind === "choice") v[r.label] = r.index;
+    else if (r.kind === "spin") v[r.label] = r.value;
+  }
+  return v;
+}
+function dlgChange(values, op) {
+  const a = S.act, d = a.dialog;
+  a.answers = a.answers.slice(0, d.step).concat([{ values, op: op || null }]);
+  sendAct();
+}
+function onDialogTap(t) {
+  const a = S.act;
+  if (!a) return;
+  const d = a.dialog;
+  if (t.dataset.dlg === "close") { S.act = null; sheet(""); return; }
+  if (a.wait) return;
+  if (t.dataset.dlg === "back") { a.confirm = false; showAct(); return; }
+  if (t.dataset.dlg === "send") { a.confirm = true; showAct(); return; }       // asked once more here
+  if (t.dataset.dlg === "go" || t.dataset.dlg === "yes") {
+    a.answers = a.answers.slice(0, d.step).concat([{ values: dlgValues(d), go: true, check: d.check }]);
+    a.confirm = false; sendAct(); return;
+  }
+  if (t.dataset.op) { dlgChange(dlgValues(d), { row: t.dataset.row, do: t.dataset.op, d: Number(t.dataset.d || 0) }); return; }
+  if (t.dataset.check) { const v = dlgValues(d); v[t.dataset.check] = !v[t.dataset.check]; dlgChange(v); return; }
+  if (t.dataset.choice) { const v = dlgValues(d); v[t.dataset.choice] = Number(t.dataset.i); dlgChange(v); return; }
+}
+
 // ---- the connection: sign in with Telegram's user data, then the views of the account chosen ----
 let ws = null, wait = 1000;
 function connect() {
@@ -317,6 +469,8 @@ function connect() {
       subscribe(); render();
     } else if (m.t === "view") {
       S.views[m.key] = m.data; render();
+    } else if (m.t === "result") {
+      onResult(m);
     } else if (m.t === "status") {
       banner(m.text);
     } else if (m.t === "denied") {
@@ -346,8 +500,32 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
     if (!t) return;
+    if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
+    if (t.dataset.act) { if (!t.disabled) startAct({ kind: "button", id: t.dataset.act, text: t.dataset.text, ticker: t.dataset.tk }); return; }
+    if (t.dataset.cell) {
+      if (t.disabled) return;
+      const act = { kind: "cell", table: t.dataset.table, id: t.dataset.id, column: t.dataset.cell, text: t.dataset.text, ticker: t.dataset.tk };
+      if (t.dataset.cell === "Change") {
+        const row = ((S.views["orders/" + S.account] || {}).rows || []).find(r => String(r.id) === t.dataset.id) || {};
+        act.limit = (S.limits || {})[t.dataset.id] != null ? S.limits[t.dataset.id] : row.limit;
+      }
+      startAct(act); return;
+    }
+    if (t.dataset.limit) {          // the New limit: 0.0001 a step (the desktop's), ↺ the order's own
+      const row = ((S.views["orders/" + S.account] || {}).rows || []).find(r => String(r.id) === t.dataset.limit);
+      if (!row) return;
+      S.limits = S.limits || {};
+      const d = Number(t.dataset.d);
+      if (!d) delete S.limits[row.id];
+      else {
+        const base = S.limits[row.id] != null ? S.limits[row.id] : Number(row.limit != null ? row.limit : row.price);
+        const step = base < 1 ? 0.0001 : 0.01, next = Math.round((base + d * step) / step) * step;
+        if (next > 0) S.limits[row.id] = Number(next.toFixed(base < 1 ? 4 : 2));
+      }
+      render(); return;
+    }
     if (t.dataset.tab) { S.tab = t.dataset.tab; subscribe(); render(); return; }
     if (t.dataset.seg) { S.seg = t.dataset.seg; render(); return; }
     if (t.dataset.show || t.dataset.showall) {
@@ -359,7 +537,7 @@ function setup() {
     }
     if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
     if (t.dataset.ticker) { openTicker(t.dataset.ticker); return; }
-    if (t.dataset.soon) { sheet(`<div class="tip">Sending orders from the phone comes in step 3 of the plan.</div>`); return; }
+    if (t.dataset.soon) { sheet(`<div class="tip">Update Buy / Update Sell send the values typed in the checklist's boxes: they come with the checklist's editing (step 4). Meanwhile, the Orders tab's Change sends a new limit.</div>`); return; }
     if (t.id === "back") { goBack(); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
@@ -367,10 +545,15 @@ function setup() {
       sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
       return;
     }
-    if (t.id === "sheet") { if (e.target === t) sheet(""); return; }
+    if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
   document.addEventListener("input", (e) => { if (e.target.id === "flt") { S.filter = e.target.value; render(); } });
+  // a value typed in the order sheet: sent when done (the desktop's box takes it: 12 -> 0.0012)
+  document.addEventListener("change", (e) => {
+    const r = e.target.dataset && e.target.dataset.typed;
+    if (r && S.act && S.act.dialog && !S.act.wait) dlgChange(dlgValues(S.act.dialog), { row: r, do: "typed", text: e.target.value });
+  });
   render();
   if (new URLSearchParams(location.search).get("demo")) demo(); else connect();
 }
@@ -409,5 +592,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderCard, renderChart, renderChecklist, renderActions, renderDialog, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.122"
+APP_VERSION = "2.7.123"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1354,6 +1354,8 @@ class MainWindow(QMainWindow):
         # the Telegram Mini App's views (made here when this is the main server's app: the desktop's own code)
         from otc_miniapp_views import MiniViews
         self.mini_views = MiniViews(self)
+        from otc_miniapp_orders import MiniOrders          # its orders: the desktop's order code and dialogs
+        self.mini_orders = MiniOrders(self, self.mini_views)
         # the pinned prices (checklist_prices): kept in the shared data too, for every computer
         self.checklist.save_settings = self.checklist.atm.save_settings = self.save_checklist_settings
         self.show_position_default()
@@ -5218,12 +5220,10 @@ class MainWindow(QMainWindow):
                     + (f" ({ev['filled']:,} filled before)" if ev.get("filled") else ""))
         return text + (" · ATM" if ev.get("atm") else "")
 
-    def on_order_event(self, ev):
-        """Schwab's news of an order: in the Order Log (and its file), every account's, each line with its account
-        (the log shows the chosen one's); a fill or a cancel of the account chosen at the top lights the chart's
-        Orders button."""
+    def log_order_line(self, text, account=None):
+        """A line in the Order Log (and its file), with its account: the line, stamped."""
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"{stamp}  {self.order_text(ev)}" + (f"{ORDER_LOG_TAG}{ev['account']}" if ev.get("account") else "")
+        line = f"{stamp}  {text}" + (f"{ORDER_LOG_TAG}{account}" if account else "")
         self.order_log_lines.append(line)
         del self.order_log_lines[:-ORDER_LOG_LOAD * 4]
         self.show_order_log()                       # (new: in every period, at the top)
@@ -5232,6 +5232,13 @@ class MainWindow(QMainWindow):
                 f.write(line + "\n")
         except OSError:
             pass
+        return line
+
+    def on_order_event(self, ev):
+        """Schwab's news of an order: in the Order Log (and its file), every account's, each line with its account
+        (the log shows the chosen one's); a fill or a cancel of the account chosen at the top lights the chart's
+        Orders button."""
+        line = self.log_order_line(self.order_text(ev), ev.get("account"))
         if ev.get("account") != self.checklist.atm.chosen_account():
             return
         if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired", "placed"):

@@ -162,12 +162,12 @@ class TelegramPanel(QWidget):
                 table.setItem(r, 1, QTableWidgetItem(str(p.get("since", "")).replace("T", " ")))
                 mode = QComboBox()
                 mode.addItem("The news", "notify")
-                mode.addItem("The news + sell buttons", "trade")
+                mode.addItem("The news + trading", "trade")
                 mode.setCurrentIndex(1 if p.get("mode") == "trade" else 0)
                 mode.setEnabled(bool(acct.get("selling")))
-                mode.setToolTip("The sell buttons come on the \"buy filled\" message, once the account allows "
-                                "selling from Telegram (below)" if acct.get("selling") else
-                                "Allow selling from Telegram (below) first")
+                mode.setToolTip("Trading: the sell buttons on the \"buy filled\" message, and the orders from the "
+                                "Mini App (its Open app button), once the account allows trading from Telegram (below)"
+                                if acct.get("selling") else "Allow trading from Telegram (below) first")
                 mode.currentIndexChanged.connect(lambda _i, t=tail, c=p.get("chat_id"), w=mode:
                                                  self.set_mode(t, c, w.currentData()))
                 table.setCellWidget(r, 2, mode)
@@ -196,11 +196,12 @@ class TelegramPanel(QWidget):
         add.clicked.connect(lambda _c=False, t=tail: self.add_phone(t))
         row.addWidget(add)
         row.addSpacing(16)
-        selling = QCheckBox("Allow selling from Telegram")
+        selling = QCheckBox("Allow trading from Telegram")
         selling.setChecked(bool(acct.get("selling")))
-        selling.setToolTip("The phones set to \"The news + sell buttons\" get Sell as planned / on Ask / on Bid "
+        selling.setToolTip("The phones set to \"The news + trading\" get Sell as planned / on Ask / on Bid "
                            "buttons on the \"buy filled\" message (10 minutes; every sell needs a Yes, and is "
-                           "never sent below the price approved). The main server sends the order.")
+                           "never sent below the price approved), and send orders from the Mini App (the desktop's "
+                           "order dialogs, each confirmed). The main server sends the orders.")
         selling.toggled.connect(lambda on, t=tail, w=selling: self.set_selling(t, on, w))
         row.addWidget(selling)
         row.addSpacing(16)
@@ -306,10 +307,10 @@ class TelegramPanel(QWidget):
     def set_selling(self, tail, on, box):
         if on and not self.account(tail).get("selling"):
             if QMessageBox.question(
-                    self, "Selling from Telegram",
-                    f"Allow selling the ATM trades of account ...{tail} from Telegram?\n\nOnly its phones set to "
-                    f"\"The news + sell buttons\" get the buttons. Every sell asks for a Yes first, and is never "
-                    f"sent below the price you approved.") != QMessageBox.StandardButton.Yes:
+                    self, "Trading from Telegram",
+                    f"Allow trading account ...{tail} from Telegram (the sell buttons and the Mini App's orders)?\n\n"
+                    f"Only its phones set to \"The news + trading\" can. Every order asks for a Yes first, and is "
+                    f"never sent at a price other than the one you approved.") != QMessageBox.StandardButton.Yes:
                 box.blockSignals(True)
                 box.setChecked(False)
                 box.blockSignals(False)

@@ -136,6 +136,7 @@ The phone shows the desktop's own output, so most desktop fixes need **no phone 
 | Chart | `MiniViews.chart` | **a hidden copy of the desktop's chart widget** (`otc_chart.CandleChart`), dressed by `dress_chart` (the same drawings, orders, alerts, display choices), `bounce_for`, `candle_rows`, the desktop's `MinuteLoader` (1D); drawn at the phone's size (390 x 440, twice the pixels) as a picture | `renderChart` (the picture, the range buttons, Level II) |
 | Orders | `MiniViews.orders` | **hidden copies of the Monitor tab's All Orders and Stocks owned tables** (`SchwabOrdersTable`, `PositionsTable`; every status: the phone filters), `order_log_for` (the Order Log) | `renderOrders` |
 | Alerts | `MiniViews.alerts` | the account's alerts (`alerts`), worded by `otc_alerts.describe` | `renderAlerts` |
+| Orders sheet (step 3) | `otc_miniapp_orders.MiniOrders` | **the desktop's own buttons and order code**: the checklist's buttons (`buy_clicked`, `sell_clicked`, `sell_on_bid`, `reset_done`) on the hidden checklist, the Monitor tab's table buttons (Change / Cancel, Sell on Bid / Ask) on its hidden tables, clicked; **their dialogs read and answered** (`DialogBridge`: `_order_dialog`'s rows and boxes, the question boxes, the warnings) | `renderDialog`, `renderActions`, `rowButtons` |
 | Trades (+ its orders) | `MiniViews.trades` | **a hidden copy of the Monitor tab's ATM Trades table** (`otc_atm_trades.AtmTable`), read cell by cell: text, color, background, bold, tooltip | `renderTrades` (every column the table has, in its order) |
 
 - A fix in how the desktop **computes or words** something (a P/L, a fee, a sort, a state's name or color): done
@@ -158,7 +159,25 @@ The phone shows the desktop's own output, so most desktop fixes need **no phone 
 5. In the bot's chat: the menu button opens the app; it shows the accounts the phone is linked to (the Telegram
    tab) - the account chip at the top switches between them.
 
-## 10. Step 3, the orders: how (proposal, to go over before it's built)
+## 10. Step 3, the orders (built in 2.7.123)
+
+As built - simpler than the proposal below: the desktop's order code isn't split at all. The phone's tap runs the
+desktop's button itself on the main server's app (on the hidden checklist / Monitor tables), and every dialog it opens
+is read instead of shown (`otc_miniapp_orders.DialogBridge`) and sent to the phone: its title, rows, boxes (price,
+amount, All or none, Day / GTC) and Send. The phone's −/+ / ↺ / typed values are put in the desktop dialog's own boxes
+(its own steps), the dialog is read again, and Send asks once more on the phone ("Send it?"). The order goes out only
+when every dialog is answered and each is still exactly what the phone approved (its check: the title and every row);
+otherwise the phone is shown it again ("It changed"). So a new row, box or rule in a desktop dialog needs no phone
+change.
+
+Allowed: phones in "The news + trading" mode of an account with "Allow trading from Telegram" (checked by the server
+at every tap), and only the account chosen on the main server's app (the desktop's order code sends there). Each order
+sent: a line in the Order Log ("... · from the Mini App by <name>") and the server's log.
+
+Not yet: Update Buy / Update Sell (they send the checklist's typed boxes: step 4); the phone shows Schwab's later
+errors only through the trade's state (the desktop's error box shows on the main server's screen).
+
+### The proposal (kept for the record)
 
 The desktop's order code works out an order and asks with its dialogs in one go (`ChecklistPanel.buy`: the score
 warning, `confirm_order`; `AtmTrades.ask_sell`, `ask_buy_more`, `ask_sell_partial`, `ask_move`; Update Buy / Sell,

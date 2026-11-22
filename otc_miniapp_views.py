@@ -72,6 +72,26 @@ def table_rows(table, columns):
     return rows
 
 
+def cell_button(table, row, title, columns):
+    """The desktop table's button in that cell (Change, Cancel, Sell on Bid...), or None."""
+    from PyQt6.QtWidgets import QPushButton
+    col = next((i for i, (t, _tip) in enumerate(columns) if t == title), None)
+    w = table.cellWidget(row, col) if col is not None else None
+    if w is None:
+        return None
+    return w if isinstance(w, QPushButton) else w.findChild(QPushButton)
+
+
+def table_buttons(table, row, columns):
+    """The row's buttons as the desktop shows them: {column: {"text", "enabled", "tip"}} (the phone's)."""
+    out = {}
+    for title, _tip in columns:
+        b = cell_button(table, row, title, columns)
+        if b is not None and not b.isHidden():
+            out[title] = {"text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip()}
+    return out
+
+
 class MiniViews(QObject):
     def __init__(self, win):
         super().__init__(win)
@@ -263,11 +283,18 @@ class MiniViews(QObject):
         owned.rebuild()
         ids = [o["id"] for o in orders.orders()]
         rows = table_rows(orders, ORDER_COLUMNS)
-        for row, o in zip(rows, orders.orders()):
+        for r, (row, o) in enumerate(zip(rows, orders.orders())):
             row.update(id=o["id"], open=bool(o.get("open")), ticker=o.get("ticker"), atm=bool(o.get("atm_order")),
-                       status=o.get("status"))
+                       status=o.get("status"), price=o.get("price"), buttons=table_buttons(orders, r, ORDER_COLUMNS))
+            edit = orders.edits.get(o.get("key"))           # the New limit box (Change sends it)
+            if edit is not None:
+                row["limit"] = edit.text() or o.get("price")
+        owned_rows = table_rows(owned, POS_COLUMNS)
+        for r, row in enumerate(owned_rows):
+            item = owned.item(r, 0)
+            row.update(ticker=(item.text() if item else "").strip(), buttons=table_buttons(owned, r, POS_COLUMNS))
         return {"account": account, "columns": [t for t, _ in ORDER_COLUMNS], "rows": rows[:len(ids)],
-                "show": list(ORDER_SHOW), "owned_columns": [t for t, _ in POS_COLUMNS], "owned": table_rows(owned, POS_COLUMNS),
+                "show": list(ORDER_SHOW), "owned_columns": [t for t, _ in POS_COLUMNS], "owned": owned_rows,
                 "log": w.order_log_for(account)[:300], "period": w.monitor_period.currentText()}
 
     def alerts(self, account):
@@ -467,9 +494,9 @@ def checklist_view(panel):
                 row["plan"] = edit.text() or edit.placeholderText()
             rows.append(row)
         sections.append({"title": name, "rows": rows})
-    buttons = [{"name": b.objectName(), "text": b.text(), "enabled": b.isEnabled()}
-               for b in (panel.buy_btn, panel.update_btn, panel.sell_btn, panel.update_sell_btn, panel.bid_btn, panel.done_btn)
-               if not b.isHidden()]
+    buttons = [{"id": attr, "name": b.objectName(), "text": b.text(), "enabled": b.isEnabled(), "tip": b.toolTip()}
+               for attr in ("buy_btn", "update_btn", "sell_btn", "update_sell_btn", "bid_btn", "done_btn")
+               for b in [getattr(panel, attr)] if not b.isHidden()]
     return {"title": panel.title.text(), "summary": panel.summary.text(),
             "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
             "sections": sections, "buttons": buttons}
