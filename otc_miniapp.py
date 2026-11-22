@@ -11,7 +11,8 @@ A phone's WebSocket (/ws):
            {"t": "act", "req": 7, "account", "act", "answers"}   an order (otc_miniapp_orders.py: the desktop's order
                                                                  code, its dialogs answered by the phone)
            {"t": "zoom", "key": "chart/159/PDIV/2M", "first", "count"}   its chart pinched / panned (the candles shown:
-                                                                 the desktop chart's own view), or {"reset": true}
+                                                                 the desktop chart's own view), or {"reset": true};
+                                                                 "cursor": [x, y] (the desktop's crosshair there) / null
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
             {"t": "result", "req", "result"}
@@ -293,15 +294,19 @@ class MiniApp:
         if key not in phone.keys or not key.startswith("chart/") or not self.server.leader:
             return
         out = {"type": "mini_zoom", "key": key}
-        if msg.get("reset"):
-            out["reset"] = True
-        else:
-            try:
+        try:
+            if "cursor" in msg:
+                cur = msg["cursor"]
+                out["cursor"] = None if cur is None else [float(cur[0]), float(cur[1])]
+            if msg.get("reset"):
+                out["reset"] = True
+            elif "first" in msg or "count" in msg:
                 out["first"], out["count"] = float(msg["first"]), float(msg["count"])
-            except (KeyError, TypeError, ValueError):
-                return
-            if not all(abs(v) < 1e6 for v in (out["first"], out["count"])):
-                return
+        except (KeyError, TypeError, ValueError, IndexError):
+            return
+        if not all(abs(v) < 1e6 for k in ("first", "count") if k in out for v in [out[k]]) \
+                or not all(abs(v) < 1e4 for v in out.get("cursor") or []) or len(out) == 2:
+            return
         for conn in list(self.server.conns):
             conn.put(out)
 

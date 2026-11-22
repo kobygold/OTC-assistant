@@ -182,13 +182,16 @@ function renderChart(view, card, range) {
   const img = view && view.png ? `<img class="chartImg" alt="${esc(view.ticker)} chart, ${esc(view.range)}" src="data:image/png;base64,${view.png}">`
     : `<div class="chartWait">Drawing the chart…</div>`;
   const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
-  return `<div class="chartBox">${img}<div class="ranges">${ranges}</div></div>` +
+  return `<div class="chartBox">${img}<div class="xhair" hidden><i class="xv"></i><i class="xh"></i></div><div class="ranges">${ranges}</div></div>` +
     `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
 }
 
 // ---- the chart's pinch and pan: the picture moved at once under the fingers, and the desktop's chart drawn so
-// by the main server's app (its own view: the candles shown, its limits) a moment later; a double tap: as it was ----
-const Z = { g: null, target: null, busy: 0, again: false, tap: 0, last: 0 };
+// by the main server's app (its own view: the candles shown, its limits) a moment later; a double tap: as it was.
+// A long press: the desktop's cursor (its crosshair, the candle's values on the info line, the price and date tags)
+// where the finger is, moved with it, left there when the finger is lifted; a tap takes it away ----
+const Z = { g: null, target: null, busy: 0, again: false, tap: 0, last: 0, want: {}, local: null, cur: null };
+const LONG_MS = 350;
 function chartKey() { return "chart/" + S.account + "/" + S.ticker + "/" + S.range; }
 function chartView() { const v = S.tab === "chart" && S.ticker ? S.views[chartKey()] : null; return v && v.view && v.png ? v : null; }
 function zoomClamp(z, first, count) {        // (the desktop chart's: at least 12 candles, a little empty room)
@@ -199,6 +202,12 @@ function zoomClamp(z, first, count) {        // (the desktop chart's: at least 1
 function applyZoom() {
   const img = document.querySelector(".chartImg"), v = chartView();
   if (!img) return;
+  const xh = img.parentNode.querySelector(".xhair");
+  if (xh) {          // (the finger's crosshair: until the picture has the desktop's there)
+    const k = img.parentNode.clientWidth / (v ? v.w : 390);
+    xh.hidden = !(v && Z.local);
+    if (v && Z.local) { xh.firstChild.style.left = (Z.local.x * k).toFixed(1) + "px"; xh.lastChild.style.top = (Z.local.y * k).toFixed(1) + "px"; }
+  }
   const t = v && Z.target && Z.target.key === chartKey() ? Z.target : null;
   if (!t) { img.style.transform = ""; return; }
   // the picture's candles (z.first, z.count) stretched and moved to show the wanted ones (t.first, t.count)
@@ -208,19 +217,32 @@ function applyZoom() {
   img.style.transform = `translateX(${(tx * k).toFixed(1)}px) scaleX(${s.toFixed(4)})`;
 }
 function sendZoom(msg) {
+  Object.assign(Z.want, msg);       // (the wishes so far: the candles shown, the cursor; the last of each)
+  if (msg.reset) { delete Z.want.first; delete Z.want.count; }
+  if (msg.first != null) delete Z.want.reset;
   if (!ws || ws.readyState !== 1) return;
-  if (Z.busy && Date.now() - Z.busy < 700) {      // (one at a time: the last wish sent when it's drawn)
+  if (Z.busy && Date.now() - Z.busy < 700) {      // (one at a time: the last wishes sent when it's drawn)
     Z.again = true; setTimeout(flushZoom, 720); return;
   }
   Z.busy = Date.now(); Z.again = false; Z.last = Date.now();
-  ws.send(JSON.stringify(Object.assign({ t: "zoom", key: chartKey() }, msg)));
+  const out = Object.assign({ t: "zoom", key: chartKey() }, Z.want);
+  Z.want = {};
+  ws.send(JSON.stringify(out));
 }
-function flushZoom() { if (Z.again && Z.target && Z.target.key === chartKey()) { Z.busy = 0; sendZoom({ first: Z.target.first, count: Z.target.count }); } }
+function flushZoom() { if (Z.again && Object.keys(Z.want).length) { Z.busy = 0; sendZoom({}); } }
 function onChartView(data) {
   Z.busy = 0;
-  const z = data && data.view, t = Z.target;
+  const z = data && data.view, t = Z.target, c = Z.cur;
   if (t && z && !Z.g && !Z.again && Math.abs(z.first - t.first) < 0.05 && Math.abs(z.count - t.count) < 0.05) Z.target = null;
+  if (Z.local && c && data.cursor && Math.abs(data.cursor[0] - c[0]) < 0.2 && Math.abs(data.cursor[1] - c[1]) < 0.2) Z.local = null;
+  if (!Z.cur && !data.cursor) Z.local = null;
   flushZoom();
+}
+function setCursor(pt) {          // the desktop's cursor there (null: none)
+  Z.cur = pt ? [Math.round(pt.x * 10) / 10, Math.round(pt.y * 10) / 10] : null;
+  Z.local = pt ? { x: pt.x, y: pt.y } : null;
+  applyZoom();
+  sendZoom({ cursor: Z.cur });
 }
 function touchPts(e, box, v) {
   const r = box.getBoundingClientRect(), k = r.width / v.w;
@@ -231,21 +253,37 @@ function startGesture(e, img, v) {
   if (!p.length) { Z.g = null; return; }
   const b = Z.target && Z.target.key === chartKey() ? Z.target : v.view;
   const two = p.length > 1;
-  Z.g = { img, two, moved: Z.g ? Z.g.moved : false, base: { first: b.first, count: b.count },
+  const old = Z.g;
+  if (old && old.timer) clearTimeout(old.timer);
+  Z.g = { img, two, moved: old ? old.moved : false, cursor: false, base: { first: b.first, count: b.count },
           c0: two ? (p[0].x + p[1].x) / 2 : p[0].x, d0: two ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : 0,
-          x0: p[0].x, y0: p[0].y };
+          x0: p[0].x, y0: p[0].y, timer: 0 };
+  if (!two && !old) {      // held still: the cursor
+    const g = Z.g;
+    g.timer = setTimeout(() => {
+      if (Z.g !== g || g.moved || g.two) return;
+      g.cursor = true;
+      try { TG && TG.HapticFeedback && TG.HapticFeedback.selectionChanged(); } catch (e) { /* (older Telegram) */ }
+      setCursor({ x: g.x0, y: g.y0 });
+    }, LONG_MS);
+  }
 }
 function moveGesture(e) {
   const g = Z.g, v = chartView();
   if (!g || !v) return;
   const p = touchPts(e, g.img.parentNode, v);
   if (!p.length) return;
+  if (g.cursor) {              // the cursor follows the finger (not the page, not the candles)
+    if (e.cancelable) e.preventDefault();
+    if (p.length === 1) setCursor(p[0]);
+    return;
+  }
   if ((p.length > 1) !== g.two) { startGesture(e, g.img, v); return; }
   if (!g.moved) {
     const dx = Math.abs(p[0].x - g.x0), dy = Math.abs(p[0].y - g.y0);
-    if (!g.two && dx < 6) return;               // (not yet: a tap, or the page scrolled up / down)
-    if (!g.two && dy > dx) { Z.g = null; return; }
-    g.moved = true;
+    if (!g.two && dy > 6 && dy > dx) { clearTimeout(g.timer); Z.g = null; return; }   // (the page scrolled up / down)
+    if (!g.two && dx < 6) return;               // (not yet: a tap, or a long press)
+    g.moved = true; clearTimeout(g.timer);
   }
   if (e.cancelable) e.preventDefault();
   const z = v.view;
@@ -261,9 +299,13 @@ function moveGesture(e) {
 function endGesture(e) {
   const g = Z.g, v = chartView();
   if (!g) return;
+  clearTimeout(g.timer);
+  if (g.cursor) { Z.g = null; Z.tap = 0; if (S.later) { S.later = false; render(); } return; }    // (the cursor stays)
   if (e.touches && e.touches.length && v) { startGesture(e, g.img, v); return; }     // (a finger still on it)
   Z.g = null;
-  if (!g.moved && !g.two) {
+  if (e.type === "touchcancel") g.moved = true;        // (not a tap)
+  if (!g.moved && !g.two && Z.cur) { setCursor(null); Z.tap = Date.now(); }     // a tap: the cursor away
+  else if (!g.moved && !g.two) {
     if (Date.now() - Z.tap < 350) {           // a double tap: the range's view again (the desktop's double-click)
       Z.tap = 0; Z.target = null; Z.again = false; Z.busy = 0; applyZoom(); sendZoom({ reset: true });
     } else Z.tap = Date.now();
@@ -625,7 +667,7 @@ function subscribe() {
     .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
     .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : []);
   if (ws && ws.readyState === 1 && S.account) ws.send(JSON.stringify({ t: "sub", account: S.account, views }));
-  Z.target = null; Z.again = false;          // (another chart: drawn as its range shows it)
+  Z.target = null; Z.again = false; Z.want = {}; Z.local = null; Z.cur = null;   // (another chart: as its range shows it)
 }
 
 function openTicker(tk) {
@@ -713,6 +755,7 @@ function setup() {
     if (img && v) startGesture(e, img, v);
   }, { passive: true });
   document.addEventListener("touchmove", moveGesture, { passive: false });
+  document.addEventListener("contextmenu", (e) => { if (e.target.closest && e.target.closest(".chartBox")) e.preventDefault(); });
   document.addEventListener("touchend", endGesture);
   document.addEventListener("touchcancel", endGesture);
   document.addEventListener("input", (e) => { if (e.target.id === "flt") { S.filter = e.target.value; render(); } });

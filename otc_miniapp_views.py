@@ -195,7 +195,10 @@ class MiniViews(QObject):
 
     def zoom(self, msg):
         """A phone pinched or panned its chart: the hidden chart shows those candles (as the desktop's wheel and
-        drag: the same limits), drawn and sent at once (even if the same: the phone waits for it)."""
+        drag: the same limits), drawn and sent at once (even if the same: the phone waits for it). Its cursor: the
+        desktop's crosshair at that point (the hidden chart's mouse: its candle's values on the info line, the price
+        and date tags), until the phone takes it away."""
+        from PyQt6.QtCore import QPointF
         from otc_chart import MAX_RIGHT_EMPTY_BARS
         key = str(msg.get("key") or "")
         parts = key.split("/")
@@ -207,9 +210,14 @@ class MiniViews(QObject):
         chart = c["chart"]
         if not chart.dates:
             return
+        if "cursor" in msg:
+            cur = msg["cursor"]
+            chart.mouse = QPointF(float(cur[0]), float(cur[1])) if cur else None
+            if not cur:
+                chart.cursor_point = None
         if msg.get("reset"):
             chart.reset_view()
-        else:
+        elif "count" in msg:
             chart.count = min(max(float(msg["count"]), 12.0), len(chart.dates) + MAX_RIGHT_EMPTY_BARS)
             chart.first = chart._clamp_first(float(msg["first"]))
         self.sent.pop(key, None)
@@ -495,6 +503,7 @@ class MiniViews(QObject):
                 # the candles shown (for the phone's pinch and pan): first slot, how many, of n; the candles' area
                 "view": {"first": chart.first, "count": chart.count, "n": len(chart.dates), "left": price.left(),
                          "width": price.width(), "min": 12, "right": MAX_RIGHT_EMPTY_BARS},
+                "cursor": [round(chart.mouse.x(), 1), round(chart.mouse.y(), 1)] if chart.mouse is not None else None,
                 "png": base64.b64encode(bytes(buf.data())).decode("ascii")}
 
     def read_minutes(self, ticker):

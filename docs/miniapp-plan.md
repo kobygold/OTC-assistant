@@ -231,3 +231,8 @@ drawings), not a phone-drawn chart.
   candles shown, as on the desktop.
 - The view is the hidden chart's: two phones on the same chart and range share it; it stays through the live
   redraws and is dropped when no phone shows that chart.
+- The cursor (2.7.130): a long press shows the desktop's crosshair there (the hidden chart's `mouse`: it snaps to
+  the candle's prices, the candle's values on the info line, the price and date tags, the zone's details); it
+  follows the finger, stays when the finger is lifted (live), and a tap takes it away. The phone draws a thin
+  crosshair of its own until the picture with the desktop's comes. Sent as `"cursor": [x, y]` (the chart's points) or
+  `null` in the same `zoom` message.
