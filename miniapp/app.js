@@ -368,15 +368,14 @@ function renderChecklist(view) {
   });
   return out + `<div class="note" dir="ltr">The desktop's checklist of this ticker: type in a box (Enter sends it), −/+ and the pin as on the desktop; tap a manual item to mark it (☐ → ✔ → ✘), an item's name for its explanation.</div></div>`;
 }
-// the checklist's trade buttons as the desktop shows them; a tap runs the desktop's button on the main server's app
-// (Update Buy / Update Sell need the checklist's boxes typed: step 4)
+// the checklist's trade buttons as the desktop shows them (Update Buy / Update Sell too, once new values are typed);
+// a tap runs the desktop's button on the main server's app
 function renderActions(view) {
   const b = ((view || {}).checklist || {}).buttons || [];
   if (!b.length) return "";
-  const phone = (x) => x.id !== "update_btn" && x.id !== "update_sell_btn";
   return `<div class="actions" style="grid-template-columns:repeat(${Math.min(b.length, 3)},minmax(0,1fr))">` + b.map(x => {
-    const on = x.enabled && phone(x);
-    return `<button ${phone(x) ? `data-act="${esc(x.id)}" data-text="${esc(x.text)}" data-tk="${esc(view.ticker)}"` : `data-soon="1"`} ${on ? "" : "disabled "}` +
+    const on = x.enabled;
+    return `<button data-act="${esc(x.id)}" data-text="${esc(x.text)}" data-tk="${esc(view.ticker)}" ${on ? "" : "disabled "}` +
       `style="background:${on ? BTN_COLORS[x.name] || "#3a4046" : "#1d2125"};color:${!on ? "#5c6268" : DARK_TEXT.has(x.name) ? "#111" : "#fff"}">${esc(x.text)}</button>`;
   }).join("") + `</div>`;
 }
