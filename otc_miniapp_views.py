@@ -455,22 +455,31 @@ class MiniViews(QObject):
         return found
 
     def card(self, account, ticker):
-        from otc_chart import LEVEL_COLORS
+        from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS
         from otc_daily_gui import RISK_COLORS, ticker_risk
-        from otc_level2 import MM_TIPS, Level2Panel, mm_risk
+        from otc_level2 import MINE, MM_TIPS, Level2Panel, mm_risk
         w = self.win
         panel = self.panel_for(ticker)
         q, bids, asks, note = self.market(ticker)
         held = self.held()
         reloaders = panel.reloaders
 
+        # my open orders' rows (green, after the market makers at their price) and the colors: the desktop's
+        # Level II (gray while it holds the last close); the orders are the chosen account's, as there
+        orders = panel.atm.chart_orders(ticker) if account == panel.atm.chosen_account() else []
+        shades = HELD_LEVELS if held else LEVEL_COLORS
+
         def book(rows, side):
             out = []
-            for mm, price, size, level, *_ in rows:
-                size_trend = self.sizes.get((ticker, side, mm), (0, 0))[1]
+            for mm, price, size, level, mine in Level2Panel._with_mine(rows, orders, side):
+                size_trend = 0 if held or mine else self.sizes.get((ticker, side, mm), (0, 0))[1]
                 row = {"mm": mm, "price": fmt_price(price), "size": f"{size:,}",
-                       "bg": LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)], "trend": size_trend}
-                if side == "ASK":
+                       "bg": MINE if mine else shades[min(level, len(shades) - 1)],
+                       "fg": HELD if held and not mine else GOLD, "trend": size_trend}
+                if mine:
+                    row["mine"] = True
+                    row["tip"] = "My open order (from Schwab; not part of the market's book)"
+                elif side == "ASK":
                     risk = mm_risk(mm, reloaders)
                     if risk:
                         row["sign"] = {"level": risk, "color": RISK_COLORS[risk][0],
