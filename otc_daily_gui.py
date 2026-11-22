@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.116"
+APP_VERSION = "2.7.117"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1351,6 +1351,9 @@ class MainWindow(QMainWindow):
         self.checklist.risk_of = lambda t: (lambda r: (r[2], r[0], r[1]) if r else None)(
             TICKER_RISKS.get(t[-1]) if len(t or "") == 5 else None)
         self.checklist.risk_icons = {level: risk_icon(level) for level in RISK_COLORS}
+        # the Telegram Mini App's views (made here when this is the main server's app: the desktop's own code)
+        from otc_miniapp_views import MiniViews
+        self.mini_views = MiniViews(self)
         # the pinned prices (checklist_prices): kept in the shared data too, for every computer
         self.checklist.save_settings = self.checklist.atm.save_settings = self.save_checklist_settings
         self.show_position_default()
@@ -1530,13 +1533,14 @@ class MainWindow(QMainWindow):
         self.settings["fav_side_show"] = shown
         save_settings(self.settings)
 
-    def fav_order(self, t):
+    def fav_order(self, t, favs=None, account=None):
         """The favorites' usual order (the Mini Favorites' and the Favorites tab's): the ATM trades first, the most
         circles first (a yellow, partly filled one: half a circle: a sell partly sold before a sell sent, partly
-        bought before a buy sent), then by name; then the other favorites by group, then by name."""
-        e = self.fav_atm_trade(t)
+        bought before a buy sent), then by name; then the other favorites by group, then by name. favs, account:
+        another account's (the Mini App's), else the chosen one's."""
+        e = self.fav_atm_trade(t, account)
         rank = steps_score(e) if e else 0
-        return (0, -rank, 0, t) if rank > 0 else (1, 0, self.favs[t]["group"], t)
+        return (0, -rank, 0, t) if rank > 0 else (1, 0, (favs or self.favs)[t]["group"], t)
 
     def update_fav_side(self):
         """The Chart tab's favorites list again: the open ATM trades' first, then by group; their day, ATM trade
@@ -5313,14 +5317,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self.monitor_scroll.ensureWidgetVisible(self.order_log_box, 0, 0))
         self.calm_orders_btn()
 
-    def fav_atm_trade(self, ticker):
-        """The ticker's ATM trade in the chosen account: the open one, else the last one sold (a canceled one:
-        none, as on the checklist)."""
+    def fav_atm_trade(self, ticker, account=None):
+        """The ticker's ATM trade in the chosen account (or the one given: the Mini App's): the open one, else the
+        last one sold (a canceled one: none, as on the checklist)."""
         checklist_panel = getattr(self, "checklist", None)
         if checklist_panel is None:       # (not made yet, at the start)
             return None
         atm_trades = checklist_panel.atm
-        chosen = atm_trades.chosen_account()
+        chosen = account or atm_trades.chosen_account()
         mine = [e for e in atm_trades.entries
                 if e.get("ticker") == ticker and (e.get("account") or chosen) == chosen]
         open_ = [e for e in mine if e.get("state") not in ("sold", "canceled")]

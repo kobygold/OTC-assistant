@@ -236,6 +236,14 @@ class TelegramBot:
                 log(f"Telegram: can't reach it ({type(e).__name__}: {e})")
             await asyncio.sleep(RETRY_S)
         self.update_state(bot=self.username, by=self.server.name)
+        url = self.server.mini.url() if getattr(self.server, "mini", None) is not None else None
+        if url:                     # the menu button opens the Mini App, on this (the main) server
+            try:
+                await self.call("setChatMenuButton", menu_button={"type": "web_app", "text": "Open app",
+                                                                  "web_app": {"url": url}})
+                log(f"Telegram: the menu button opens {url}")
+            except Exception as e:
+                log(f"Telegram: the menu button wasn't set ({type(e).__name__}: {e})")
         try:                        # the commands' menu in the phone's Telegram
             await self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in COMMANDS])
         except asyncio.CancelledError:

@@ -415,8 +415,9 @@ class AtmTable(SortMixin, QTableWidget):
         return (-steps_score(self.atm.live_view(e)), str(e.get("ticker") or ""))   # (stable: the newest first)
 
     def rebuild(self):
-        # only the trades of the account chosen at the top of the Monitor tab (all while none is)
-        account = self.atm.settings.get("schwab_account", "")
+        # only the trades of the account chosen at the top of the Monitor tab (all while none is); a copy made for the
+        # Mini App: its own account
+        account = getattr(self, "account", None) or self.atm.settings.get("schwab_account", "")
         cutoff = period_cutoff(getattr(self, "period_days", 0))     # (the tab's period: open trades always)
         flt = getattr(self, "ticker_filter", "")
         entries = [e for e in reversed(self.atm.entries)

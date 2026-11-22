@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>OTC Assistant</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button id="back" class="icon" aria-label="Back" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <div id="title">OTC Assistant</div>
+    <div id="live"><span id="dot"></span><span id="liveText">…</span></div>
+    <button id="account" aria-label="The account (tap to choose)">...</button>
+  </header>
+  <div id="banner" hidden></div>
+  <main id="screen" class="scroll"></main>
+  <nav id="tabs"></nav>
+  <div id="sheet" hidden></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

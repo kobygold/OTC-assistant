@@ -295,6 +295,9 @@ class Server:
         self.massive_key = settings.get("api_key", "").strip()      # Massive's (the daily candles)
         self.telegram_token = str(settings.get("telegram_token") or "").strip()     # the phones' bot
         self.bot = None                         # (main server) the Telegram bot, while it runs
+        # the Telegram Mini App (otc_miniapp): its page and the phones, on 127.0.0.1 (Tailscale Serve: https)
+        from otc_miniapp import MiniApp
+        self.mini = MiniApp(self, settings.get("miniapp_port", 8790))
         # the news channel's reader (otc_news): the user's Telegram login, typed in an app, passed to all
         self.news_login = news_login_of(settings)
         self.news = None                        # (main server) the reader, while it runs
@@ -399,6 +402,7 @@ class Server:
         except OSError as e:
             log(f"Port {self.port} is taken ({e}): another server runs; this one ends")
             return
+        await self.mini.start()
         self.event(f"Server started on {self.name} (listening on {', '.join(hosts)}:{self.port}, version {self.version}"
                    + (f"; the others reach it at {self.address})" if self.cluster_secret else ")"))
         tasks = [asyncio.create_task(self.idle_loop()), asyncio.create_task(self.tidy_loop())]
@@ -484,6 +488,8 @@ class Server:
             conn.put(m)
         if self.history_msg:
             conn.put(self.history_msg)
+        if self.mini.wanted:                            # the Mini App's views the phones want
+            conn.put(self.mini.want_msg())
         log(f"App connected ({len(self.conns)} now)")
         try:
             async for raw in ws:
@@ -505,6 +511,8 @@ class Server:
                     self.on_read(msg)
                 elif kind == "at_close":
                     asyncio.create_task(self.on_at_close(conn, str(msg.get("ticker") or "")))
+                elif kind == "mini_view":
+                    self.mini.on_view(msg)
                 elif kind == "telegram_token":
                     self.on_telegram_token(msg.get("token"))
                 elif kind == "news_login":
@@ -1055,6 +1063,7 @@ class Server:
         await asyncio.wait(tasks, timeout=6) if tasks else None
         await self.stop_bot()
         await self.stop_news()
+        await self.mini.not_leader()
         self.client = None
         self.symbols = set()
         if handover_to is not None:

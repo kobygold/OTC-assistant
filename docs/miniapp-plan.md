@@ -5,7 +5,7 @@ shows - favorites, chart, Level II, checklist, ATM trades, orders, alerts - laid
 order buttons working. The design is the clickable mockup of 2026-11-20 (390x844, "OTC Mini App Mockup"),
 updated with what the desktop gained since (section 6).
 
-Status: **step 0** (the mockup). Decisions made are marked **(decided)**; open ones **(to decide)**.
+Status: **step 1 built** (v2.7.117: the way in, Favorites and Trades, live, read-only); step 0 (the mockup) done. Decisions made are marked **(decided)**; open ones **(to decide)**.
 
 ## 1. Rule number one: one logic, the desktop's
 
@@ -124,3 +124,32 @@ DANGEROUS bar. Level II: the refill signs (a refill counts only when the offer i
 
 Each step is usable on its own and tested as the bot was: a fake Telegram (initData signed with a test
 token), the server's fake modes, a fake order sender - never real orders, never the real cluster.
+
+## 8. Where a change goes (desktop <-> phone)
+
+The phone shows the desktop's own output, so most desktop fixes need **no phone change**:
+
+| Phone screen | Made by (the main server's app) | From the desktop's | Drawn by (miniapp/app.js) |
+|---|---|---|---|
+| Favorites | `otc_miniapp_views.MiniViews.favs` | `fav_order`, `fav_atm_trade` (otc_daily_gui), `trade_steps`, the Check L1/L2 results, `ticker_risk` | `renderFavs` |
+| Trades (+ its orders) | `MiniViews.trades` | **a hidden copy of the Monitor tab's ATM Trades table** (`otc_atm_trades.AtmTable`), read cell by cell: text, color, background, bold, tooltip | `renderTrades` (every column the table has, in its order) |
+
+- A fix in how the desktop **computes or words** something (a P/L, a fee, a sort, a state's name or color): done
+  on the desktop only; the phone shows it at once.
+- A **new column** in the ATM Trades table: shows on the phone's cards by itself.
+- A **new kind of data** a phone screen should show: add it to that screen's view in `otc_miniapp_views.py` (the
+  desktop's function that has it, not a copy), then draw it in that screen's `render...` in `miniapp/app.js`.
+- A **new screen**: a view in `otc_miniapp_views.py` (its key in `otc_miniapp.VIEWS`), a `render...` in app.js.
+- The server (`otc_miniapp.py`) only signs phones in and passes views on: a change there is rare (and is a server
+  update).
+
+## 9. Setting it up (once)
+
+1. Tailscale's admin console (login.tailscale.com) → DNS: **MagicDNS** and **HTTPS Certificates** on.
+2. On each computer (it may become the main server), in a command prompt: `tailscale serve --bg 8790`
+   (the Mini App's port; `tailscale serve status` shows it, `tailscale serve --https=443 off` removes it).
+3. The iPhone: the Tailscale app, signed in to the same account, on.
+4. Every computer on the new version (a server update). The main server's bot then sets its menu button,
+   **Open app**, to `https://<that computer>.<tailnet>.ts.net/`; it moves with the main server.
+5. In the bot's chat: the menu button opens the app; it shows the accounts the phone is linked to (the Telegram
+   tab) - the account chip at the top switches between them.
