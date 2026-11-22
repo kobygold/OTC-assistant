@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.113"
+APP_VERSION = "2.7.114"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1203,7 +1203,8 @@ class MainWindow(QMainWindow):
         self.ask_lines_show.setChecked(bool(self.settings.get("ask_lines_show", False)))
         self.ask_lines_show.setToolTip(
             "1D view: each market maker's ask on the Level II, minute by minute, a line of its own color (a legend "
-            "on the chart, the lowest ask first), instead of the price candles (the volume bars stay; no record of the ticker: the candles). From the record: the tickers streamed (the favorites, the ATM "
+            "on the chart, the lowest ask first; click one there to highlight it, with a dot where it's the lowest ask; again: "
+            "none), instead of the price candles (the volume bars stay; no record of the ticker: the candles). From the record: the tickers streamed (the favorites, the ATM "
             "trades, the chart's), the days kept (14).")
         self.ask_lines_show.toggled.connect(self.on_ask_lines_toggled)
         row.addWidget(self.ask_lines_show)

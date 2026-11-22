@@ -219,6 +219,8 @@ class CandleChart(DrawingsMixin, QWidget):
         self.times = []                # 1D view: each candle's Israel time
         self.show_ask_lines = False    # 1D view: each market maker's ask, a line of its color (otc_ask_lines)
         self.ask_lines = None          # (ticker, the candles' times, [{mm: ask} or None per candle], {mm: color})
+        self.ask_focus = None          # (ticker, mm): the market maker highlighted (a click on it in the legend)
+        self._legend_rects = []        # [(QRectF, mm)]: the legend's rows, as last drawn
         self.risk_icon = None
         self._title_rect = QRectF()     # the ticker's box (top left): a click copies the ticker
         self.risk_tip = ""
@@ -1363,6 +1365,7 @@ class CandleChart(DrawingsMixin, QWidget):
     def _draw_ask_lines(self, p, price, py, i0, i1):
         """Each market maker's ask, candle by candle: a line joining its points (one a candle) in its color (market makers at the same price
         side by side, 2 px apart), and the legend (top left): those on the visible candles, lowest ask first."""
+        self._legend_rects = []
         now = self._ask_lines_now()
         if now is None:
             return
@@ -1370,6 +1373,7 @@ class CandleChart(DrawingsMixin, QWidget):
         bw = self._bar_w(price)
         p.setClipRect(price.adjusted(1, 1, -1, -1))
         paths = {}
+        points = {}         # mm -> [(x, y, lowest)]: its points, and whether it was the lowest ask there
         last_y = {}
         for i in range(i0, min(i1, len(slots) - 1) + 1):
             asks = slots[i] or {}
@@ -1378,12 +1382,14 @@ class CandleChart(DrawingsMixin, QWidget):
             for mm in sorted(asks):
                 at.setdefault(asks[mm], []).append(mm)
             x = self._x(i, price)
+            low = min(asks.values()) if asks else 0
             for value, mms in at.items():
                 for k, mm in enumerate(mms):
                     y = py(value) + (k - (len(mms) - 1) / 2) * 2
                     path = paths.get(mm)
                     if path is None:
                         path = paths[mm] = QPainterPath()
+                    points.setdefault(mm, []).append((x, y, value <= low + 1e-12))
                     # a point a candle, joined to the last one by a straight line (a gap: none)
                     if last_y.get(mm, (None, None))[0] == i - 1:
                         path.lineTo(x, y)
@@ -1392,12 +1398,26 @@ class CandleChart(DrawingsMixin, QWidget):
                         path.lineTo(x + 0.01, y)        # (one alone: a dot)
                     last_y[mm] = (i, y)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for mm, path in paths.items():
-            pen = QPen(QColor(colors.get(mm, "#c8c8c8")), 1.6)
+        focus = self._ask_focus_now(paths)
+        for mm, path in sorted(paths.items(), key=lambda kv: kv[0] == focus):     # (the highlighted one on top)
+            color = QColor(colors.get(mm, "#c8c8c8"))
+            if focus and mm != focus:
+                color.setAlpha(55)          # the others faint
+            pen = QPen(color, 3.2 if mm == focus else 1.6)
             pen.setCosmetic(True)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
+        if focus:
+            # where it was the lowest ask (alone or with others): a dot on its line
+            color = QColor(colors.get(focus, "#c8c8c8"))
+            p.setPen(QPen(QColor("#000000"), 1))
+            p.setBrush(color)
+            r = max(2.5, min(4.5, bw * 0.35))
+            for x, y, lowest in points.get(focus, []):
+                if lowest:
+                    p.drawEllipse(QPointF(x, y), r, r)
+            p.setBrush(Qt.BrushStyle.NoBrush)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         p.setClipping(False)
         # the legend: the market makers on the visible candles, lowest ask first (at the last visible candle)
@@ -1406,7 +1426,10 @@ class CandleChart(DrawingsMixin, QWidget):
         return (names, last, colors) if names else None
 
     def _draw_ask_legend(self, p, price, names, last, colors):
-        """The L2 Ask lines' legend, top left: each market maker's color and its ask at the last visible candle."""
+        """The L2 Ask lines' legend, top left: each market maker's color and its ask at the last visible candle. A click
+        on one highlights it (again: none)."""
+        focus = self._ask_focus_now(names)
+        self._legend_rects = []
         fm = QFontMetrics(p.font())
         x, y = price.left() + 8, price.top() + 26       # (under the Hi marker's place)
         row_h = fm.height() + 2
@@ -1418,10 +1441,34 @@ class CandleChart(DrawingsMixin, QWidget):
         for n, mm in enumerate(names):
             cx, cy = x + (n // per_col) * width, y + (n % per_col) * row_h
             color = QColor(colors.get(mm, "#c8c8c8"))
-            p.fillRect(QRectF(cx, cy + row_h / 2 - 2, 12, 3), color)
+            if focus and mm != focus:
+                color.setAlpha(110)
+            row = QRectF(cx - 3, cy, width - 2, row_h)
+            self._legend_rects.append((row, mm))
+            if mm == focus:
+                p.setPen(QPen(color, 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRect(row)
+            p.fillRect(QRectF(cx, cy + row_h / 2 - (3 if mm == focus else 2), 12, 5 if mm == focus else 3), color)
             p.setPen(color)
+            font = QFont(p.font())
+            font.setBold(mm == focus)
+            p.setFont(font)
             p.drawText(QRectF(cx + 16, cy, width - 16, row_h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        f"{mm}  {fmt_price(last[mm])}" if mm in last else mm)
+            font.setBold(False)
+            p.setFont(font)
+
+    def _ask_focus_now(self, shown):
+        """The highlighted market maker, when it's of this ticker and among those shown; else None."""
+        f = self.ask_focus
+        return f[1] if f and f[0] == self.ticker and f[1] in shown else None
+
+    def _legend_at(self, pos):
+        """The market maker of the legend's row at pos (the L2 Ask lines shown), else None."""
+        if not (self.intraday and self.show_ask_lines):
+            return None
+        return next((mm for rect, mm in self._legend_rects if rect.contains(QPointF(pos))), None)
 
     def _draw_day_lines(self, p, panes, i0, i1):
         """1D view: a dashed line between the last candle of a trading day and the first of the next."""
@@ -1581,7 +1628,8 @@ class CandleChart(DrawingsMixin, QWidget):
                             or self._alert_x_at(e.position()) else
                             Qt.CursorShape.SizeVerCursor if self._order_tag_at(e.position())
                             or self._alert_tag_at(e.position()) else
-                            Qt.CursorShape.PointingHandCursor if self._on_title(e.position()) else
+                            Qt.CursorShape.PointingHandCursor if self._on_title(e.position())
+                            or self._legend_at(e.position()) else
                             Qt.CursorShape.OpenHandCursor if self._ruler_at(e.position()) == "price"
                             and e.modifiers() & Qt.KeyboardModifier.ControlModifier else     # Ctrl: pans it
                             self._ruler_cursor(self._ruler_at(e.position()))))
@@ -1603,6 +1651,11 @@ class CandleChart(DrawingsMixin, QWidget):
             return
         if self.placing is None and self._on_title(e.position()):
             self._copy_ticker(e.position())
+            return
+        mm = self._legend_at(e.position()) if self.placing is None else None
+        if mm:              # the L2 Ask lines' legend: highlight it (again: none)
+            self.ask_focus = None if self.ask_focus == (self.ticker, mm) else (self.ticker, mm)
+            self.update()
             return
         if self.placing is None:
             key = self._alert_x_at(e.position())
