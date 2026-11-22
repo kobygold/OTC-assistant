@@ -24,7 +24,7 @@ const DONE = "done", HALF = "half";
 const TABS = [
   { id: "favs", label: "Favorites", icon: "M12 2.8l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 16.8l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" },
   { id: "ticker", label: "Ticker", icon: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-5M12 8h.01" },
-  { id: "chart", label: "Chart", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },          // (a zigzag going up)
+  { id: "chart", label: "Chart", icon: "M3 17l6-6 4 4 8-8" },           // (a zigzag going up, no arrowhead)
   { id: "l2", label: "Level II", icon: "M3 5h8M3 9h6M3 13h7M3 17h5M13 5h8M15 9h6M14 13h7M16 17h5" },
   { id: "checklist", label: "Checklist", icon: "M9 6h11M9 12h11M9 18h11M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5" },
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
