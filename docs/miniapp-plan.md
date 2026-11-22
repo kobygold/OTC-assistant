@@ -253,3 +253,9 @@ next / previous ticker in the Favorites' order (view `favs`, unfiltered, wrappin
 on the rest of the panel (the ranges, the buttons). The rule holds while only favorites can be opened (Favorites,
 Trades, Alerts and the Inbox only show the account's favorites): a ticker not in the list doesn't swipe. If the
 Mini App ever opens other tickers, revisit it (e.g. swipe within the list it was opened from).
+
+## 15. The Level II tab (built in 2.7.143)
+The Trades tab is gone (the Favorites list the ATM trades first, with their steps); in its place a Level II tab: the
+ticker's line (as the chart's: the ticker, its risk, the ATM trade's steps) and the card's book (`renderL2`), with
+the ticker's buttons. The chart's panel no longer shows the book. The view "trades" and `renderTrades` stay (no tab
+asks for it now). Swiping between favorites and the kept scroll places include the Level II tab.

@@ -3,7 +3,8 @@
 
    Where a change goes (the plan, section 8):
      Favorites  <- view "favs"   (otc_miniapp_views.favs: the Mini Favorites' order and data)    -> renderFavs()
-     Trades     <- view "trades" (the Monitor tab's ATM Trades table, cell by cell)             -> renderTrades()
+     Level II   <- view "card" (its book: the desktop's Level II panel)                       -> renderL2()
+     (Trades    <- view "trades": the ATM Trades table, no longer a tab since 2.7.143)        -> renderTrades())
      Chart      <- view "chart" (the desktop's chart widget itself, drawn at the phone's size: otc_miniapp_views.chart)
                                                                                            -> renderChart()
      Orders     <- view "orders" (the Monitor tab's All Orders and Stocks owned tables, cell by cell, and the Order Log)
@@ -23,8 +24,8 @@ const DONE = "done", HALF = "half";
 const TABS = [
   { id: "favs", label: "Favorites", icon: "M12 2.8l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 16.8l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" },
   { id: "chart", label: "Chart", icon: "M7 4v16M7 8h-2v6h2M7 8h2v6H7M17 6v14M17 10h-2v5h2M17 10h2v5h-2" },
+  { id: "l2", label: "Level II", icon: "M3 5h8M3 9h6M3 13h7M3 17h5M13 5h8M15 9h6M14 13h7M16 17h5" },
   { id: "checklist", label: "Checklist", icon: "M9 6h11M9 12h11M9 18h11M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5" },
-  { id: "trades", label: "Trades", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" },
   { id: "news", label: "Inbox", icon: "M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" }
@@ -193,11 +194,18 @@ function renderChart(view, card, range) {
   const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
   // (the picture's info line only shows the cursor's candle: the ticker, its risk and the ATM trade's steps here,
   // as the checklist's title, with the ranges)
-  const tk = (view && view.ticker) || (card && card.ticker) || S.ticker || "";
-  const head = `<div class="chHead"><span class="chName"><b class="ckTicker">${esc(tk)}</b>${riskBadge(card && card.risk, 20)}` +
-    `${card && card.steps ? `<span class="chSteps">${stepsSvg(card.steps, 8, 24)}</span>` : ""}</span><div class="ranges">${ranges}</div></div>`;
-  return head + `<div class="chartBox">${img}<div class="xhair" hidden><i class="xv"></i><i class="xh"></i></div></div>` +
-    `<div class="cardPage">` + renderBook(card && card.book) + `</div>`;
+  return tickerHead(card, `<div class="ranges">${ranges}</div>`) +
+    `<div class="chartBox">${img}<div class="xhair" hidden><i class="xv"></i><i class="xh"></i></div></div>`;
+}
+// the Chart and Level II tabs' line: the ticker (as the checklist's title), its risk, the ATM trade's steps; then `right`
+function tickerHead(card, right) {
+  return `<div class="chHead"><span class="chName"><b class="ckTicker">${esc((card && card.ticker) || S.ticker || "")}</b>` +
+    `${riskBadge(card && card.risk, 20)}${card && card.steps ? `<span class="chSteps">${stepsSvg(card.steps, 8, 24)}</span>` : ""}</span>${right || ""}</div>`;
+}
+// ---- the Level II tab (view "card": its book, as the desktop's Level II panel) ----
+function renderL2(card) {
+  if (!card) return tickerHead(null) + `<div class="empty">Waiting for the ticker…</div>`;
+  return tickerHead(card) + `<div class="cardPage">` + renderBook(card.book) + `</div>`;
 }
 
 // ---- the chart's pinch and pan: the picture moved at once under the fingers, and the desktop's chart drawn so
@@ -568,7 +576,7 @@ function render() {
   let html;
   const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
   if (S.tab === "favs") html = renderFavs(v("favs"), S);
-  else if (S.tab === "trades") html = renderTrades(v("trades"), S);
+  else if (S.tab === "l2") html = S.ticker ? renderL2(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else if (S.tab === "ticker") html = renderCard(card) + renderActions(card);
   else if (S.tab === "orders") html = renderOrders(v("orders"), S);
   else if (S.tab === "alerts") html = renderAlerts(v("alerts"));
@@ -580,14 +588,14 @@ function render() {
     if (nv && nv.items.length && nv.items[0].t > newsSeen()) localSet("seen:" + S.account, String(nv.items[0].t));
   }
   else if (S.tab === "chart") html = S.ticker ? renderChart(S.views["chart/" + S.account + "/" + S.ticker + "/" + S.range], card, S.range) +
-    renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
-  else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites or Trades).</div>`;
+    renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
+  else if (S.tab === "checklist") html = S.ticker ? renderChecklist(card) + renderActions(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
   screen.innerHTML = html;
   // each panel (a tab, and on a ticker's tabs each ticker) back where it was left (a new one: its top); the place
   // is kept asking until the panel is long enough for it (its view may come a moment later), or a finger moves it
-  const shown = S.tab + "|" + (S.tab === "chart" || S.tab === "checklist" || S.tab === "ticker" ? S.ticker || "" : "");
+  const shown = S.tab + "|" + (S.tab === "chart" || S.tab === "l2" || S.tab === "checklist" || S.tab === "ticker" ? S.ticker || "" : "");
   if (shown !== S.shown) { S.shown = shown; S.restore = S.scrolls[shown] || 0; }
   if (S.restore != null) {
     screen.scrollTop = S.restore;
@@ -718,7 +726,7 @@ function connect() {
 }
 function subscribe() {
   // (the chart's picture only while it's shown: it's the biggest)
-  const views = ["favs", "trades"].concat(S.ticker ? ["card:" + S.ticker] : [])
+  const views = ["favs"].concat(S.ticker ? ["card:" + S.ticker] : [])
     .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
     .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : [])
     .concat(["news"]);         // (always: the Inbox tab's count of new ones)
@@ -729,13 +737,13 @@ function subscribe() {
 function openTicker(tk) {
   S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
 }
-// ---- a swipe left / right on the chart or the checklist: the next / previous ticker, in the Favorites' order
+// ---- a swipe left / right on the chart, the Level II or the checklist: the next / previous ticker, in the Favorites' order
 // (wrapping around). Only favorites can be opened for now; a ticker not there (if that ever changes) doesn't swipe.
 // On the chart's picture a drag pans the candles: the swipe is on the rest of the panel ----
 const SWIPE_PX = 60, SWIPE_MS = 700;
 function swipeStart(e) {
   S.swipe = null;
-  if (!(S.tab === "chart" || S.tab === "checklist") || !S.ticker || e.touches.length !== 1) return;
+  if (!(S.tab === "chart" || S.tab === "l2" || S.tab === "checklist") || !S.ticker || e.touches.length !== 1) return;
   const el = e.target;
   if (el.closest && (el.closest(".chartImg") || el.closest("input,textarea,select") || el.closest("#sheet") || el.closest("#tabs"))) return;
   const t = e.touches[0];
@@ -908,5 +916,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderNews, renderCard, renderChart, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderNews, renderCard, renderChart, renderL2, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();
