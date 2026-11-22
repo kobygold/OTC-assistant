@@ -12,16 +12,6 @@ button { font-family: inherit; color: inherit; }
 #app { height: 100%; display: flex; flex-direction: column; position: relative; overflow: hidden; }
 .scroll { scrollbar-width: none; } .scroll::-webkit-scrollbar { display: none; }
 
-#top { height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px;
-  border-bottom: 1px solid var(--line); background: var(--bar); }
-#title { flex: 1; min-width: 0; font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#live { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
-#dot { width: 8px; height: 8px; border-radius: 4px; background: #5c6268; }
-#dot.on { background: var(--green); }
-#account { font-size: 12px; font-weight: 600; color: var(--cyan); border: 1px solid #2b4a5c; border-radius: 12px;
-  padding: 3px 9px; background: transparent; }
-.icon { width: 44px; height: 44px; margin-left: -8px; border: none; background: transparent; display: flex;
-  align-items: center; justify-content: center; }
 #banner { padding: 8px 12px; font-size: 13px; font-weight: 600; background: #2a2110; color: #f0c060;
   border-bottom: 1px solid #5c4716; }
 #banner.bad { background: #3a1a20; color: #ffb3bd; border-color: #6b2a35; }
@@ -34,8 +24,10 @@ button { font-family: inherit; color: inherit; }
 #tabs button.on { color: var(--gold); }
 
 /* the favorites */
-.filter { padding: 12px 12px 4px 12px; }
-.filter input { width: 100%; height: 44px; border-radius: 10px; border: 1px solid #2c3136; background: #1b1e21;
+.filter { padding: 12px 12px 4px 12px; display: flex; gap: 8px; align-items: center; }
+.acctChip { flex-shrink: 0; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2b4a5c; background: transparent;
+  color: var(--cyan); font-size: 13px; font-weight: 600; }
+.filter input { flex: 1; min-width: 0; width: 100%; height: 44px; border-radius: 10px; border: 1px solid #2c3136; background: #1b1e21;
   color: var(--text); padding: 0 14px; font-size: 15px; outline: none; }
 .favHead, .favRow { display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 44px 88px; column-gap: 8px; align-items: center; }
 .favHead { padding: 6px 16px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; }

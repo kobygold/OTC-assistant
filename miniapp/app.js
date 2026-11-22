@@ -78,7 +78,9 @@ function renderFavs(view, st) {
   if (!view) return `<div class="empty">Waiting for the favorites…</div>`;
   const f = (st.filter || "").trim().toUpperCase();
   const rows = view.rows.filter(r => !f || r.ticker.includes(f));
-  let out = `<div class="filter"><label for="flt" hidden>Filter</label><input id="flt" placeholder="Filter (ticker)" autocomplete="off" value="${esc(st.filter || "")}"></div>` +
+  // (the account: here, the page's top bar gone; and in Telegram's ⋯ menu, Settings)
+  let out = `<div class="filter"><label for="flt" hidden>Filter</label><input id="flt" placeholder="Filter (ticker)" autocomplete="off" value="${esc(st.filter || "")}">` +
+    `<button class="acctChip" data-accts="1" aria-label="The account (tap to choose)">...${esc(st.account || "")}</button></div>` +
     `<div class="favHead"><span></span><span>Ticker</span><span>ATM</span><span style="text-align:center">Checks</span><span style="text-align:right">Bid / Ask</span></div>`;
   for (const r of rows) {
     const chg = r.change == null ? "" : (r.change > 0 ? "+" : "") + (r.change * 100).toFixed(1) + "%";
@@ -546,14 +548,8 @@ function render() {
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
   document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
     `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}</button>`).join("");
-  const tab = TABS.find(t => t.id === S.tab);
-  document.getElementById("title").textContent = ["ticker", "chart", "checklist"].includes(S.tab) && S.ticker ?
-    S.ticker + (S.tab === "checklist" ? " · Checklist" : S.tab === "chart" ? " · Chart" : "") : tab ? tab.label : "";
-  document.getElementById("back").hidden = S.tab !== "ticker";
+  // (no top bar: Telegram's Back button; a lost connection: the banner, "Reconnecting…")
   if (TG && TG.BackButton) { try { if (S.tab === "ticker") TG.BackButton.show(); else TG.BackButton.hide(); } catch (e) { /* (older Telegram) */ } }
-  document.getElementById("account").textContent = S.account ? "..." + S.account : "...";
-  document.getElementById("dot").className = S.live ? "on" : "";
-  document.getElementById("liveText").textContent = S.live ? "Live" : "Off";
   applyZoom();
 }
 function banner(text, bad) {
@@ -682,6 +678,10 @@ function openTicker(tk) {
   S.from = S.tab === "ticker" ? S.from : S.tab; S.ticker = tk; S.tab = "ticker"; subscribe(); render();
   document.getElementById("screen").scrollTop = 0;
 }
+function chooseAccount() {
+  if (!S.accounts) return;
+  sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
+}
 function goBack() { S.tab = S.from || "favs"; render(); }
 
 function setup() {
@@ -689,9 +689,10 @@ function setup() {
     TG.ready(); TG.expand();
     try { TG.disableVerticalSwipes(); TG.setHeaderColor("#12161b"); TG.setBackgroundColor("#0d1014"); } catch (e) { /* (older Telegram) */ }
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
+    try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#account,#back,#sheet");
+    const t = e.target.closest("[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -748,13 +749,9 @@ function setup() {
     if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
     if (t.dataset.ticker) { sheet(""); openTicker(t.dataset.ticker); return; }
     if (t.dataset.soon) { sheet(`<div class="tip">Update Buy / Update Sell send the values typed in the checklist's boxes: they come with the checklist's editing (step 4). Meanwhile, the Orders tab's Change sends a new limit.</div>`); return; }
-    if (t.id === "back") { goBack(); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
-    if (t.id === "account") {
-      sheet(`<div class="tip"><b>The account</b></div>` + S.accounts.map(a => `<button class="choice${a.tail === S.account ? " on" : ""}" data-acct="${esc(a.tail)}">...${esc(a.tail)} · ${a.mode === "trade" ? "news + trading" : "news only"}</button>`).join(""));
-      return;
-    }
+    if (t.dataset.accts) { chooseAccount(); return; }
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
   });
