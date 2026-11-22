@@ -210,7 +210,7 @@ class CandleChart(DrawingsMixin, QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.ticker = ""
         self.subtitle = ""
-        self.wrap_info = False      # the info line in two rows (a narrow chart: the Mini App's)
+        self.wrap_info = False      # the info line and the volume's in rows (a narrow chart: the Mini App's)
         self.range_label = "1Y"
         self.show_expirations = True
         self.show_last_tags = True     # the last price tag on the right axis
@@ -448,7 +448,7 @@ class CandleChart(DrawingsMixin, QWidget):
         left, right = LEFT_W, w - RIGHT_W
         info_h = 2 * INFO_H - 3 if self.wrap_info else INFO_H
         body_h = h - info_h - AXIS_H
-        vol_h = max(int(body_h * 0.24), 90)
+        vol_h = max(int(body_h * 0.24), 90) + self._vol_header_h() - VOL_HEADER_H
         price = QRectF(left, info_h, right - left, body_h - vol_h)
         vol = QRectF(left, info_h + body_h - vol_h, right - left, vol_h)
         return price, vol
@@ -555,7 +555,7 @@ class CandleChart(DrawingsMixin, QWidget):
         vmax = max(self.v[i0:i1 + 1] + self.vol_avg[i0:i1 + 1] + self.vol_median[i0:i1 + 1]) if i1 >= i0 else 1
         vmax = self.v_zoom or (vmax or 1) * 1.08
         self._vmax = vmax
-        vtop, vbot = vol.top() + VOL_HEADER_H, vol.bottom() - 1
+        vtop, vbot = vol.top() + self._vol_header_h(), vol.bottom() - 1
 
         def vy(v):
             return vbot - (v / vmax) * (vbot - vtop)
@@ -1086,6 +1086,32 @@ class CandleChart(DrawingsMixin, QWidget):
         """Left of the ticker's box."""
         return QRect(INFO_X - RISK_SIZE - 4, 4, RISK_SIZE, RISK_SIZE)
 
+    def _vol_header_rows(self):
+        """The volume line's pairs (label, value) in rows: one row; wrapped (wrap_info), as many as fit the chart's
+        width with the widest value each (so the rows don't change with the candle under the cursor)."""
+        if not self.wrap_info:
+            return [[0, 1, 2, 3, 4]]
+        f = QFont(self.font())
+        f.setPointSizeF(8.5)
+        fm = QFontMetrics(f)
+        widest = fm.horizontalAdvance("999,999,999") + 12
+        labels = ["Volume", f"VolAvg ({self.avg_period})", f"MedianVolume ({self.avg_period})",
+                  f"AvgDollar ({self.avg_period})", "DayVolDollar"]
+        x0 = x = LEFT_W + 3
+        right = self.width() - 4
+        rows = [[]]
+        for k, label in enumerate(labels):
+            w = fm.horizontalAdvance(label) + 12 + widest
+            if rows[-1] and x + w > right:
+                rows.append([])
+                x = x0
+            rows[-1].append(k)
+            x += w
+        return rows
+
+    def _vol_header_h(self):
+        return VOL_HEADER_H + (len(self._vol_header_rows()) - 1) * (VOL_HEADER_H - 3)
+
     def _volume_header(self, p, vol, i):
         items = [
             ("Volume", INFO_TEXT, False),
@@ -1099,7 +1125,9 @@ class CandleChart(DrawingsMixin, QWidget):
             ("DayVolDollar", DAY_DOLLAR, False),
             (fmt_volume(self.day_dollar[i]), DAY_DOLLAR, False),
         ]
-        self._boxes(p, vol.left() + 3, vol.top() + 3, VOL_HEADER_H - 6, items, gap=0)
+        for r, pairs in enumerate(self._vol_header_rows()):
+            self._boxes(p, vol.left() + 3, vol.top() + 3 + r * (VOL_HEADER_H - 3), VOL_HEADER_H - 6,
+                        [item for k in pairs for item in items[2 * k:2 * k + 2]], gap=0)
 
     def _draw_orders(self, p, price, py, orders):
         """Each open order: a line at its price across the chart, and a tag on it as in thinkorswim,
