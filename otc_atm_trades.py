@@ -244,6 +244,10 @@ def steps_tip(e, steps):
     return "\n".join(lines)
 
 
+PICKED_FILL = QColor(90, 150, 255, 55)     # the Monitor tab's tables: the clicked row, over its cells' colors
+PICKED_LINE = QColor(120, 170, 255)
+
+
 class StepsDelegate(QStyledItemDelegate):
     """The Steps cell: the trade's 4 steps drawn (otc_checklist.paint_steps; the item's UserRole holds
     them, [DONE / HALF / TODO] x 4)."""
@@ -313,6 +317,8 @@ class AtmTable(SortMixin, QTableWidget):
         super().__init__(0, len(COLUMNS), parent)
         self.atm = atm
         self.ids = []               # the entries' ids, in row order (newest first)
+        self.row_keys = []          # each row's own key (a trade, an order under it): the picked row kept by it
+        self.picked = None          # the row clicked: highlighted (its key; the same row through the rebuilds)
         self.edits = {}             # entry id -> its New Price box at step 2 (the Sell ATM price), while it can be changed
         self.order_boxes = {}       # entry id -> (its New Price box, its Update button) at steps 1 and 3
         self.new_prices = {}        # entry id -> a new price typed for its open order (not sent yet)
@@ -348,6 +354,7 @@ class AtmTable(SortMixin, QTableWidget):
                            if t not in ("Order", "", "▸")])
         self.expanded = set()       # trade ids whose orders are shown under them (▾)
         self.cellClicked.connect(self.toggle_orders)
+        self.cellPressed.connect(self.pick_row)
         self.rebuild()
 
     MARKET_SORTS = ("Bid now", "Ask now", "P/L")
@@ -381,6 +388,34 @@ class AtmTable(SortMixin, QTableWidget):
     def double_clicked(self, row, col):
         if col == COL["Ticker"] and self.item(row, col) and row < len(self.ids) and self.ids[row]:
             self.open_chart.emit(self.item(row, col).text())
+
+    # ---- the picked row: a click highlights the whole line (another click on it: no more) ----
+    def pick_keys(self):
+        return self.row_keys
+
+    def pick_row(self, row, col):
+        keys = self.pick_keys()
+        key = keys[row] if 0 <= row < len(keys) else None
+        self.picked = None if key == self.picked else key
+        self.viewport().update()
+
+    def paintEvent(self, e):
+        """The table, then the picked row's highlight over it (the cells' own colors kept under it; its buttons and
+        boxes are widgets of their own, over it)."""
+        super().paintEvent(e)
+        if self.picked is None:
+            return
+        keys = self.pick_keys()
+        if self.picked not in keys:
+            return
+        row = keys.index(self.picked)
+        top, h = self.rowViewportPosition(row), self.rowHeight(row)
+        width = min(self.viewport().width(), self.horizontalHeader().length() - self.horizontalOffset())
+        p = QPainter(self.viewport())
+        p.fillRect(0, top, width, h, PICKED_FILL)
+        p.setPen(QPen(PICKED_LINE, 1))
+        p.drawRect(0, top, width - 1, h - 1)
+        p.end()
 
     def toggle_orders(self, row, col):
         """A click on a trade's ▸ / ▾: its orders shown under it, or hidden."""
@@ -455,6 +490,8 @@ class AtmTable(SortMixin, QTableWidget):
             if e["id"] in self.expanded and children[e["id"]]:
                 rows += [(e, "titles")] + [(e, o) for o in children[e["id"]]]
         self.ids = [e["id"] if o is None else None for e, o in rows]
+        self.row_keys = [(e["id"], None if o is None else o if isinstance(o, str) else
+                          str(o.get("key") or o.get("id") or i)) for i, (e, o) in enumerate(rows)]
         self.edits = {}
         self.order_boxes = {}
         open_ids = {e["id"] for e in entries if e.get("state") in ("buy_open", "sell_open")}
@@ -999,6 +1036,9 @@ class SchwabOrdersTable(AtmTable):
     trade's (atm.json follows: the entry, the $, the safety net; a sell's exit); a partly bought ATM buy:
     the rest canceled, then a new buy at the new limit."""
 
+    def pick_keys(self):
+        return getattr(self, "keys", [])
+
     def __init__(self, atm: AtmTrades, parent=None):
         self.keys = []              # the orders' chart keys ("schwab:<id>" / "atm:<trade id>:<side>"), in row order
         QTableWidget.__init__(self, 0, len(ORDER_COLUMNS), parent)
@@ -1376,6 +1416,9 @@ class PositionsTable(AtmTable):
     Sell on Bid / Sell on Ask open the sell dialog (amount, price, Day or GTC, the $ with the fee)."""
 
     MARKET_SORTS = ("Bid now", "Ask now", "Value at bid", "P/L at bid", "P/L %")
+
+    def pick_keys(self):
+        return getattr(self, "tickers", [])
 
     def __init__(self, atm: AtmTrades, parent=None):
         self.tickers = []
