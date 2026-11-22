@@ -43,6 +43,8 @@ from pathlib import Path
 KEEP_DAYS = 14
 RELOAD_DAYS = 5         # market days looked at for reloads
 REFILL_S = 5            # an amount that dropped and came back to the same within this many seconds: refilled
+CONFIRM_S = 5           # a refill counts only when its offer is still there this long after: one gone from the price
+                        # within it was bought out (the book came late), not refilled
 BOOK_LAG_MS = 1500      # the book "before" a trade: as it was this long before it (its book can come first)
 ROUND_SIZE = 10_000     # a reloader's amount: a round number of these (10k, 20k, 50k, 100k...)
 RELOAD_WEAK = 0.2       # it counts when what traded at its price (that the others there don't explain) is
@@ -460,7 +462,8 @@ def find_reloads(folder: Path, ticker: str, mms, days=RELOAD_DAYS, millis=None):
     the others there gave up: at least RELOAD_WEAK of its amount) and its amount didn't get smaller;
     "refilled": its amount dropped with the trade and came back to the same within REFILL_S. strong:
     what it sold was at least RELOAD_STRONG of its amount. Only in the regular session, only round
-    amounts."""
+    amounts; and only when its offer is still at the price CONFIRM_S seconds after (gone within them: a late book
+    showed it before it was bought out - not a refill)."""
     out = []
     for day in reversed(market_days_back(days, millis)):
         out += _reloads_in(read_day(folder, day.isoformat(), ticker), set(mms), session(day))
@@ -474,6 +477,19 @@ def _reloads_in(lines, mms, times):
     pending = None      # trades at the lowest Ask since the last book: {"p", "vol", "before", "t"}
     watch = {}          # mm -> {"p", "size", "t", "traded"}: its amount dropped with a trade
     out = []
+    waiting = []        # [(deadline ms, event)]: counted once its offer is still at the price CONFIRM_S after
+    last_t = 0
+
+    def settle(t, cur=None):
+        """The events waiting: counted once past their deadline; dropped when the market maker is gone from the
+        price before it (cur: the Ask now)."""
+        for item in list(waiting):
+            deadline, ev = item
+            if t > deadline:
+                out.append(ev)
+                waiting.remove(item)
+            elif cur is not None and not at(cur, ev["price"]).get(ev["mm"]):
+                waiting.remove(item)            # bought out / pulled within seconds: the book was late
 
     def merged():
         cur = {}
@@ -491,7 +507,9 @@ def _reloads_in(lines, mms, times):
 
     for line in lines:
         t, kind, d = line.get("t", 0), line.get("k"), line.get("d") or {}
+        last_t = max(last_t, t)
         if kind in ("Q", "L1"):
+            settle(t)
             if d.get("LAST_PRICE") is not None:
                 last_price = d["LAST_PRICE"]
             vol = d.get("TOTAL_VOLUME")
@@ -517,6 +535,7 @@ def _reloads_in(lines, mms, times):
                 for mm, size in sizes:
                     books[d.get("s", "N")].setdefault(mm, (price, size))
             cur = merged()
+            settle(t, cur)
             history.append((t, cur))
             while len(history) > 2 and history[1][0] < t - 60_000:
                 history.pop(0)
@@ -524,8 +543,9 @@ def _reloads_in(lines, mms, times):
                 if t - w["t"] > REFILL_S * 1000:
                     del watch[mm]
                 elif at(cur, w["p"]).get(mm, 0) >= w["size"] and w["traded"] > 0:
-                    out.append({"mm": mm, "t": t, "price": w["p"], "size": w["size"], "traded": w["traded"],
-                                "kind": "refilled", "strong": w["traded"] >= RELOAD_STRONG * w["size"]})
+                    waiting.append((t + CONFIRM_S * 1000, {
+                        "mm": mm, "t": t, "price": w["p"], "size": w["size"], "traded": w["traded"],
+                        "kind": "refilled", "strong": w["traded"] >= RELOAD_STRONG * w["size"]}))
                     del watch[mm]
             if pending is not None and t > pending["t"]:
                 p, before = pending["p"], pending["before"]
@@ -538,9 +558,12 @@ def _reloads_in(lines, mms, times):
                     if mine < RELOAD_WEAK * size:
                         continue
                     if after.get(mm, 0) >= size:
-                        out.append({"mm": mm, "t": pending["t"], "price": p, "size": size, "traded": pending["vol"],
-                                    "kind": "kept", "strong": mine >= RELOAD_STRONG * size})
+                        waiting.append((t + CONFIRM_S * 1000, {
+                            "mm": mm, "t": pending["t"], "price": p, "size": size, "traded": pending["vol"],
+                            "kind": "kept", "strong": mine >= RELOAD_STRONG * size}))
                     else:
                         watch[mm] = {"p": p, "size": size, "t": t, "traded": mine}
                 pending = None
-    return out
+    # the end of the record: no book since (it didn't change) - still there, once the time's up
+    settle(max(last_t, int(time.time() * 1000) - 2000))
+    return sorted(out, key=lambda ev: ev["t"])
