@@ -9,7 +9,6 @@ Keep these files in the SAME FOLDER:
   otc_chart.py       the candlestick chart
   otc_zones.py       support and resistance zones, and the channel search
   app_icon.ico       the window, taskbar and shortcut icon
-  otc_markets_logo.png  the Chart tab's OTCMarkets button's face
 
 Install once:   pip install PyQt6 numpy schwab-py
                 (Windows only: also  pip install tzdata)
@@ -69,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.152"
+APP_VERSION = "2.7.153"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -83,7 +82,6 @@ DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
-OTC_LOGO_PATH = APP_DIR / "otc_markets_logo.png"   # the OTCMarkets button's face (white "OTC": for the dark theme)
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
 # we reached the oldest date the plan allows (free plan: about 2 years).
@@ -1102,21 +1100,10 @@ class MainWindow(QMainWindow):
         self.chart_fav_ticker = ""
         self.chart_name = ""
         row.addWidget(self.chart_fav_btn)
-        # (Enter in the box shows the chart) OTCMarkets: the ticker's overview page on OTC Markets, in the
+        # (Enter in the box shows the chart) OTC-Markets: the ticker's overview page on OTC Markets, in the
         # browser (its news: the News tab under the chart)
-        self.otc_btn = otc_btn = QToolButton()
-        logo = QPixmap(str(OTC_LOGO_PATH))
-        if logo.isNull():
-            otc_btn.setText("OTCMarkets")
-        else:
-            otc_btn.setIcon(QIcon(logo))
-            otc_btn.setIconSize(QSize(round(logo.width() * 18 / logo.height()), 18))
-        # (on its own dark face: the logo's "OTC" is white, unseen on a light toolbar)
-        otc_btn.setStyleSheet("QToolButton { background: #1b1f23; border: 1px solid #3a4046; border-radius: 4px;"
-                              " padding: 2px 6px; } QToolButton:hover { background: #2a3036; border-color: #5c6670; }"
-                              " QToolButton:pressed { background: #111417; }")
-        otc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        otc_btn.setToolTip("OTCMarkets: the chart's ticker's overview page on otcmarkets.com, in the browser")
+        self.otc_btn = otc_btn = QPushButton("OTC-Markets")
+        otc_btn.setToolTip("OTC-Markets: the chart's ticker's overview page on otcmarkets.com, in the browser")
         otc_btn.clicked.connect(self.open_otc_markets)
         self.news_told = set()          # the news keys a message was shown for (once)
         row.addWidget(otc_btn)
@@ -2589,7 +2576,7 @@ class MainWindow(QMainWindow):
         self.bottom_tabs.setTabTextColor(1, QColor("#ff5050" if warn else "#f0a020") if n else QColor("#d8d8d8"))
 
     def open_otc_markets(self):
-        """The OTCMarkets button: the chart's ticker (else the one typed) on OTC Markets' overview page, in the
+        """The OTC-Markets button: the chart's ticker (else the one typed) on OTC Markets' overview page, in the
         default browser."""
         ticker = (self.chart.ticker or self.chart_ticker.text()).strip().upper()
         if not ticker:
