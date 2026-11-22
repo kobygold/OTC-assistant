@@ -503,7 +503,8 @@ function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
   // (the title, and at the left edge the ATM trade's 4 steps, as the desktop panel; no score: the phone's choice)
-  let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><b>${esc(ck.title)}</b>` +
+  let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><span class="ckName"><b>${esc(ck.title)}</b>` +
+    `<b class="ckTicker" dir="ltr">${esc(view.ticker || "")}</b></span>` +
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
