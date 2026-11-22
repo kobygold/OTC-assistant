@@ -541,6 +541,8 @@ function render() {
   else html = `<div class="soon"><b>${esc(TABS.find(t => t.id === S.tab).label)}</b><br>Coming next (${SOON[S.tab]} of the plan).</div>`;
   const keep = document.activeElement && document.activeElement.id === "flt" ? document.activeElement.selectionStart : null;
   screen.innerHTML = html;
+  const shown = S.tab + "|" + (S.ticker || "");
+  if (shown !== S.shown) { S.shown = shown; screen.scrollTop = 0; }     // (another tab or ticker: from its top)
   if (keep != null) { const f = document.getElementById("flt"); f.focus(); f.setSelectionRange(keep, keep); }
   document.getElementById("tabs").innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === S.tab || (S.tab === "ticker" && t.id === S.from) ? "on" : ""}">` +
     `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${t.icon}"/></svg>${t.label}</button>`).join("");
