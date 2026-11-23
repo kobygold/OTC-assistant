@@ -175,7 +175,10 @@ button { font-family: inherit; color: inherit; }
   border: 1px solid #2c3136; background: #15191d; color: var(--text); font-size: 12px; text-align: left; }
 .sfNote { font-size: 12px; color: var(--dim); margin: -4px 0 10px; }
 .sfRow { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; font-size: 13.5px; }
-.sfIn { width: 120px; height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid #2c3136; background: #0d1014;
+.sfBox { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.sfStep { width: 34px; height: 34px; border-radius: 8px; border: 1px solid #2c3136; background: #1d2125; color: var(--gold);
+  font-size: 18px; font-weight: 700; line-height: 1; padding: 0; }
+.sfIn { width: 96px; height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid #2c3136; background: #0d1014;
   color: var(--text); font-family: var(--mono); font-size: 14px; text-align: right; }
 .sfTip { font-size: 10.5px; color: #6c757e; margin-top: 2px; }
 .sfChk { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13.5px; }

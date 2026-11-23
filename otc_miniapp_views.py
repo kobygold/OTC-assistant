@@ -443,6 +443,7 @@ class MiniViews(QObject):
             box = getattr(w, attr)
             filters.append({"key": key, "label": label, "value": box.value(), "min": box.minimum(), "max": box.maximum(),
                             "decimals": box.decimals() if hasattr(box, "decimals") else 0,
+                            "step": box.singleStep(), "price": type(box).__name__ == "PriceSpinBox",
                             "tip": box.toolTip()})
         return {"filters": filters, "skip": w.af_skip.isChecked(),
                 "tiers": [{"name": g, "on": cb.isChecked()} for g, cb in w.af_tiers.items()],

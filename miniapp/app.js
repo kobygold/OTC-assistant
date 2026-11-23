@@ -113,9 +113,11 @@ function renderScan(view) {
 
 // the scanner's filters: the ATM tab's on the main server's app (set there: it searches / filters again)
 function renderScanFilters(view) {
-  const f = view.filters.map(x => `<label class="sfRow"><span>${esc(x.label)}</span>` +
+  const f = view.filters.map(x => `<div class="sfRow"><span>${esc(x.label)}</span>` +
+    `<span class="sfBox"><button class="sfStep" data-sfstep="-1" aria-label="Less">−</button>` +
     `<input class="sfIn" data-sf="${esc(x.key)}" type="text" inputmode="decimal" autocomplete="off" value="${esc(String(x.value))}"` +
-    ` data-min="${x.min}" data-max="${x.max}"></label>` +
+    ` data-min="${x.min}" data-max="${x.max}" data-step="${x.step || 1}" data-dec="${x.decimals || 0}"${x.price ? ` data-price="1"` : ""}>` +
+    `<button class="sfStep" data-sfstep="1" aria-label="More">+</button></span></div>` +
     `<div class="sfTip">${esc(x.tip || "")}</div>`).join("");
   const tiers = view.tiers.map(t => `<label class="sfChk"><input type="checkbox" data-sftier="${esc(t.name)}"${t.on ? " checked" : ""}> ${esc(t.name)}</label>`).join("");
   return `<div class="dlgTitle">ATM scanner's filters</div><div class="sfNote">The ATM tab's, on the main server's app: set there, it searches again.</div>` +
@@ -123,6 +125,19 @@ function renderScanFilters(view) {
     `<div class="sfRow"><span>Tiers</span></div><div class="sfTiers">${tiers}</div>` +
     `<div class="dlgBtns"><button class="dlgSend" style="background:#2f6fe0" data-scanf="set">Apply</button>` +
     `<button class="dlgCancel" data-scanf="reset">Defaults</button><button class="dlgCancel" data-dlg="close">Close</button></div>`;
+}
+// a filter's −/+: its box's step (a price's: by its own power of 10, as the desktop's price box), in its range
+function stepFilter(b, d) {
+  const box = b.parentNode.querySelector(".sfIn"), dec = Number(box.dataset.dec);
+  let v = Number(String(box.value).replace(/[,$\s]/g, ""));
+  if (!isFinite(v)) v = Number(box.dataset.min);
+  if (box.dataset.price) {
+    const exact = v > 0 ? Math.log10(v) : -dec;
+    if (d > 0) { const st = Math.pow(10, Math.max(Math.floor(exact + 1e-9), -dec)); v = (Math.floor(v / st + 1e-9) + 1) * st; }
+    else if (v > 0) { const st = Math.pow(10, Math.max(Math.ceil(exact - 1e-9) - 1, -dec)); v = (Math.ceil(v / st - 1e-9) - 1) * st; }
+  } else v += d * Number(box.dataset.step);
+  v = Math.min(Math.max(v, Number(box.dataset.min)), Number(box.dataset.max));
+  box.value = String(Number(v.toFixed(dec)));
 }
 function scanFilterValues() {
   const s = document.getElementById("sheet"), out = {}, bad = [];
@@ -862,7 +877,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -924,6 +939,7 @@ function setup() {
     if (t.dataset.accts) { chooseAccount(); return; }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
+    if (t.dataset.sfstep) { e.preventDefault(); stepFilter(t, Number(t.dataset.sfstep)); return; }
     if (t.dataset.scanfilters) { const sv = S.views["scan/" + S.account]; if (sv && sv.filters) sheet(renderScanFilters(sv)); return; }
     if (t.dataset.scanf === "reset") { startAct({ kind: "scan", do: "reset" }); return; }
     if (t.dataset.scanf === "set") {
