@@ -149,6 +149,42 @@ def parse_time(text):
         return None
 
 
+def short_price(p):
+    """A price as thinkorswim's order lines write it: no leading zero, no trailing zeros (0.0160 -> ".016")."""
+    s = f"{float(p or 0):.6f}".rstrip("0").rstrip(".")
+    return s[1:] if s.startswith("0.") else s
+
+
+def sold_now(e):
+    """The trade's shares sold so far (its open sell order's fills too)."""
+    return int(e.get("sold") or 0) + (int(e.get("sell_filled") or 0) if e.get("state") == "sell_open" else 0)
+
+
+def fill_lines(old, new):
+    """The fills in a trade's change (old -> new): {"BUY": "BOT +11,450 SMEV @.0131 (Filled)", "SELL": "SOLD -5,000
+    SMEV @.016 (6,450 remain)"} - the shares of this fill, and what's left of the order (bought) / of those owned
+    (sold); {} when none."""
+    out = {}
+    if not old or not new:
+        return out
+    t = new.get("ticker", "?")
+    got = int(new.get("filled") or 0) - int(old.get("filled") or 0)
+    if got > 0:
+        shares, filled = int(new.get("shares") or 0), int(new.get("filled") or 0)
+        end = ("Filled" if filled >= shares else f"{shares - filled:,} remain" if new.get("state") == "buy_open"
+               else f"the other {shares - filled:,} not bought")
+        out["BUY"] = f"BOT +{got:,} {t} @{short_price(new.get('entry'))} ({end})"
+    sold = sold_now(new) - sold_now(old)
+    if sold > 0:
+        left = int(new.get("filled") or 0) - sold_now(new)
+        out["SELL"] = (f"SOLD -{sold:,} {t} @{short_price(new.get('sell_price'))} "
+                       f"({'Filled' if left <= 0 else f'{left:,} remain'})")
+    return out
+
+
+FILL_SIDE = {"bought": "BUY", "partial": "BUY", "sold": "SELL", "sell_partial": "SELL"}   # an event's fill line
+
+
 def trade_events(old, new):
     """The news in a trade's change (old -> new, as the app wrote it): [event], an event a string
     unique to that moment of the trade (so it's sent once)."""
@@ -162,6 +198,8 @@ def trade_events(old, new):
         out.append("bought")
     if s0 == "buy_open" and s1 == "canceled":
         out.append("canceled")
+    if s0 == "sell_open" and s1 == "sell_open" and sold_now(new) > sold_now(old):
+        out.append(f"sell_partial:{new.get('sell_id')}:{sold_now(new)}")        # (a part of the sell filled)
     if s0 == "sell_open" and s1 == "bought":
         out.append(f"sell_ended:{old.get('sell_id') or old.get('sell_price')}")
     if s1 == "sold" and s0 != "sold":
@@ -424,9 +462,9 @@ class TelegramBot:
         """(the main server, after a change of atm/<account>/<trade id>) the news in it, once."""
         events = trade_events(old, new)
         if events:
-            self.tell(key[len("atm/"):], new, [(ev, None) for ev in events])
+            self.tell(key[len("atm/"):], new, [(ev, None) for ev in events], fill_lines(old, new))
 
-    def tell(self, rest, e, events):
+    def tell(self, rest, e, events, fills=None):
         """Marks the events sent (before sending: never twice), then sends them to the account's phones."""
         tail = rest.split("/")[0]
         mark = SENT + rest
@@ -441,7 +479,7 @@ class TelegramBot:
         for ev, t in new:
             if t is not None and now - t > LATE_MAX_S:
                 continue            # too old: only marked
-            text = self.trade_text(ev, e, tail)
+            text = self.trade_text(ev, e, tail, fill=(fills or {}).get(FILL_SIDE.get(ev.split(":")[0])))
             if text and chats:
                 late = t is not None and now - t > LATE_AFTER_S
                 if late:
@@ -491,13 +529,16 @@ class TelegramBot:
                          f"the bids take only {total:,} (down to {fmt_price(price)})")
         return "Now: " + " · ".join(parts) if parts else ""
 
-    def trade_text(self, ev, e, tail, market=None):
+    def trade_text(self, ev, e, tail, market=None, fill=None):
         """The news's text: its title, the trade's 4 steps (🟢-🟢-⚪-⚪ Step 2/4...), what happened and
-        the Bid / Ask now. market: the "Now: ..." line to use (a demo's), instead of the stream's."""
+        the Bid / Ask now. market: the "Now: ..." line to use (a demo's), instead of the stream's. fill: a fill's
+        line ("BOT +11,450 SMEV @.0131 (Filled)"): the title instead."""
         text = self.trade_body(ev, e, tail, market)
         if not text:
             return ""
         lines = text.split("\n")
+        if fill:
+            lines[0] = fill
         lines.insert(1, steps_line(e))
         if ev != "bought":              # (the buy's message has its Now line, with the Bid that takes them)
             now = self.market_line(e.get("ticker", "?"), remaining(e)) \
@@ -523,6 +564,9 @@ class TelegramBot:
                 gain = plan_profit(dict(e, sold=0, proceeds=0), exit_)
                 lines.append(f"Planned exit {fmt_price(exit_)} ({usd_signed(gain)} after both fees)")
             return "\n".join(lines) + note
+        if ev.startswith("sell_partial:"):
+            return (f"🟡 {t}: ATM sell partly filled ({acct})\n"
+                    f"{sold_now(e):,} of {e.get('filled', 0):,} sold @ {fmt_price(e.get('sell_price') or 0)}")
         if ev.startswith("partial:"):
             return (f"🟡 {t}: ATM buy partly filled ({acct})\n"
                     f"{e.get('filled', 0):,} of {e.get('shares', 0):,} @ {fmt_price(entry)}")
