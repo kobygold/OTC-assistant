@@ -330,6 +330,8 @@ class MiniOrders(QObject):
         w = self.win
         atm = w.checklist.atm
         account, act = str(msg.get("account") or ""), msg.get("act") or {}
+        if act.get("kind") == "scan":           # the ATM scanner: no account, no order
+            return self.scan(act, msg.get("answers"))
         if account != atm.chosen_account():
             return self.note(f"Orders from the phone go to the account chosen on the main server's app "
                              f"(...{atm.chosen_account()}): choose ...{account} there first.")
@@ -353,6 +355,26 @@ class MiniOrders(QObject):
                              account)
         return {"state": "done", "sent": sent, "what": bridge.title, "messages": bridge.messages,
                 "nothing": not bridge.n and not bridge.messages}
+
+    def scan(self, act, answers):
+        """The ATM tab's Scan database or Check L1/L2 (its question - "Check all N tickers shown?" - asked on
+        the phone, as the desktop's)."""
+        w = self.win
+        what = act.get("do")
+        with DialogBridge(answers) as bridge:
+            if what == "scan":
+                if w.atm_job is not None and w.atm_job.is_alive():
+                    return self.note("A scan runs already.", "ATM scanner", "info")
+                w.run_atm_search(reload=True)
+            elif what == "check":
+                w.check_market("atm")
+            else:
+                return self.note("Not a scanner's button.", "ATM scanner")
+        if bridge.ask is not None:
+            return {"state": "ask", "dialog": bridge.ask, "messages": bridge.messages}
+        self.views.sent.clear()
+        return {"state": "done", "sent": False, "changed": True, "what": "ATM scanner", "messages": bridge.messages,
+                "nothing": not bridge.messages}
 
     @staticmethod
     def state(atm):

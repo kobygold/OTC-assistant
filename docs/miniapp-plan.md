@@ -265,3 +265,12 @@ The ticker's card (opened from a favorite) has its own tab, Ticker (8 tabs now);
 was opened from a list (back there). The buy / sell / update buttons (`renderActions`) show only on the Checklist
 tab: no longer on the Ticker, Chart and Level II tabs. A swipe to the next / previous favorite works on the Ticker tab
 too.
+
+## 17. The ATM scanner (built in 2.7.161)
+The Favorites tab's second page (a Favorites | ATM Scanner switch): the view `scan/<account>` (`MiniViews.scan`) is
+the main server's app's ATM tab - its table as it shows (its filters, its order; up to `SCAN_ROWS` = 300 rows), each
+row's cells, its favorite group and risk; the tab's status, and whether a scan or a Check L1/L2 runs. Its Scan
+database and Check L1/L2 buttons are the tab's own (`otc_miniapp_orders` kind "scan": `run_atm_search(reload=True)`,
+`check_market("atm")`, its "Check all N?" question asked on the phone); any linked phone may (nothing is ordered).
+A row opens the ticker's card; a ticker opened from the scanner swipes through the scanner's list (`S.listOf`),
+one from the favorites through the favorites (the rule of section 14, revisited).

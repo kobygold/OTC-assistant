@@ -77,12 +77,41 @@ function riskBadge(risk, size) {
 }
 
 // ---------------------------------------------------------------- Favorites (view "favs") ---
+// ---------------------------------------------------------------- ATM scanner (view "scan": the ATM tab's table) ---
+// (on the Favorites tab, its second page: the main server's app's results, as its table shows them)
+function favSegs() {
+  return `<div class="segs two">` + [["favs", "Favorites"], ["scan", "ATM Scanner"]].map(([id, l]) =>
+    `<button data-favseg="${id}" class="${id === (S.favSeg || "favs") ? "on" : ""}">${l}</button>`).join("") + `</div>`;
+}
+function renderScan(view) {
+  let out = favSegs();
+  if (!view) return out + `<div class="empty">Waiting for the scanner…</div>`;
+  out += `<div class="scanBtns"><button data-scan="scan"${view.scanning ? " disabled" : ""}>${view.scanning ? "Scanning…" : "Scan database"}</button>` +
+    `<button data-scan="check"${view.scanning ? " disabled" : ""}>${view.checking ? "Stop " + esc(view.progress || "checking") : "Check L1/L2"}</button></div>`;
+  if (view.status) out += `<div class="scanStatus">${esc(view.status.replace(/\s*Double-click a row.*$/, ""))}</div>`;
+  if (!view.rows.length) return out + `<div class="empty">${view.loaded ? "No stock matches the ATM tab's filters." : "Not scanned yet on the main server's app: Scan database."}</div>`;
+  out += `<div class="scanHead"><span></span><span>Ticker</span><span style="text-align:center">Checks</span><span style="text-align:right">Legs · Gap</span><span style="text-align:right">Low / High</span></div>`;
+  for (const r of view.rows) {
+    const c = r.cells, t = (k) => (c[k] || {}).t || "", ck = c.Checks || {};
+    const toBuy = t("To buy %"), tb = parseFloat(toBuy);
+    out += `<button class="scanRow" data-scantk="${esc(r.ticker)}">` +
+      (r.fav ? star(r.fav.color, 18) : `<span></span>`) +
+      `<div style="min-width:0"><div class="tk">${esc(r.ticker)}${riskBadge(r.risk, 14)}</div><div class="nm">${esc(t("Name"))}</div></div>` +
+      `<div class="checks" style="color:${esc(ck.c || "#9aa3ad")}">${esc(ck.t || "–")}</div>` +
+      `<div class="num">${esc(t("Legs"))} · ${esc(t("Gap %"))}<div class="dim">${esc(t("Days in range"))} d</div></div>` +
+      `<div class="num">${esc(t("Low"))}<div>${esc(t("High"))}</div>` +
+      (toBuy ? `<div style="color:${tb <= 0 ? "#1db31d" : "#9aa3ad"}">${esc(toBuy)}</div>` : "") + `</div></button>`;
+  }
+  if (view.shown > view.rows.length) out += `<div class="note">The best ${view.rows.length} of ${view.shown} shown.</div>`;
+  return out + `<div class="note">The ATM tab's results on the main server's app (its filters there). Tap one for its card; swipe there for the next.</div>`;
+}
+
 function renderFavs(view, st) {
-  if (!view) return `<div class="empty">Waiting for the favorites…</div>`;
+  if (!view) return favSegs() + `<div class="empty">Waiting for the favorites…</div>`;
   const f = (st.filter || "").trim().toUpperCase();
   const rows = view.rows.filter(r => !f || r.ticker.includes(f));
   // (the account: here, the page's top bar gone; and in Telegram's ⋯ menu, Settings)
-  let out = `<div class="filter"><label for="flt" hidden>Filter</label><input id="flt" placeholder="Filter (ticker)" autocomplete="off" value="${esc(st.filter || "")}">` +
+  let out = favSegs() + `<div class="filter"><label for="flt" hidden>Filter</label><input id="flt" placeholder="Filter (ticker)" autocomplete="off" value="${esc(st.filter || "")}">` +
     `<button class="acctChip" data-accts="1" aria-label="The account (tap to choose)">...${esc(st.account || "")}</button></div>` +
     `<div class="favHead"><span></span><span>Ticker</span><span>ATM</span><span style="text-align:center">Checks</span><span style="text-align:right">Bid / Ask</span></div>`;
   for (const r of rows) {
@@ -583,7 +612,7 @@ function renderActions(view) {
 
 // ---------------------------------------------------------------- the page ---
 const S = { tab: "favs", filter: "", account: null, accounts: [], views: {}, open: {}, live: false, user: null,
-  ticker: null, from: "favs", range: localGet("range") || "2M", scrolls: {}, restore: null };
+  ticker: null, from: "favs", range: localGet("range") || "2M", favSeg: localGet("favSeg") || "favs", listOf: "favs", scrolls: {}, restore: null };
 function localGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function localSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* (private mode) */ } }
 
@@ -594,7 +623,7 @@ function render() {
   const v = (what) => S.views[what + "/" + S.account];
   let html;
   const card = S.ticker ? S.views["card/" + S.account + "/" + S.ticker] : null;
-  if (S.tab === "favs") html = renderFavs(v("favs"), S);
+  if (S.tab === "favs") html = S.favSeg === "scan" ? renderScan(v("scan")) : renderFavs(v("favs"), S);
   else if (S.tab === "l2") html = S.ticker ? renderL2(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else if (S.tab === "ticker") html = S.ticker ? renderCard(card) : `<div class="soon">Open a ticker first (Favorites).</div>`;
   else if (S.tab === "orders") html = renderOrders(v("orders"), S);
@@ -745,7 +774,7 @@ function connect() {
 }
 function subscribe() {
   // (the chart's picture only while it's shown: it's the biggest)
-  const views = ["favs"].concat(S.ticker ? ["card:" + S.ticker] : [])
+  const views = ["favs"].concat((S.tab === "favs" && S.favSeg === "scan") || S.listOf === "scan" ? ["scan"] : []).concat(S.ticker ? ["card:" + S.ticker] : [])
     .concat(S.ticker && S.tab === "chart" ? ["chart:" + S.ticker + ":" + S.range] : [])
     .concat(S.tab === "orders" ? ["orders"] : []).concat(S.tab === "alerts" ? ["alerts"] : [])
     .concat(["news"]);         // (always: the Inbox tab's count of new ones)
@@ -777,8 +806,8 @@ function swipeEnd(e) {
   stepTicker(dx < 0 ? 1 : -1);
 }
 function stepTicker(d) {
-  const fav = S.views["favs/" + S.account];
-  const list = fav ? fav.rows.map(r => r.ticker) : [];
+  const src = S.views[(S.listOf === "scan" ? "scan/" : "favs/") + S.account];
+  const list = src ? src.rows.map(r => r.ticker) : [];
   const i = list.indexOf(S.ticker);
   if (i < 0 || list.length < 2) return;
   S.ticker = list[(i + d + list.length) % list.length];
@@ -801,7 +830,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -856,13 +885,16 @@ function setup() {
       render(); return;
     }
     if (t.dataset.range) { S.range = t.dataset.range; localSet("range", S.range); subscribe(); render(); return; }
-    if (t.dataset.ticker) { sheet(""); openTicker(t.dataset.ticker); return; }
+    if (t.dataset.ticker) { sheet(""); S.listOf = "favs"; openTicker(t.dataset.ticker); return; }
     if (t.dataset.soon) { sheet(`<div class="tip">Update Buy / Update Sell send the values typed in the checklist's boxes: they come with the checklist's editing (step 4). Meanwhile, the Orders tab's Change sends a new limit.</div>`); return; }
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.dataset.accts) { chooseAccount(); return; }
+    if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
+    if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
+    if (t.dataset.scantk) { S.listOf = "scan"; openTicker(t.dataset.scantk); return; }
     if (t.dataset.news) {      // an Inbox line: its ticker's checklist
-      S.from = "news"; S.ticker = t.dataset.news; S.tab = "checklist"; subscribe(); render(); return;
+      S.from = "news"; S.listOf = "favs"; S.ticker = t.dataset.news; S.tab = "checklist"; subscribe(); render(); return;
     }
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
     if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
@@ -935,5 +967,5 @@ function demo() {
   render();
 }
 
-if (typeof module !== "undefined") module.exports = { renderFavs, renderTrades, renderOrders, renderAlerts, renderNews, renderCard, renderChart, renderL2, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
+if (typeof module !== "undefined") module.exports = { renderFavs, renderScan, renderTrades, renderOrders, renderAlerts, renderNews, renderCard, renderChart, renderL2, renderChecklist, renderActions, renderDialog, renderEdit, stepsSvg, esc };
 else if (typeof document !== "undefined") setup();

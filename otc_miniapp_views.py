@@ -33,6 +33,7 @@ TICK_MS = 1000
 CANDLES_S = 300             # a card's candles (and bounce range) read again this often
 RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
 MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
+SCAN_ROWS = 300            # the ATM scanner's rows sent to the phone (its best ones, as the table shows them)
 CHART_W, CHART_H, CHART_DPR = 390, 500, 2       # the phone's chart: its size in points, drawn at twice the pixels
 CLOSE_ASK_S = 20            # a ticker's last close asked of the server again (no answer yet) after this long
 MINUTES_S = 60              # a 1D chart's 1-minute candles read again this often (as the desktop's)
@@ -284,6 +285,8 @@ class MiniViews(QObject):
             return self.alerts(account)
         if what == "news":
             return self.news(account)
+        if what == "scan":
+            return self.scan()
         if what == "card":
             account, _, ticker = account.partition("/")
             return self.card(account, ticker)
@@ -407,6 +410,32 @@ class MiniViews(QObject):
                         "state": a.get("state"), "created": a.get("created"), "by": a.get("by"),
                         "triggered_at": a.get("triggered_at"), "triggered_value": a.get("triggered_value")})
         return {"account": account, "alerts": out}
+
+    def scan(self):
+        """The ATM tab's scanner: its results as its table shows them (the filters, the order, the Checks), its
+        status, and whether a scan or a Check L1/L2 runs. The phone's Scan / Check L1/L2: the tab's own buttons
+        (otc_miniapp_orders, kind "scan")."""
+        from otc_daily_gui import FAV_GROUPS, RISK_COLORS, ticker_risk
+        w = self.win
+        tbl, names = w.atm_table, w.atm_columns
+        rows = []
+        for row in table_rows(tbl, [(n, "") for n in names])[:SCAN_ROWS]:
+            cells = row["cells"]
+            ticker = (cells.get("Ticker") or {}).get("t", "")
+            if not ticker:
+                continue
+            risk, g = ticker_risk(ticker), w.fav_group(ticker)
+            row.update(ticker=ticker,
+                       risk={"level": risk[0], "color": RISK_COLORS[risk[0]][0], "tip": _plain(risk[1])} if risk else None,
+                       fav={"group": g, "color": FAV_GROUPS[g][1]} if g else None)
+            cells.pop("Risk", None)
+            cells.pop("Fav", None)
+            rows.append(row)
+        checking = bool(w.probe.running or w.atm_check_job is not None)
+        return {"rows": rows, "shown": tbl.rowCount(), "status": w.atm_status.text(),
+                "scanning": w.atm_job is not None and w.atm_job.is_alive(), "checking": checking,
+                "check_from": w.check_from, "loaded": w.atm_loaded is not None,
+                "progress": w.atm_check_btn.text() if checking else ""}
 
     def news(self, account):
         """The Inbox: the messages the bot sent the account's phones (otc_telegram's telegram/news), newest first."""
