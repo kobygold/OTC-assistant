@@ -795,7 +795,7 @@ function onDialogTap(t) {
 let ws = null, wait = 1000;
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
-  ws.onopen = () => { wait = 1000; ws.send(JSON.stringify({ t: "auth", initData: TG ? TG.initData : "" })); };
+  ws.onopen = () => { wait = 1000; ws.send(JSON.stringify({ t: "auth", initData: TG ? TG.initData : "", platform: TG ? String(TG.platform || "") : "" })); };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.t === "hello") {
@@ -946,7 +946,7 @@ function setup() {
     if (t.dataset.online) {
       const o = S.online || { n: 0, names: [] };
       sheet(`<div class="dlgTitle">Connected now (${o.n})</div>` + o.names.map(n => `<div class="onlineName">${esc(n)}</div>`).join("") +
-        `<div class="tip">Who has the Mini App open now, of this account's phones.</div>`);
+        `<div class="tip">The Mini Apps open now (each phone or computer), of this account's users.</div>`);
       return;
     }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }

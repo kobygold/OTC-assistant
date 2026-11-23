@@ -41,6 +41,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
 ONLINE_KEY = "telegram/miniapp_online"     # the shared data: {"users": [{"name", "accounts"}], "by"} - who has the
                                             # Mini App open now (the desktop's count, on every computer)
+PLATFORMS = {"ios": "iPhone", "android": "Android", "android_x": "Android", "tdesktop": "Telegram Desktop",
+             "macos": "Mac", "weba": "Telegram Web", "webk": "Telegram Web", "web": "Telegram Web", "unknown": ""}
 BIND_RETRY_S, BIND_TRIES = 2, 30  # the page's port taken (the last server still closing): tried again this often
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
@@ -113,6 +115,12 @@ class Phone:
         self.accounts = {}          # tail -> {"tail", "mode", "trading"}
         self.keys = set()           # the views it wants ("favs/159")
         self.name = ""
+        self.platform = ""          # Telegram's: "ios", "android", "tdesktop", "macos", "web"...
+
+    def label(self):
+        """Its user and device: "Koby Goldberg (iPhone)"."""
+        kind = PLATFORMS.get(self.platform, self.platform)
+        return f"{self.name} ({kind})" if kind else self.name
 
     async def send(self, msg):
         try:
@@ -206,6 +214,7 @@ class MiniApp:
             first = json.loads(await asyncio.wait_for(ws.recv(), AUTH_WAIT_S))
         except Exception:
             return
+        phone.platform = str(first.get("platform") or "")[:20]
         if first.get("t") != "auth" or not await self.sign_in(phone, first.get("initData", "")):
             return
         self.phones.add(phone)
@@ -255,29 +264,20 @@ class MiniApp:
         return True
 
     async def tell_online(self):
-        """Every phone: who has the Mini App open now - the users (each once, however many phones) who share one
-        of its accounts (the Favorites tab's count, by the account chip)."""
+        """Every phone: the Mini Apps open now - each phone or computer (the same user on three: three), of the
+        users who share one of its accounts: "Koby (iPhone)" (the Favorites tab's count, by the account chip)."""
         phones = [p for p in list(self.phones) if p.user]
         self.publish_online()
         for phone in phones:
-            names = {}
-            for p in phones:
-                if set(p.accounts) & set(phone.accounts):
-                    names[p.user["id"]] = p.name
-            await phone.send({"t": "online", "n": len(names), "names": sorted(names.values())})
+            names = sorted(p.label() for p in phones if set(p.accounts) & set(phone.accounts))
+            await phone.send({"t": "online", "n": len(names), "names": names})
 
     def publish_online(self):
         """(main server) Who has the Mini App open now, in the shared data (ONLINE_KEY) for every computer's app:
         each user once, with the accounts their phones are linked to. Empty when a computer becomes the main
         server (no phone on it yet)."""
-        users = {}
-        for p in list(self.phones):
-            if p.user:
-                u = users.setdefault(p.user["id"], {"name": p.name, "accounts": set()})
-                u["accounts"] |= set(p.accounts)
-        self.server.put_shared(ONLINE_KEY, {"users": sorted(({"name": u["name"], "accounts": sorted(u["accounts"])}
-                                                             for u in users.values()), key=lambda u: u["name"]),
-                                            "by": self.server.name})
+        users = [{"name": p.label(), "accounts": sorted(p.accounts)} for p in list(self.phones) if p.user]
+        self.server.put_shared(ONLINE_KEY, {"users": sorted(users, key=lambda u: u["name"]), "by": self.server.name})
 
     def accounts_of(self, user_id):
         """The accounts the Telegram user's chat is linked to: tail -> {"tail", "mode", "trading"}."""

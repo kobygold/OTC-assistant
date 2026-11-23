@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.167"
+APP_VERSION = "2.7.168"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3473,7 +3473,7 @@ class MainWindow(QMainWindow):
         names = [str(u.get("name") or "?") for u in users]
         btn.setText(f"📱 {len(users)}")
         btn.setStyleSheet("QToolButton { color: %s; font-weight: bold; }" % ("#1db31d" if users else "#7a828a"))
-        btn.setToolTip(f"The Mini App: {len(users)} connected now" + (f" (...{tail}'s phones)" if tail else "")
+        btn.setToolTip(f"The Mini App: {len(users)} open now" + (f" (...{tail}'s users)" if tail else "")
                        + (":\n" + "\n".join(names) if names else ""))
 
     def notify(self, text, ms=0):
