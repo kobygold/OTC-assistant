@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy,
-    QPushButton, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
+    QPushButton, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QToolTip, QVBoxLayout,
     QWidget,
 )
 
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.166"
+APP_VERSION = "2.7.167"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1278,6 +1278,14 @@ class MainWindow(QMainWindow):
         self.orders_seen_btn.setEnabled(False)
         self.orders_seen_btn.clicked.connect(self.calm_orders_btn)
         row.addWidget(self.orders_seen_btn)
+        # who has the Mini App open now (the main server's count, in the shared data): this account's users
+        self.mini_online_btn = QToolButton()
+        self.mini_online_btn.setAutoRaise(True)
+        self.mini_online_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mini_online_btn.clicked.connect(lambda: QToolTip.showText(
+            QCursor.pos(), self.mini_online_btn.toolTip(), self.mini_online_btn))
+        row.addWidget(self.mini_online_btn)
+        self.show_mini_online()
 
         root.addLayout(row)
         root.addWidget(self.chart_opts)
@@ -3408,6 +3416,8 @@ class MainWindow(QMainWindow):
             self.reload_drawings()
         if key == "" or key.startswith("atm/"):
             self.checklist.atm.reload_shared()
+        if key in ("", "telegram/miniapp_online"):
+            self.show_mini_online()
         if key == "" or key == f"settings/{self.shared_account()}":
             self.show_position_default()
         if key == "" or key.startswith(otc_alerts.PREFIX):
@@ -3449,6 +3459,22 @@ class MainWindow(QMainWindow):
             self.history_progress.setRange(0, total)
             self.history_progress.setValue(done)
         self.history_bar.setVisible(busy)
+
+    def show_mini_online(self):
+        """The Mini App's users now (the chosen account's phones): a count by the Orders button, the names in its
+        tooltip; dim at 0."""
+        btn = getattr(self, "mini_online_btn", None)
+        if btn is None:
+            return
+        shared = getattr(self, "shared", None)
+        data = ((shared.items.get("telegram/miniapp_online") or [0, None])[1] if shared is not None else None) or {}
+        tail = self.settings.get("schwab_account") or ""
+        users = [u for u in data.get("users") or [] if isinstance(u, dict) and (not tail or tail in (u.get("accounts") or []))]
+        names = [str(u.get("name") or "?") for u in users]
+        btn.setText(f"📱 {len(users)}")
+        btn.setStyleSheet("QToolButton { color: %s; font-weight: bold; }" % ("#1db31d" if users else "#7a828a"))
+        btn.setToolTip(f"The Mini App: {len(users)} connected now" + (f" (...{tail}'s phones)" if tail else "")
+                       + (":\n" + "\n".join(names) if names else ""))
 
     def notify(self, text, ms=0):
         """A message in the status bar at the bottom (ms: for that long; 0: until the next one)."""
@@ -3793,6 +3819,7 @@ class MainWindow(QMainWindow):
         self.checklist.atm.check()      # and read its orders
         self.telegram.refresh()         # Settings → Telegram: this account's phones
         self.show_position_default()    # and its default position $
+        self.show_mini_online()         # and its Mini App users
 
     def _build_atm_tab(self):
         tab = QWidget()

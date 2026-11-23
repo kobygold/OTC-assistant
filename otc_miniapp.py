@@ -39,6 +39,8 @@ from urllib.parse import parse_qsl
 PAGE_DIR = Path(__file__).resolve().parent / "miniapp"
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
+ONLINE_KEY = "telegram/miniapp_online"     # the shared data: {"users": [{"name", "accounts"}], "by"} - who has the
+                                            # Mini App open now (the desktop's count, on every computer)
 BIND_RETRY_S, BIND_TRIES = 2, 30  # the page's port taken (the last server still closing): tried again this often
 AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long after it was made
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
@@ -256,12 +258,26 @@ class MiniApp:
         """Every phone: who has the Mini App open now - the users (each once, however many phones) who share one
         of its accounts (the Favorites tab's count, by the account chip)."""
         phones = [p for p in list(self.phones) if p.user]
+        self.publish_online()
         for phone in phones:
             names = {}
             for p in phones:
                 if set(p.accounts) & set(phone.accounts):
                     names[p.user["id"]] = p.name
             await phone.send({"t": "online", "n": len(names), "names": sorted(names.values())})
+
+    def publish_online(self):
+        """(main server) Who has the Mini App open now, in the shared data (ONLINE_KEY) for every computer's app:
+        each user once, with the accounts their phones are linked to. Empty when a computer becomes the main
+        server (no phone on it yet)."""
+        users = {}
+        for p in list(self.phones):
+            if p.user:
+                u = users.setdefault(p.user["id"], {"name": p.name, "accounts": set()})
+                u["accounts"] |= set(p.accounts)
+        self.server.put_shared(ONLINE_KEY, {"users": sorted(({"name": u["name"], "accounts": sorted(u["accounts"])}
+                                                             for u in users.values()), key=lambda u: u["name"]),
+                                            "by": self.server.name})
 
     def accounts_of(self, user_id):
         """The accounts the Telegram user's chat is linked to: tail -> {"tail", "mode", "trading"}."""

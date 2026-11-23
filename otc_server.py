@@ -1034,6 +1034,7 @@ class Server:
         self.wants_changed.set()
         self.start_bot()
         self.start_news()
+        self.mini.publish_online()              # (the Mini App's users: none here yet)
         if self.bot is not None and self.cluster_secret:
             self.bot.leader_moved(term, why)
         # what this computer's apps sent while there was no main server (kept for it): done here now
