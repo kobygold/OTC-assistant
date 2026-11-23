@@ -588,8 +588,11 @@ class CandleChart(DrawingsMixin, QWidget):
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
             v += step
 
-        # Volume axis
+        clean = self.clean_lines is not None    # (the screenshot: none of the lines and labels)
+        # Volume axis (the screenshot's: plain numbers, their unit written along the axis - "<millions>" or
+        # "<thousands>" - as thinkorswim's)
         vstep = nice_step(vmax, 3)
+        unit = (1e6 if vmax >= 1e6 else 1e3) if clean else None
         vv = vstep
         while vv < vmax:
             y = vy(vv)
@@ -597,10 +600,16 @@ class CandleChart(DrawingsMixin, QWidget):
                 p.setPen(AXIS_TEXT)
                 p.drawText(QRectF(vol.right() + 6, y - 8, RIGHT_W - 8, 16),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           fmt_compact(vv))
+                           f"{vv / unit:g}" if unit else fmt_compact(vv))
             vv += vstep
-
-        clean = self.clean_lines is not None    # (the screenshot: none of the lines and labels)
+        if unit:
+            p.save()
+            p.translate(vol.right() + RIGHT_W - 18, (vtop + vbot) / 2)      # (its 14 px: inside the axis)
+            p.rotate(90)
+            p.setPen(AXIS_TEXT)
+            p.drawText(QRectF(-60, -14, 120, 14), Qt.AlignmentFlag.AlignCenter,
+                       "<millions>" if unit == 1e6 else "<thousands>")
+            p.restore()
         if not self.intraday and not clean:     # the zones are for days
             self._draw_zones(p, price, py)
         if not clean:
