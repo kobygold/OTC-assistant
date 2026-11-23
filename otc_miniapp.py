@@ -16,6 +16,8 @@ A phone's WebSocket (/ws):
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
             {"t": "result", "req", "result"}
+            {"t": "online", "n", "names"}: the users with the Mini App open now (of the phone's accounts), again
+                                           whenever one opens or closes it
 
 Only the main server answers, and only phones linked to an account (the Telegram tab's), each seeing only its
 accounts. The views are made by the main server's app with the desktop's code (otc_miniapp_views.py): the
@@ -205,6 +207,7 @@ class MiniApp:
         if first.get("t") != "auth" or not await self.sign_in(phone, first.get("initData", "")):
             return
         self.phones.add(phone)
+        await self.tell_online()
         try:
             async for raw in ws:
                 try:
@@ -222,6 +225,7 @@ class MiniApp:
         finally:
             self.phones.discard(phone)
             self.update_wanted()
+            await self.tell_online()
 
     async def sign_in(self, phone, init_data):
         s = self.server
@@ -247,6 +251,17 @@ class MiniApp:
                           "accounts": sorted(phone.accounts.values(), key=lambda a: a["tail"]),
                           "server": s.name, "version": getattr(s, "version", "")})
         return True
+
+    async def tell_online(self):
+        """Every phone: who has the Mini App open now - the users (each once, however many phones) who share one
+        of its accounts (the Favorites tab's count, by the account chip)."""
+        phones = [p for p in list(self.phones) if p.user]
+        for phone in phones:
+            names = {}
+            for p in phones:
+                if set(p.accounts) & set(phone.accounts):
+                    names[p.user["id"]] = p.name
+            await phone.send({"t": "online", "n": len(names), "names": sorted(names.values())})
 
     def accounts_of(self, user_id):
         """The accounts the Telegram user's chat is linked to: tail -> {"tail", "mode", "trading"}."""

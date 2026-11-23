@@ -157,7 +157,11 @@ function renderFavs(view, st) {
   const rows = view.rows.filter(r => !f || r.ticker.includes(f));
   // (the account: here, the page's top bar gone; and in Telegram's ⋯ menu, Settings)
   let out = favSegs() + `<div class="filter"><label for="flt" hidden>Filter</label><input id="flt" placeholder="Filter (ticker)" autocomplete="off" value="${esc(st.filter || "")}">` +
-    `<button class="acctChip" data-accts="1" aria-label="The account (tap to choose)">...${esc(st.account || "")}</button></div>` +
+    `<button class="acctChip" data-accts="1" aria-label="The account (tap to choose)">...${esc(st.account || "")}</button>` +
+    (st.online ? `<button class="onlineChip" data-online="1" aria-label="${st.online.n} connected (tap: who)">` +
+      `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+      `<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>` +
+      `${st.online.n}</button>` : "") + `</div>` +
     `<div class="favHead"><span></span><span>Ticker</span><span>ATM</span><span style="text-align:center">Checks</span><span style="text-align:right">Bid / Ask</span></div>`;
   for (const r of rows) {
     const chg = r.change == null ? "" : (r.change > 0 ? "+" : "") + (r.change * 100).toFixed(1) + "%";
@@ -811,6 +815,8 @@ function connect() {
       if (S.edit && !S.act && m.key === "card/" + S.account + "/" + S.edit.ticker && !(document.activeElement && document.activeElement.classList.contains("dlgIn"))) showEdit();
     } else if (m.t === "result") {
       onResult(m);
+    } else if (m.t === "online") {          // (who has the Mini App open now: the chip by the account's)
+      S.online = { n: m.n, names: m.names || [] }; render();
     } else if (m.t === "status") {
       banner(m.text);
     } else if (m.t === "denied") {
@@ -877,7 +883,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-online],[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -937,6 +943,12 @@ function setup() {
     if (t.dataset.open) { S.open[t.dataset.open] = !S.open[t.dataset.open]; render(); return; }
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.dataset.accts) { chooseAccount(); return; }
+    if (t.dataset.online) {
+      const o = S.online || { n: 0, names: [] };
+      sheet(`<div class="dlgTitle">Connected now (${o.n})</div>` + o.names.map(n => `<div class="onlineName">${esc(n)}</div>`).join("") +
+        `<div class="tip">Who has the Mini App open now, of this account's phones.</div>`);
+      return;
+    }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
     if (t.dataset.sfstep) { e.preventDefault(); stepFilter(t, Number(t.dataset.sfstep)); return; }

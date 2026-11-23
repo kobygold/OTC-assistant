@@ -42,6 +42,9 @@ button { font-family: inherit; color: inherit; }
 
 /* the favorites */
 .filter { padding: 12px 12px 4px 12px; display: flex; gap: 8px; align-items: center; }
+.onlineChip { display: flex; align-items: center; gap: 5px; flex-shrink: 0; height: 44px; padding: 0 12px; border-radius: 10px;
+  border: 1px solid #2c3136; background: #15191d; color: #1db31d; font-size: 13px; font-weight: 700; }
+.onlineName { padding: 8px 2px; border-bottom: 1px solid var(--line2); font-size: 14px; }
 .acctChip { flex-shrink: 0; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2b4a5c; background: transparent;
   color: var(--cyan); font-size: 13px; font-weight: 600; }
 .filter input { flex: 1; min-width: 0; width: 100%; height: 44px; border-radius: 10px; border: 1px solid #2c3136; background: #1b1e21;
