@@ -452,7 +452,8 @@ class CandleChart(DrawingsMixin, QWidget):
     def _layout(self):
         w, h = self.width(), self.height()
         left, right = LEFT_W, w - RIGHT_W
-        info_h = 8 if self.info_on_cursor else 2 * INFO_H - 3 if self.wrap_info else INFO_H
+        # (no info line: the Mini App's picture, and the screenshot - a few pixels over the candles only)
+        info_h = 8 if self.info_on_cursor or self.clean_lines is not None else 2 * INFO_H - 3 if self.wrap_info else INFO_H
         body_h = h - info_h - AXIS_H
         vol_h = max(int(body_h * 0.24), 90) + self._vol_header_h() - VOL_HEADER_H
         price = QRectF(left, info_h, right - left, body_h - vol_h)
