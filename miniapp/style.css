@@ -110,7 +110,15 @@ button { font-family: inherit; color: inherit; }
 .l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 11.5px; }
 .l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
 .l2row .p { text-align: right; } .l2row .s { text-align: right; }
-.l2row.mine .mm { white-space: nowrap; overflow: visible; }      /* "Me ...159": over the price's empty left side */
+.l2row.mine .mm { white-space: nowrap; overflow: visible; }      /* "Me...": over the price's empty left side */
+/* the Level II tab: no side margins (the page's, the box's), the two sides 3 px apart, the rows 2 px in */
+.l2Page { padding-left: 0; padding-right: 0; }
+.l2Page .box { border-left: none; border-right: none; border-radius: 0; padding-left: 0; padding-right: 0; }
+.l2Page .boxHead { padding: 0 8px; }
+.l2Page .l2 { column-gap: 3px; }
+.l2Page .l2row { padding-left: 2px; padding-right: 2px; border-radius: 0;
+  grid-template-columns: 12px 38px minmax(0, 1fr) 76px; }     /* (the size: 11 characters, "125,000,000"; every row
+                                                              alike, so the columns line up) */
 .dim { color: var(--dim2); font-size: 12px; }
 .actions { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 10px 12px; background: var(--bg); border-top: 1px solid var(--line); }
 .actions button { height: 48px; border-radius: 12px; border: none; font-size: 14px; font-weight: 700; }

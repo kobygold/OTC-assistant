@@ -284,7 +284,8 @@ function tickerHead(card, right) {
 // ---- the Level II tab (view "card": its book, as the desktop's Level II panel) ----
 function renderL2(card) {
   if (!card) return tickerHead(null) + `<div class="empty">Waiting for the ticker…</div>`;
-  return tickerHead(card) + l2Bar(card) + `<div class="cardPage">` + renderBook(card.book) + `</div>`;
+  // (edge to edge, the two sides close together: room for big sizes)
+  return tickerHead(card) + l2Bar(card) + `<div class="cardPage l2Page">` + renderBook(card.book) + `</div>`;
 }
 // the desktop Level II's quote bar: the last price (and its change from yesterday's close), the bid and the ask,
 // price and size each green after it went up, red after it went down, yellow before any change; gray while held
