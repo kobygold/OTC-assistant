@@ -80,7 +80,7 @@ function riskBadge(risk, size) {
 // ---------------------------------------------------------------- ATM scanner (view "scan": the ATM tab's table) ---
 // (on the Favorites tab, its second page: the main server's app's results, as its table shows them)
 function favSegs() {
-  return `<div class="segs two">` + [["favs", "Favorites"], ["scan", "ATM Scanner"]].map(([id, l]) =>
+  return `<div class="pageTabs">` + [["favs", "Favorites"], ["scan", "ATM Scanner"]].map(([id, l]) =>
     `<button data-favseg="${id}" class="${id === (S.favSeg || "favs") ? "on" : ""}">${l}</button>`).join("") + `</div>`;
 }
 function renderScan(view) {
