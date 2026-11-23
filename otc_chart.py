@@ -580,8 +580,9 @@ class CandleChart(DrawingsMixin, QWidget):
         while v <= price_at(price.top()):
             y = py(v)
             if price.top() + 6 < y < price.bottom() - 6:
-                p.setPen(QPen(GRID, 1))
-                p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
+                if self.clean_lines is None:        # (the screenshot: no grid lines, only the axis' prices)
+                    p.setPen(QPen(GRID, 1))
+                    p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
                 p.setPen(AXIS_TEXT)
                 text = fmt_axis(v)
                 p.drawText(QRectF(price.right() + 6, y - 8, RIGHT_W - 8, 16),
