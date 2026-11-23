@@ -727,6 +727,20 @@ class Level2Panel(QWidget):
             lb.setVisible(bool(lb.text()))
             self.dividers[key].setVisible(bool(lb.text()))
 
+    def still(self, ticker, name, q, bids, asks, held=False, reloaders=None):
+        """A hidden panel with no stream (the Mini App's screenshot): the ticker's quote and book as given (what the
+        Level II shows for it now), its rows as the tables would show them (my orders' too), for snapshot()."""
+        self.prev = {"BID": {}, "ASK": {}}
+        self.trend = {"BID": {}, "ASK": {}}
+        self.prev_quote, self.quote_trend = {}, {}
+        self.ticker, self.name = ticker, name or ""
+        self.reloaders = reloaders or {}
+        self.held = False
+        self.show_quote(q or {})
+        self.shown_book = (list(bids), list(asks))
+        self.refresh_mine()
+        self.held = held
+
     def snapshot(self, width, max_rows=SNAPSHOT_ROWS):
         """The Level II as a picture (the chart's screenshot, under it): the quote bar's ticker, Bid and Ask (their
         colors as now), then the bids and asks as the tables show them, in the price levels' blue shades (also

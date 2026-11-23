@@ -48,8 +48,10 @@ AUTH_MAX_AGE_S = 24 * 3600      # Telegram's signed user data is taken this long
 AUTH_WAIT_S = 10                # a phone that doesn't sign in by then is dropped
 ACCOUNTS = "telegram/accounts/"
 ACT_WAIT_S = 30                 # an order's answer from the main server's app waited this long
-ACT_KINDS = ("button", "cell", "edit", "alert", "scan")     # orders, the checklist's editing, the alerts, the scanner
-FREE_KINDS = ("alert", "scan")  # (the alerts and the ATM scanner: any linked phone; the rest: trading allowed)
+ACT_KINDS = ("button", "cell", "edit", "alert", "scan", "shot")    # orders, the checklist's editing, the alerts,
+                                                                    # the scanner, the screenshot
+FREE_KINDS = ("alert", "scan", "shot")  # (the alerts, the ATM scanner, the screenshot: any linked phone; the rest:
+                                        # trading allowed)
 VIEWS = ("favs", "trades", "orders", "alerts", "news", "scan")      # (and "card:<TICKER>", "chart:<TICKER>:<RANGE>")
 TICKER = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 RANGES = ("1D", "1M", "2M", "1Y")       # the phone's chart ranges (the desktop's buttons)

@@ -609,6 +609,9 @@ function renderAlerts(view) {
 }
 
 // ---------------------------------------------------------------- Checklist (view "card": the desktop's panel) ---
+const CAMERA = `<svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" ` +
+  `stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="26" height="18" rx="3"/>` +
+  `<polyline points="10,9 12.5,5 19.5,5 22,9"/><circle cx="16" cy="18" r="5"/></svg>`;
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
@@ -619,7 +622,9 @@ function renderChecklist(view) {
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
-    out += `<div class="ckSec">${esc(sec.title)}</div>`;
+    // (the trade's details: the camera beside its title - the desktop's screenshot, sent to the Telegram chat)
+    out += i === 0 ? `<div class="ckSec">${esc(sec.title)}<button class="shotBtn" data-shot="${esc(view.ticker || "")}" ` +
+      `aria-label="Screenshot to Telegram">${CAMERA}</button></div>` : `<div class="ckSec">${esc(sec.title)}</div>`;
     // the trade's details (the first section): Live | Plan columns, as the desktop panel; the others: the item
     // with its value after it
     if (i === 0) out += `<div class="ckRow ckCols"><span></span><span></span><span dir="ltr">Live</span><span dir="ltr" class="plan">${plan ? "Plan" : ""}</span></div>`;
@@ -890,7 +895,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-online],[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-shot],[data-online],[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -960,6 +965,7 @@ function setup() {
     }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
+    if (t.dataset.shot) { startAct({ kind: "shot", ticker: t.dataset.shot, range: S.range }); return; }
     if (t.dataset.sfstep) { e.preventDefault(); stepFilter(t, Number(t.dataset.sfstep)); return; }
     if (t.dataset.scanfilters) { const sv = S.views["scan/" + S.account]; if (sv && sv.filters) sheet(renderScanFilters(sv)); return; }
     if (t.dataset.scanf === "close") { sheet(""); return; }      // (no order on its way: the sheet only)

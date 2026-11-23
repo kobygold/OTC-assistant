@@ -332,6 +332,10 @@ class MiniOrders(QObject):
         account, act = str(msg.get("account") or ""), msg.get("act") or {}
         if act.get("kind") == "scan":           # the ATM scanner: no account, no order
             return self.scan(act, msg.get("answers"))
+        if act.get("kind") == "shot":           # the camera: no order
+            text = self.views.screenshot(account, act.get("ticker"), act.get("range"))
+            return {"state": "done", "sent": False, "what": "Screenshot",
+                    "messages": [{"icon": "info", "title": "Screenshot", "text": text}]}
         if account != atm.chosen_account():
             return self.note(f"Orders from the phone go to the account chosen on the main server's app "
                              f"(...{atm.chosen_account()}): choose ...{account} there first.")

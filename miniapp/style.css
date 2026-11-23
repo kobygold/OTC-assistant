@@ -122,6 +122,9 @@ button { font-family: inherit; color: inherit; }
 .ckHead .ckName { display: flex; align-items: center; gap: 10px; font-size: 18px; color: var(--text); }
 .ckHead .ckTicker { font-size: 22px; font-weight: 800; color: #f3c400; }
 .ckSec { font-size: 14px; font-weight: 700; color: var(--gold); margin: 8px 0 2px; }
+.shotBtn { margin-inline-start: 10px; padding: 2px 6px; vertical-align: middle; background: none; border: 1px solid #3a4046;
+  border-radius: 6px; color: #d0d0d0; line-height: 0; }
+.shotBtn:active { background: #2a3036; }
 .ckRow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 104px 64px; column-gap: 6px; align-items: center;
   min-height: 25px; border: none; background: transparent; text-align: right; padding: 0; font-size: 12.5px; }
 .ckCols { font-size: 11px; color: var(--dim); min-height: 16px; }

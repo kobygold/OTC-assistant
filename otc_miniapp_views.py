@@ -630,6 +630,55 @@ class MiniViews(QObject):
                 "cursor": [round(chart.mouse.x(), 1), round(chart.mouse.y(), 1)] if chart.mouse is not None else None,
                 "png": base64.b64encode(bytes(buf.data())).decode("ascii")}
 
+    def screenshot(self, account, ticker, rng):
+        """The desktop's camera for the phone: the ticker's chart (the range the phone shows; the desktop chart's
+        size) and Level II, the entry and exit lines and the plan from its checklist - made, saved and sent to the
+        account's phones as the desktop's button does. What to tell the phone."""
+        import otc_daily_gui as G
+        from otc_chart import CandleChart
+        from otc_level2 import Level2Panel
+        w = self.win
+        ticker = str(ticker or "").strip().upper()
+        rows = w.candle_rows(ticker) if ticker else []
+        if not rows:
+            return f"No data for {ticker or 'the ticker'} in the database."
+        chart = getattr(self, "shot_chart", None)
+        if chart is None:
+            chart = self.shot_chart = CandleChart(w)        # (the window's: closed with it)
+            chart.hide()
+        chart.resize(w.chart.size())
+        w.dress_chart(chart)
+        risk = G.ticker_risk(ticker)
+        chart.set_risk(w.risk_icons[risk[0]], risk[1]) if risk else chart.set_risk()
+        if rng == "1D" and self.minutes.get(ticker):
+            chart.set_intraday(ticker, self.minutes[ticker])
+        else:
+            rng = rng if rng in dict(G.RANGES) and rng != "1D" else "2M"
+            chart.set_data(ticker, rows, dict(G.RANGES).get(rng, 12), rng)
+        q, bids, asks, _note = self.market(ticker)
+        chart.set_held(self.held())
+        l2 = getattr(self, "shot_l2", None)
+        if l2 is None:
+            l2 = self.shot_l2 = Level2Panel(w.settings, G.APP_DIR / "schwab_token.json", w.server,
+                                            mm_icons=w.level2.mm_icons, parent=w)
+            l2.hide()
+            l2.hold_timer.stop()            # (no stream, no checks: only what it's given)
+            l2.reload_timer.stop()
+            l2.my_orders = w.level2.my_orders
+        con = G.db()
+        try:
+            det = con.execute("SELECT name FROM ticker_details WHERE ticker = ?", (ticker,)).fetchone()
+        finally:
+            con.close()
+        l2.still(ticker, det[0] if det else "", q, bids, asks, self.held(), self.reloaders(ticker))
+        shot = w.make_screenshot(chart, l2, self.panel_for(ticker), ticker)
+        if isinstance(shot, str):
+            return shot
+        img, path, caption = shot
+        w.notify(f"Screenshot (from the Mini App) saved: {path}", 8000)
+        w.send_screenshot(img, caption, path, tail=account)
+        return f"{ticker}'s screenshot is on its way to the Telegram chat."
+
     def read_minutes(self, ticker):
         """The ticker's 1-minute candles from Schwab (the desktop's reader, an instance of its own)."""
         if self.minute_loader is None:

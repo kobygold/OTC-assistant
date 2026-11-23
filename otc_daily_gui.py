@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.182"
+APP_VERSION = "2.7.183"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2706,10 +2706,10 @@ class MainWindow(QMainWindow):
         self.bottom_tabs.setTabText(1, f"News ({n})" if n else "News")
         self.bottom_tabs.setTabTextColor(1, QColor("#ff5050" if warn else "#f0a020") if n else QColor("#d8d8d8"))
 
-    def screenshot_lines(self, ticker):
-        """The screenshot's lines: [(price, color)] - the entry and the exit, as the checklist has them for the ticker
-        (an ATM trade's: its own; else the plan the checklist shows)."""
-        ck = self.checklist
+    def screenshot_lines(self, ticker, ck=None):
+        """The screenshot's lines: [(price, color)] - the entry and the exit, as the checklist (ck: this one's, else
+        the desktop's) has them for the ticker (an ATM trade's: its own; else the plan the checklist shows)."""
+        ck = ck or self.checklist
         if (ck.ticker or "").upper() != ticker:
             return []
         entry = exit_ = None
@@ -2724,13 +2724,28 @@ class MainWindow(QMainWindow):
 
     def take_screenshot(self):
         """The camera: the chart as it shows now with only its candles, volume and axes (+ the entry and exit lines),
-        and under it the Level II, saved in SHOTS_DIR (and copied, to paste)."""
+        and under it the Level II, saved in SHOTS_DIR (and copied, to paste), and sent to the account's phones."""
         chart = self.chart
         ticker = (chart.ticker or "").upper()
         if not ticker or not chart.dates:
             self.notify("Show a ticker on the chart first.", 4000)
             return
-        chart.clean_lines = self.screenshot_lines(ticker)
+        shot = self.make_screenshot(chart, self.level2 if self.level2.ticker.upper() == ticker else None,
+                                    self.checklist, ticker)
+        if isinstance(shot, str):
+            QMessageBox.warning(self, "Screenshot", shot)
+            return
+        img, path, caption = shot
+        QApplication.clipboard().setImage(img)
+        self.notify(f"Screenshot saved: {path} (and copied)", 8000)
+        self.send_screenshot(img, caption, path)
+
+    def make_screenshot(self, chart, level2, ck, ticker):
+        """The camera's picture (the desktop's button, the Mini App's): the chart with only its candles, volume and
+        axes (+ the entry and exit lines, as the checklist ck has them), thinkorswim's strip under it, then the Level
+        II (level2: a panel showing the ticker, or None), saved in SHOTS_DIR. (image, path, its text - the trade
+        plan, as the checklist's copy icon copies it) or why not."""
+        chart.clean_lines = self.screenshot_lines(ticker, ck)
         try:
             top = chart.grab().toImage()
         finally:
@@ -2744,8 +2759,8 @@ class MainWindow(QMainWindow):
             return x.scaled(w, round(x.height() * w / x.width()), Qt.AspectRatioMode.IgnoreAspectRatio,
                             Qt.TransformationMode.SmoothTransformation) if dpr != 1 else x
         parts = [top, fit(chart_footer(round(w / dpr), chart.first, chart.count, len(chart.dates)))]
-        if self.level2.ticker.upper() == ticker:
-            parts.append(fit(self.level2.snapshot(round(w / dpr))))
+        if level2 is not None:
+            parts.append(fit(level2.snapshot(round(w / dpr))))
         img = QImage(w, sum(x.height() for x in parts), QImage.Format.Format_RGB32)
         img.fill(QColor("#000000"))
         p = QPainter(img)
@@ -2757,20 +2772,16 @@ class MainWindow(QMainWindow):
         SHOTS_DIR.mkdir(exist_ok=True)
         path = SHOTS_DIR / f"{ticker}_{chart.range_label}_{datetime.now():%Y-%m-%d_%H%M%S}.png"
         if not img.save(str(path)):
-            QMessageBox.warning(self, "Screenshot", f"Couldn't save {path}.")
-            return
-        QApplication.clipboard().setImage(img)
-        self.notify(f"Screenshot saved: {path} (and copied)", 8000)
+            return f"Couldn't save {path}."
         # its text: the trade plan, as the checklist's copy icon (by the ticker) copies it (its plan_text)
-        ck = self.checklist
-        plan = ck.plan_text() if (ck.ticker or "").upper() == ticker else ""
-        self.send_screenshot(img, plan or f"{ticker} · {chart.range_label} · {datetime.now():%b %d, %H:%M}", path)
+        plan = ck.plan_text() if ck is not None and (ck.ticker or "").upper() == ticker else ""
+        return img, path, plan or f"{ticker} · {chart.range_label} · {datetime.now():%b %d, %H:%M}"
 
-    def send_screenshot(self, img, caption, path):
-        """The screenshot to Telegram too: to the chosen account's phones (with the bot, straight from this
-        computer), in a thread; the status bar tells how it went."""
+    def send_screenshot(self, img, caption, path, tail=None):
+        """The screenshot to Telegram too: to the account's phones (tail: that account's, else the chosen one's;
+        with the bot, straight from this computer), in a thread; the status bar tells how it went."""
         token = self.settings.get("telegram_token", "")
-        tail = str(self.settings.get("schwab_account") or "")
+        tail = str(tail or self.settings.get("schwab_account") or "")
         phones = [p for p in (self.telegram.account(tail).get("phones") or []) if p.get("chat_id")] if tail else []
         if not token or not phones:
             why = "no bot" if not token else f"no phones linked to account ...{tail[-3:]}" if tail else "no account chosen"
