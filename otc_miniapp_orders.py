@@ -27,7 +27,7 @@ import re
 
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QLabel,
                              QLineEdit, QMessageBox, QPushButton, QSpinBox, QStackedWidget, QToolButton, QWidget)
-from PyQt6.QtCore import QObject, Qt
+from PyQt6.QtCore import QObject, Qt, QTimer
 
 from otc_checklist import AmountBox, PriceBox
 
@@ -351,6 +351,7 @@ class MiniOrders(QObject):
             return {"state": "ask", "dialog": bridge.ask, "messages": bridge.messages}
         if act.get("kind") in ("edit", "alert"):            # (not orders: done, the views show it)
             self.views.sent.clear()
+            QTimer.singleShot(0, self.views.tick)           # (at once: not at the next tick, up to a second later)
             return {"state": "done", "sent": False, "changed": True, "what": bridge.title, "messages": bridge.messages,
                     "nothing": not bridge.messages}
         sent = bool(bridge.accepted) and self.state(atm) != before

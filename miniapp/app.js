@@ -618,6 +618,26 @@ const CAMERA = `<svg viewBox="0 0 32 32" width="20" height="20" fill="none" stro
 // a trade's line (the blue comments): its ✔ (all bought / sold) in green, as on the desktop - drawn as text (iOS
 // draws the bare character as a gray emoji, its color ignored)
 function orderLine(l) { return esc(l).replace(/✔/g, `<b class="okMark">✔︎</b>`); }
+// a price's + / − shown at once (the desktop's step: 0.0001 under $1, else 0.01), until the main server's app's
+// checklist answers with its own (a moment later); the amounts ($, shares) wait for it (their steps are its own)
+const STEP_KEYS = new Set(["entry", "exit", "stop"]), STEP_SHOWN_MS = 4000;
+function stepShown(key, dir) {
+  if (!STEP_KEYS.has(key)) return;
+  const box = document.querySelector(`.ckIn[data-key="${key}"]`);
+  if (!box) return;
+  const now = parseFloat(String(box.value || box.placeholder).replace(/,/g, ""));
+  if (!(now > 0)) return;
+  const size = now < 1 ? 0.0001 : 0.01, digits = now < 1 ? 4 : 2;
+  const next = Math.round((now + dir * size) / size) * size;
+  if (!(next > 0)) return;
+  box.value = next.toFixed(digits); box.style.color = "#f0a020"; box.dataset.orig = box.value;
+  S.stepped = { ticker: S.ticker, key, value: box.value, until: Date.now() + STEP_SHOWN_MS };
+}
+// (a view drawn before the app's answer: the stepped value kept in its box)
+function steppedValue(key, text) {
+  const s = S.stepped;
+  return s && s.ticker === S.ticker && s.key === key && Date.now() < s.until ? s.value : text;
+}
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
@@ -639,8 +659,9 @@ function renderChecklist(view) {
       if (i === 0) {
         // the row's boxes (typed in: Enter or leaving it sends it) and buttons (+ / −, the pin, the reset), as shown
         const boxes = (r.boxes || []).filter(b => b.editable);
-        const val = boxes.length ? boxes.map(b => `<input class="ckIn" dir="ltr" inputmode="decimal" data-key="${esc(r.key)}" data-box="${b.i}" ` +
-            `data-orig="${esc(b.text)}" value="${esc(b.text)}" placeholder="${esc(b.placeholder)}" style="color:${b.text ? "#f0a020" : "#ffffff"}" aria-label="${esc(r.text)}">`).join("")
+        const val = boxes.length ? boxes.map(b => { const text = b.i === 0 ? steppedValue(r.key, b.text) : b.text;
+            return `<input class="ckIn" dir="ltr" inputmode="decimal" data-key="${esc(r.key)}" data-box="${b.i}" ` +
+            `data-orig="${esc(text)}" value="${esc(text)}" placeholder="${esc(b.placeholder)}" style="color:${text ? "#f0a020" : "#ffffff"}" aria-label="${esc(r.text)}">`; }).join("")
           : r.value == null ? "<span></span>" : `<span dir="ltr" class="val" style="color:${esc(r.value_color || "#d8d8d8")}">${esc(r.value)}</span>`;
         const tool = (t) => `<button class="ckTool${t.name === "cl_pin" ? (t.pinned ? " pin on" : " pin") : ""}" data-edtool="${t.i}" data-key="${esc(r.key)}" ` +
           `data-name="${esc(t.name)}"${t.enabled ? "" : " disabled"} aria-label="${esc(t.tip)}">${t.name === "cl_pin" ? PIN : t.name === "cl_reset" ? "↺" : esc(t.text)}</button>`;
@@ -907,7 +928,12 @@ function setup() {
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
     if (t.dataset.mark) { startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.mark, what: "mark" }, true); return; }
     if (t.dataset.edtool != null) {
-      if (!t.disabled && !(S.act && S.act.wait)) startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
+      // (a + / −: each tap sent, even while the last one is on its way - the main server's app clicks them in turn)
+      const step = t.dataset.name === "cl_step", busy = S.act && S.act.wait && !(S.act.act.kind === "edit" && step);
+      if (!t.disabled && !busy) {
+        if (step) stepShown(t.dataset.key, t.textContent.trim() === "+" ? 1 : -1);
+        startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
+      }
       return;
     }
     if (t.dataset.addalert) { startAct({ kind: "alert", do: "add", ticker: t.dataset.addalert }); return; }
