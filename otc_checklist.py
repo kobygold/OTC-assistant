@@ -4559,14 +4559,12 @@ class ChecklistPanel(QWidget):
             left = self.atm.remaining(e)
 
             def times_text(side):
-                """" (3 times, 2 orders)": the fills, and the orders they were in (an order again on another day
-                counts as another: one commission each)."""
-                times, orders = self.atm.fills_count(e, side), self.atm.commissions_count(e, side)
-                parts = ([f"{times} time{'s' if times != 1 else ''}"] if times else []) + (
-                    [f"{orders} order{'s' if orders != 1 else ''}"] if orders else [])
+                """" (2 orders)(1 today)": the orders the fills were in (an order again on another day counts as
+                another: one commission each), and those filled today."""
+                orders = self.atm.commissions_count(e, side)
                 today = (self.atm.fills_today_avg(e, side) or (0,))[0]
-                return (f" ({', '.join(parts)})" if parts else "") + (
-                    f"({today} order{'s' if today != 1 else ''} today)" if today else "")
+                return (f" ({orders} order{'s' if orders != 1 else ''})" if orders else "") + (
+                    f"({today} today)" if today else "")
 
             def at_price(side, entry=None):
                 """" @ 0.0124 (avg)": the fills' average price (" (avg)" when they were at different prices); the buys:
