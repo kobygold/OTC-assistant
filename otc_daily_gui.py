@@ -62,13 +62,13 @@ from otc_intraday import MinuteLoader
 from otc_level2 import MM_YELLOW, TOKEN_DAYS, Level2Panel, token_created
 from otc_probe import ROOM_WAIT_MS, ProbeRunner, candle_part
 from otc_recorder import RELOAD_DAYS, find_reloads, in_session, market_date, session as market_session
-from otc_telegram_tab import TelegramPanel, send_photo
+from otc_telegram_tab import TelegramPanel, send_message, send_photo
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.180"
+APP_VERSION = "2.7.181"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -82,6 +82,7 @@ DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
+CAPTION_MAX = 1024      # Telegram: a picture's text at most this long
 SHOTS_DIR = APP_DIR / "screenshots"     # the camera's pictures (the chart and its Level II)
 SHOT_ENTRY = SHOT_EXIT = "#e066e6"     # the screenshot's lines: the entry and the exit (light purple, as thinkorswim's)
 
@@ -2760,7 +2761,10 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setImage(img)
         self.notify(f"Screenshot saved: {path} (and copied)", 8000)
-        self.send_screenshot(img, f"{ticker} · {chart.range_label} · {datetime.now():%b %d, %H:%M}", path)
+        # its text: the trade plan, as the checklist's copy icon (by the ticker) copies it (its plan_text)
+        ck = self.checklist
+        plan = ck.plan_text() if (ck.ticker or "").upper() == ticker else ""
+        self.send_screenshot(img, plan or f"{ticker} · {chart.range_label} · {datetime.now():%b %d, %H:%M}", path)
 
     def send_screenshot(self, img, caption, path):
         """The screenshot to Telegram too: to the chosen account's phones (with the bot, straight from this
@@ -2782,8 +2786,11 @@ class MainWindow(QMainWindow):
 
         def run():
             failed = []
-            for ph in phones:
-                err = send_photo(token, ph["chat_id"], png, caption)
+            for ph in phones:       # (Telegram's caption: at most 1024 characters - a longer text: right after it)
+                long = len(caption) > CAPTION_MAX
+                err = send_photo(token, ph["chat_id"], png, "" if long else caption)
+                if not err and long:
+                    err = send_message(token, ph["chat_id"], caption)
                 if err:
                     failed.append(f"{ph.get('name') or ph['chat_id']}: {err}")
             sent = len(phones) - len(failed)
