@@ -33,6 +33,8 @@ TICK_MS = 1000
 CANDLES_S = 300             # a card's candles (and bounce range) read again this often
 RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
 MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
+MINI_PRICES = "checklist_mini/"     # the shared data: checklist_mini/<account>/<ticker> - the Mini App's own typed /
+                                    # pinned checklist values (the desktops' are checklist/...: the two kept apart)
 # the ATM tab's filters the phone may change: (key, the tab's box, the phone's label)
 SCAN_FILTERS = (("lookback", "af_lookback", "Look back (days)"), ("gap", "af_gap", "Min gap %"),
                 ("tol", "af_tol", "Touch within ± %"), ("legs", "af_legs", "Min legs"),
@@ -135,12 +137,16 @@ class MiniViews(QObject):
         self.charts = {}            # (ticker, range) -> {"chart": the hidden chart, "read": time its candles were read}
         self.minutes = {}           # ticker -> its 1-minute candles (the Mini App's own reader: the desktop's is its chart's)
         self.minute_loader = None
+        self.msettings = None       # the Mini App checklists' settings (the desktop's, their typed prices their own)
+        self.msettings_of = None    # (the account they're of)
+        self.trade_sigs = {}        # ticker -> its ATM trade's orders as last seen (a new / changed one: synced)
         self.timer = QTimer(self)
         self.timer.setInterval(TICK_MS)
         self.timer.timeout.connect(self.tick)
         win.server.message.connect(self.on_message)
         win.level2.any_quote.connect(self.on_quote)
         win.level2.any_book.connect(self.on_book)
+        win.checklist.atm.changed.connect(self.on_trades_changed)
 
     # ---- from the server ----
     def on_message(self, msg):
@@ -460,6 +466,53 @@ class MiniViews(QObject):
         return {"account": account, "items": items}
 
     # ---- a ticker's card and checklist ----
+    # ---- the Mini App checklists' own typed values: not the desktop's (their +/- never move each other's); a
+    # ticker's are dropped once its trade's order is sent or changed (from the phone or the desktop): then both show
+    # the trade's ----
+    def mini_settings(self):
+        """The hidden checklists' settings: the desktop app's, but their "checklist_prices" their own (the shared
+        data's MINI_PRICES of the account; writes stay in this layer, never the desktop's settings)."""
+        from collections import ChainMap
+        w = self.win
+        account = w.shared_account() if hasattr(w, "shared_account") else "none"
+        if self.msettings is None or self.msettings_of != account:
+            prices = {}
+            if getattr(w, "shared_imported", False):
+                prices = {t: dict(v) for t, v in w.shared.get(f"{MINI_PRICES}{account}/").items() if isinstance(v, dict)}
+            self.msettings, self.msettings_of = ChainMap({"checklist_prices": prices}, w.settings), account
+            for card in self.cards.values():        # (another account: the panels made again)
+                card["panel"].deleteLater()
+            self.cards.clear()
+        return self.msettings
+
+    def save_mini_settings(self, settings=None):
+        """A hidden checklist saved its settings: only its typed prices, to the shared data (MINI_PRICES)."""
+        w = self.win
+        if self.msettings is None or not getattr(w, "shared_imported", False):
+            return
+        prices = {t: v for t, v in (self.msettings.get("checklist_prices") or {}).items() if isinstance(v, dict) and v}
+        w.shared.sync(f"{MINI_PRICES}{self.msettings_of}/", prices)
+
+    def on_trades_changed(self):
+        """A trade's order placed or changed (its ids, prices, amount, state): the Mini App's typed values of its
+        ticker dropped - the phone shows the trade's, as the desktop does (the sync after a command)."""
+        prices = (self.msettings or {}).get("checklist_prices") if self.msettings is not None else None
+        sigs = {}
+        for e in self.win.checklist.atm.entries:
+            t = e.get("ticker")
+            if t:
+                sigs[t] = (e.get("state"), e.get("order_id"), e.get("sell_id"), e.get("entry"), e.get("sell_price"),
+                           e.get("shares"), e.get("sell_shares"))
+        dropped = [t for t, s in sigs.items() if t in self.trade_sigs and self.trade_sigs[t] != s
+                   and prices is not None and prices.pop(t, None) is not None]
+        self.trade_sigs = sigs
+        if dropped:
+            self.save_mini_settings()
+            for t in dropped:
+                card = self.cards.get(t)
+                if card is not None:
+                    card["panel"].refresh()
+
     def panel_for(self, ticker):
         """The hidden checklist of the ticker (the desktop's panel, sharing its ATM trades and fees), fed now."""
         import time
@@ -468,7 +521,8 @@ class MiniViews(QObject):
         if card is None:
             if len(self.cards) >= MAX_CARDS:
                 self.cards.pop(next(iter(self.cards)))["panel"].deleteLater()
-            panel = checklist.ChecklistPanel(w.checklist.path, w.settings, w.checklist.save_settings, share=w.checklist)
+            panel = checklist.ChecklistPanel(w.checklist.path, self.mini_settings(), self.save_mini_settings,
+                                             share=w.checklist)
             panel.hide()
             card = self.cards[ticker] = {"panel": panel, "candles": 0.0}
         panel = card["panel"]
