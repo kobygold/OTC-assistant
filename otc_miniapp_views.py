@@ -33,6 +33,12 @@ TICK_MS = 1000
 CANDLES_S = 300             # a card's candles (and bounce range) read again this often
 RELOADS_S = 60              # its market makers caught refilling: looked for again this often (as the Level II box)
 MAX_CARDS = 6               # hidden checklists kept at most (the tickers the phones show)
+# the ATM tab's filters the phone may change: (key, the tab's box, the phone's label)
+SCAN_FILTERS = (("lookback", "af_lookback", "Look back (days)"), ("gap", "af_gap", "Min gap %"),
+                ("tol", "af_tol", "Touch within ± %"), ("legs", "af_legs", "Min legs"),
+                ("pmin", "af_pmin", "Price from"), ("pmax", "af_pmax", "Price to (0: no limit)"),
+                ("dollar", "af_dollar", "Min $ volume"), ("days", "af_days", "Min days in range"),
+                ("checks", "af_checks", "Min checks (0: all)"))
 SCAN_ROWS = 300            # the ATM scanner's rows sent to the phone (its best ones, as the table shows them)
 CHART_W, CHART_H, CHART_DPR = 390, 500, 2       # the phone's chart: its size in points, drawn at twice the pixels
 CLOSE_ASK_S = 20            # a ticker's last close asked of the server again (no answer yet) after this long
@@ -432,7 +438,15 @@ class MiniViews(QObject):
             cells.pop("Fav", None)
             rows.append(row)
         checking = bool(w.probe.running or w.atm_check_job is not None)
-        return {"rows": rows, "shown": tbl.rowCount(), "status": w.atm_status.text(),
+        filters = []
+        for key, attr, label in SCAN_FILTERS:
+            box = getattr(w, attr)
+            filters.append({"key": key, "label": label, "value": box.value(), "min": box.minimum(), "max": box.maximum(),
+                            "decimals": box.decimals() if hasattr(box, "decimals") else 0,
+                            "tip": box.toolTip()})
+        return {"filters": filters, "skip": w.af_skip.isChecked(),
+                "tiers": [{"name": g, "on": cb.isChecked()} for g, cb in w.af_tiers.items()],
+                "rows": rows, "shown": tbl.rowCount(), "status": w.atm_status.text(),
                 "scanning": w.atm_job is not None and w.atm_job.is_alive(), "checking": checking,
                 "check_from": w.check_from, "loaded": w.atm_loaded is not None,
                 "progress": w.atm_check_btn.text() if checking else ""}

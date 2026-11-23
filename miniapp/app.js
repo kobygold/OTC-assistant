@@ -88,6 +88,11 @@ function renderScan(view) {
   if (!view) return out + `<div class="empty">Waiting for the scanner…</div>`;
   out += `<div class="scanBtns"><button data-scan="scan"${view.scanning ? " disabled" : ""}>${view.scanning ? "Scanning…" : "Scan database"}</button>` +
     `<button data-scan="check"${view.scanning ? " disabled" : ""}>${view.checking ? "Stop " + esc(view.progress || "checking") : "Check L1/L2"}</button></div>`;
+  if (view.filters) {      // (the filters in short; a tap: change them)
+    const fv = Object.fromEntries(view.filters.map(x => [x.key, x.value]));
+    out += `<button class="sfSum" data-scanfilters="1">⚙ Filters: ${fv.lookback} days · gap ${fv.gap}%+ · ${fv.legs}+ legs · ` +
+      `$${fv.pmin}–${fv.pmax ? "$" + fv.pmax : "any"} · $vol ${Number(fv.dollar).toLocaleString("en-US")}+${fv.checks ? " · " + fv.checks + "+ checks" : ""}</button>`;
+  }
   if (view.status) out += `<div class="scanStatus">${esc(view.status.replace(/\s*Double-click a row.*$/, ""))}</div>`;
   if (!view.rows.length) return out + `<div class="empty">${view.loaded ? "No stock matches the ATM tab's filters." : "Not scanned yet on the main server's app: Scan database."}</div>`;
   out += `<div class="scanHead"><span></span><span>Ticker</span><span style="text-align:center">Checks</span><span style="text-align:right">Legs · Gap</span><span style="text-align:right">Low / High</span></div>`;
@@ -104,6 +109,31 @@ function renderScan(view) {
   }
   if (view.shown > view.rows.length) out += `<div class="note">The best ${view.rows.length} of ${view.shown} shown.</div>`;
   return out + `<div class="note">The ATM tab's results on the main server's app (its filters there). Tap one for its card; swipe there for the next.</div>`;
+}
+
+// the scanner's filters: the ATM tab's on the main server's app (set there: it searches / filters again)
+function renderScanFilters(view) {
+  const f = view.filters.map(x => `<label class="sfRow"><span>${esc(x.label)}</span>` +
+    `<input class="sfIn" data-sf="${esc(x.key)}" type="text" inputmode="decimal" autocomplete="off" value="${esc(String(x.value))}"` +
+    ` data-min="${x.min}" data-max="${x.max}"></label>` +
+    `<div class="sfTip">${esc(x.tip || "")}</div>`).join("");
+  const tiers = view.tiers.map(t => `<label class="sfChk"><input type="checkbox" data-sftier="${esc(t.name)}"${t.on ? " checked" : ""}> ${esc(t.name)}</label>`).join("");
+  return `<div class="dlgTitle">ATM scanner's filters</div><div class="sfNote">The ATM tab's, on the main server's app: set there, it searches again.</div>` +
+    f + `<label class="sfChk"><input type="checkbox" id="sfSkip"${view.skip ? " checked" : ""}> Skip warrants, rights and units</label>` +
+    `<div class="sfRow"><span>Tiers</span></div><div class="sfTiers">${tiers}</div>` +
+    `<div class="dlgBtns"><button class="dlgSend" style="background:#2f6fe0" data-scanf="set">Apply</button>` +
+    `<button class="dlgCancel" data-scanf="reset">Defaults</button><button class="dlgCancel" data-dlg="close">Close</button></div>`;
+}
+function scanFilterValues() {
+  const s = document.getElementById("sheet"), out = {}, bad = [];
+  s.querySelectorAll("[data-sf]").forEach(b => {
+    const v = Number(String(b.value).replace(/[,$\s]/g, ""));
+    if (b.value.trim() === "" || !isFinite(v)) bad.push(b.closest(".sfRow").firstChild.textContent);
+    else out[b.dataset.sf] = v;
+  });
+  out.skip = !!(document.getElementById("sfSkip") || {}).checked;
+  out.tiers = Array.from(s.querySelectorAll("[data-sftier]")).filter(b => b.checked).map(b => b.dataset.sftier);
+  return { values: out, bad };
 }
 
 function renderFavs(view, st) {
@@ -689,6 +719,8 @@ function showAct() {
   const a = S.act;
   // a quiet change (the checklist's): its sheet stays, unless a dialog or a message comes
   if (a && a.quiet && !a.dialog && !(a.done && (a.done.messages || []).length)) { if (a.done) S.act = null; showEdit(); return; }
+  // the scanner's buttons and filters: done without a word, the sheet closes (its page shows it)
+  if (a && a.act.kind === "scan" && a.done && !(a.done.messages || []).length) { S.act = null; sheet(""); return; }
   if (a) sheet(renderDialog(a)); else if (S.edit) showEdit(); else sheet("");
 }
 function onResult(m) {
@@ -830,7 +862,7 @@ function setup() {
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
   document.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
+    const t = e.target.closest("[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
     if (t.dataset.dlg === "close" && S.edit) { S.edit = null; S.act = null; sheet(""); return; }
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
@@ -892,6 +924,13 @@ function setup() {
     if (t.dataset.accts) { chooseAccount(); return; }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
+    if (t.dataset.scanfilters) { const sv = S.views["scan/" + S.account]; if (sv && sv.filters) sheet(renderScanFilters(sv)); return; }
+    if (t.dataset.scanf === "reset") { startAct({ kind: "scan", do: "reset" }); return; }
+    if (t.dataset.scanf === "set") {
+      const { values, bad } = scanFilterValues();
+      if (bad.length) { banner("Not a number: " + bad.join(", "), true); setTimeout(() => banner(""), 3000); return; }
+      startAct({ kind: "scan", do: "set", values }); return;
+    }
     if (t.dataset.scantk) { S.listOf = "scan"; openTicker(t.dataset.scantk); return; }
     if (t.dataset.news) {      // an Inbox line: its ticker's checklist
       S.from = "news"; S.listOf = "favs"; S.ticker = t.dataset.news; S.tab = "checklist"; subscribe(); render(); return;

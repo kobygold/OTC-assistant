@@ -274,3 +274,7 @@ database and Check L1/L2 buttons are the tab's own (`otc_miniapp_orders` kind "s
 `check_market("atm")`, its "Check all N?" question asked on the phone); any linked phone may (nothing is ordered).
 A row opens the ticker's card; a ticker opened from the scanner swipes through the scanner's list (`S.listOf`),
 one from the favorites through the favorites (the rule of section 14, revisited).
+
+Its filters (2.7.162): the view has the ATM tab's boxes (`SCAN_FILTERS`: their value, range and tooltip), Skip and
+the tiers; the phone's sheet sets them into those boxes (kind "scan", do "set": each kept in its range; "reset": the
+tab's Reset to defaults), and the tab searches / filters again as when they're typed there.

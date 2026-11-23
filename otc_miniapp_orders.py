@@ -368,6 +368,12 @@ class MiniOrders(QObject):
                 w.run_atm_search(reload=True)
             elif what == "check":
                 w.check_market("atm")
+            elif what == "reset":
+                w.reset_atm_filters()
+            elif what == "set":                 # the phone's filters: into the tab's boxes (each searches / filters
+                why = self.set_filters(act.get("values"))       # as when typed there)
+                if why:
+                    return self.note(why, "ATM scanner")
             else:
                 return self.note("Not a scanner's button.", "ATM scanner")
         if bridge.ask is not None:
@@ -375,6 +381,29 @@ class MiniOrders(QObject):
         self.views.sent.clear()
         return {"state": "done", "sent": False, "changed": True, "what": "ATM scanner", "messages": bridge.messages,
                 "nothing": not bridge.messages}
+
+    def set_filters(self, values):
+        """The ATM tab's filters from the phone ({key: value}, "skip", "tiers"): each kept within its box's range;
+        or why not."""
+        from otc_miniapp_views import SCAN_FILTERS
+        w = self.win
+        if not isinstance(values, dict):
+            return "No filters."
+        for key, attr, _label in SCAN_FILTERS:
+            if key not in values:
+                continue
+            box, v = getattr(w, attr), values[key]
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+                return f"{key}: not a number."
+            v = min(max(v, box.minimum()), box.maximum())
+            box.setValue(type(box.value())(round(v, box.decimals()) if hasattr(box, "decimals") else int(round(v))))
+        if isinstance(values.get("skip"), bool):
+            w.af_skip.setChecked(values["skip"])
+        tiers = values.get("tiers")
+        if isinstance(tiers, list):
+            for g, cb in w.af_tiers.items():
+                cb.setChecked(g in tiers)
+        return ""
 
     @staticmethod
     def state(atm):
