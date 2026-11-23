@@ -1394,12 +1394,13 @@ class CandleChart(DrawingsMixin, QWidget):
         line_pen = QPen(EXPIRATION, 2, Qt.PenStyle.DashLine)
         line_pen.setCosmetic(True)
         for d in expiration_days(self._date_at(start), self._date_at(end)):
+            # after the expiration day (its candle's right edge, as thinkorswim), not over it
             i = bisect_left(self.dates, d)
             if i == n:
-                slot = next(k for k in range(n, end + 1) if self._date_at(k) == d)
+                slot = next(k for k in range(n, end + 1) if self._date_at(k) == d) + 0.5
             else:
                 # A stock with no trades that day: the line goes between the candles around it
-                slot = i if self.dates[i] == d else i - 0.5
+                slot = i + 0.5 if self.dates[i] == d else i - 0.5
             x = self._x(slot, price)
             p.setPen(line_pen)
             p.drawLine(QPointF(x, price.top()), QPointF(x, price.bottom()))
