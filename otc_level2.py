@@ -26,6 +26,7 @@ login token in schwab_token.json. The token lasts 7 days; then the panel asks to
 schwab-py is imported only when needed, so the app runs without it.
 """
 
+import re
 import json
 import threading
 import time
@@ -739,6 +740,8 @@ class Level2Panel(QWidget):
             html = self.cells[key].text() if key in self.cells else ""
             if key == "ticker":
                 html = f"<b>{self.ticker}</b>"
+            elif key in ("bid", "ask"):     # (the screenshot's Bid and Ask: their price and size yellow)
+                html = re.sub(r"color:[^'\";]+", f"color:{GOLD}", html)
             if not html:
                 continue
             doc = QTextDocument()
