@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.184"
+APP_VERSION = "2.7.185"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -83,6 +83,7 @@ DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
 CAPTION_MAX = 1024      # Telegram: a picture's text at most this long
+REJECT_KEEP_S = 60      # the Orders button: a rejection kept on it this long (not covered by the next news)
 SHOTS_DIR = APP_DIR / "screenshots"     # the camera's pictures (the chart and its Level II)
 SHOT_ENTRY = SHOT_EXIT = "#e066e6"     # the screenshot's lines: the entry and the exit (light purple, as thinkorswim's)
 
@@ -5494,18 +5495,24 @@ class MainWindow(QMainWindow):
         if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired", "placed"):
             self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
             del self.order_news[ORDER_TIP_LINES:]
+            # (a rejection stays on the button a while: not covered by a new order of the same moment - FOBIF's
+            # rejected sell went unseen under the other one placed with it)
+            if ev["kind"] != "rejected" and time.time() - getattr(self, "rejected_shown_at", 0) < REJECT_KEEP_S:
+                return
+            self.rejected_shown_at = time.time() if ev["kind"] == "rejected" else 0
             self.order_news_ticker = ev["ticker"]
             self.show_orders_btn(ev)
 
     def show_orders_btn(self, ev):
-        """The chart's Orders button: the latest news in green (a fill), blue (a new order) or amber (ended),
-        else plain."""
+        """The chart's Orders button: the latest news in green (a fill), blue (a new order), red (rejected) or amber
+        (ended), else plain."""
         if ev is None:
             style = "QPushButton { padding: 3px 14px; }"
         else:
             kind = ev["kind"]
             mark, bg, fg = (("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
-                            ("+ ", "#2f6fe0", "#ffffff") if kind == "placed" else ("✘ ", "#e3b23c", "#111111"))
+                            ("+ ", "#2f6fe0", "#ffffff") if kind == "placed" else
+                            ("⛔ ", "#d32f2f", "#ffffff") if kind == "rejected" else ("✘ ", "#e3b23c", "#111111"))
             self.orders_btn.setText(mark + self.order_text(ev).split(" · ")[0])
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
