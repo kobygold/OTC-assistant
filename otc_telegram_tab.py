@@ -43,6 +43,31 @@ def send_message(token, chat_id, text, timeout=15):
         return f"{type(e).__name__}: {e}"
     return None if body.get("ok") else f"{body.get('error_code', '?')}: {body.get('description', 'not sent')}"
 
+def send_photo(token, chat_id, png, caption="", timeout=30):
+    """Sends a picture (PNG bytes) with the bot (straight to Telegram, from this computer). None when sent, else
+    why not."""
+    boundary = "----otc" + secrets.token_hex(12)
+    parts = []
+    for name, value in (("chat_id", str(chat_id)), ("caption", caption)):
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="screenshot.png"\r\n'
+                 f'Content-Type: image/png\r\n\r\n'.encode() + png + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(f"{otc_telegram.API}/bot{token}/sendPhoto", data=b"".join(parts),
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except ValueError:
+            return f"HTTP {e.code}"
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    return None if body.get("ok") else f"{body.get('error_code', '?')}: {body.get('description', 'not sent')}"
+
+
 CODE_S = 600        # an Add phone code works this long
 
 

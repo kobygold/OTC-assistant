@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QBuffer, QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
     QImage, QTextDocumentFragment, QValidator,
@@ -62,13 +62,13 @@ from otc_intraday import MinuteLoader
 from otc_level2 import MM_YELLOW, TOKEN_DAYS, Level2Panel, token_created
 from otc_probe import ROOM_WAIT_MS, ProbeRunner, candle_part
 from otc_recorder import RELOAD_DAYS, find_reloads, in_session, market_date, session as market_session
-from otc_telegram_tab import TelegramPanel
+from otc_telegram_tab import TelegramPanel, send_photo
 from otc_computers import ComputersPanel
 from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.176"
+APP_VERSION = "2.7.177"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -888,6 +888,8 @@ class PriceSpinBox(QDoubleSpinBox):
 # ----------------------------------------------------------- main window ---
 
 class MainWindow(QMainWindow):
+    shot_sent = pyqtSignal(str)         # the screenshot's Telegram send: what to show (from its thread)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
@@ -1232,7 +1234,7 @@ class MainWindow(QMainWindow):
         self.shot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.shot_btn.setToolTip("Screenshot: the chart (candles and volume, no lines or labels; the entry and exit "
                                  "as lines) and the Level II under it (its Bid and Ask), saved as a picture in the "
-                                 "screenshots folder, and copied")
+                                 "screenshots folder, copied, and sent to the account's phones on Telegram")
         self.shot_btn.clicked.connect(self.take_screenshot)
         row.addWidget(self.shot_btn)
         row.addSpacing(16)
@@ -2758,6 +2760,36 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setImage(img)
         self.notify(f"Screenshot saved: {path} (and copied)", 8000)
+        self.send_screenshot(img, f"{ticker} · {chart.range_label} · {datetime.now():%b %d, %H:%M}", path)
+
+    def send_screenshot(self, img, caption, path):
+        """The screenshot to Telegram too: to the chosen account's phones (with the bot, straight from this
+        computer), in a thread; the status bar tells how it went."""
+        token = self.settings.get("telegram_token", "")
+        tail = str(self.settings.get("schwab_account") or "")
+        phones = [p for p in (self.telegram.account(tail).get("phones") or []) if p.get("chat_id")] if tail else []
+        if not token or not phones:
+            why = "no bot" if not token else f"no phones linked to account ...{tail[-3:]}" if tail else "no account chosen"
+            self.notify(f"Screenshot saved: {path} (and copied; not sent to Telegram: {why})", 8000)
+            return
+        buf = QBuffer()
+        buf.open(QBuffer.OpenModeFlag.WriteOnly)
+        img.save(buf, "PNG")
+        png = bytes(buf.data())
+        if not getattr(self, "shot_sent_hooked", False):
+            self.shot_sent.connect(lambda text: self.notify(text, 10000))
+            self.shot_sent_hooked = True
+
+        def run():
+            failed = []
+            for ph in phones:
+                err = send_photo(token, ph["chat_id"], png, caption)
+                if err:
+                    failed.append(f"{ph.get('name') or ph['chat_id']}: {err}")
+            sent = len(phones) - len(failed)
+            self.shot_sent.emit(f"Screenshot saved: {path} (copied; sent to Telegram: {sent} of {len(phones)})"
+                                + (" - not sent to " + "; ".join(failed) if failed else ""))
+        threading.Thread(target=run, daemon=True).start()
 
     def open_otc_markets(self):
         """The OTC-Markets button: the chart's ticker (else the one typed) on OTC Markets' overview page, in the
