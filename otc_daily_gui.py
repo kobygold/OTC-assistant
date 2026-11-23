@@ -27,6 +27,7 @@ import math
 import sys
 import threading
 import html
+import re
 import secrets
 import socket
 import time
@@ -68,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.188"
+APP_VERSION = "2.7.189"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3473,6 +3474,7 @@ class MainWindow(QMainWindow):
         except OSError:
             lines = []
         self.order_log_lines = list(lines)      # all of them (the period shows some)
+        self.restore_order_news()
         self.checklist.atm.order_news.connect(self.on_order_event)
         self.checklist.atm.order_news.connect(self.on_order_filled)     # (a buy done: its Bid alert away)
         page = QWidget()
@@ -5613,6 +5615,26 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(1)
         self.show_chart(ticker)
         self.calm_orders_btn()
+
+    def restore_order_news(self):
+        """After a restart: the Orders button's latest news (its tooltip, its last line, plain) from the Order Log's
+        file - the chosen account's last ORDER_TIP_LINES fills, new orders and ends, as the button had them."""
+        tail = str(self.checklist.atm.chosen_account() or "")
+        news = []
+        for line in reversed(self.order_log_lines):
+            text, _, acct = line.partition(ORDER_LOG_TAG)
+            if (acct and acct != tail) or ": REPLACED " in text:     # (a replace isn't the button's news)
+                continue
+            news.append(text)
+            if len(news) >= ORDER_TIP_LINES:
+                break
+        if not news:
+            return
+        self.order_news = news
+        m = re.match(r"\S+ \S+\s+([A-Z0-9.]+):", news[0])
+        self.order_news_ticker = m.group(1) if m else ""
+        self.show_orders_btn(None)
+        self.orders_btn.setText(news[0].split("  ", 1)[-1].split(" · ")[0])
 
     def calm_orders_btn(self):
         """The Orders button back to plain, keeping its last news' text."""
