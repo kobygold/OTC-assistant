@@ -60,6 +60,7 @@ LEFT_W, RIGHT_W = 6, 74      # the axis labels are on the right only
 # same on both sides; market makers, prices and sizes in gold (also the chart's Bid/Ask and Level II tags' text).
 LEVEL_COLORS = ["#265883", "#1f4669", "#193854", "#132d43", "#102436", "#0d1c2b"]
 GOLD = "#e3b23c"
+CLEAN_LABEL = "#b45cff"     # the screenshot's lines' prices, over them (purple, as thinkorswim's)
 HELD = "#8c8c8c"            # the Level II's text while it holds the last close (not live)
 HELD_LEVELS = ["#4a4a4a", "#3d3d3d", "#333333", "#2b2b2b", "#242424", "#1d1d1d"]   # its price levels' shades then
 BID_TAG = QColor("#1c6e3a")      # the live bid and ask tags on the right axis, and the Level II's
@@ -213,8 +214,9 @@ class CandleChart(DrawingsMixin, QWidget):
         self.info_on_cursor = False # the info line only for the cursor's candle, over the top of the candles
                                     # (the Mini App: its page shows the ticker over the picture)
         self.wrap_info = False      # the info line and the volume's in rows (a narrow chart: the Mini App's)
-        self.clean_lines = None     # the screenshot (the camera): [(price, color)] - only the candles, the volume
-                                    # bars and the axes, with these lines across the price pane (the entry, the exit)
+        self.clean_lines = None     # the screenshot (the camera): [(price, color)] - the candles, the volume (its
+                                    # bars, lines and labels), the expiration Fridays and the axes, with these lines
+                                    # across the price pane (the entry, the exit), their price over them (as thinkorswim)
         self.range_label = "1Y"
         self.show_expirations = True
         self.show_last_tags = True     # the last price tag on the right axis
@@ -625,7 +627,8 @@ class CandleChart(DrawingsMixin, QWidget):
                 ytop, height = min(y1, y2), max(abs(y2 - y1), 2.0 if flat else 1.0)
                 p.fillRect(QRectF(x - body_w / 2, ytop - (1 if flat else 0), body_w, height), color)
         if clean:
-            pass
+            if not self.intraday and self.show_expirations:
+                self._draw_expirations(p, price)
         elif self.intraday:
             self._draw_day_lines(p, (price, vol), i0, i1)
         else:
@@ -639,7 +642,7 @@ class CandleChart(DrawingsMixin, QWidget):
             p.fillRect(QRectF(x - body_w / 2, y, body_w, vbot - y), self._color(i))
         # 50-day volume average and median lines
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for values, color in ((self.vol_avg, VOL_AVG), (self.vol_median, VOL_MEDIAN)) if not clean else ():
+        for values, color in ((self.vol_avg, VOL_AVG), (self.vol_median, VOL_MEDIAN)):
             pts = QPolygonF([QPointF(self._x(i, vol), vy(values[i])) for i in range(i0, i1 + 1)])
             p.setPen(QPen(color, 1.2))
             p.drawPolyline(pts)
@@ -652,9 +655,11 @@ class CandleChart(DrawingsMixin, QWidget):
                 if price.top() <= y <= price.bottom():
                     p.setPen(QPen(QColor(color), 2))
                     p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
-                    self._axis_tag(p, price.right() + 1, y, fmt_axis(value), QColor(color), QColor("#000000"),
-                                   bold=True, arrow="axis")
+                    p.setPen(QColor(CLEAN_LABEL))
+                    p.drawText(QRectF(price.left(), y - 18, price.width() - 6, 16),
+                               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"${fmt_axis(value)}")
             self._draw_x_axis(p, price, vol)
+            self._volume_header(p, vol, len(self.dates) - 1)
             p.end()
             return
 

@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.171"
+APP_VERSION = "2.7.172"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -83,7 +83,7 @@ DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
 SHOTS_DIR = APP_DIR / "screenshots"     # the camera's pictures (the chart and its Level II)
-SHOT_ENTRY, SHOT_EXIT = "#2f9bff", "#1db31d"     # the screenshot's lines: the entry (blue), the exit (green)
+SHOT_ENTRY = SHOT_EXIT = "#e066e6"     # the screenshot's lines: the entry and the exit (light purple, as thinkorswim's)
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
 # we reached the oldest date the plan allows (free plan: about 2 years).
