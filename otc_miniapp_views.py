@@ -657,6 +657,10 @@ class MiniViews(QObject):
             chart.set_data(ticker, rows, dict(G.RANGES).get(rng, 12), rng)
         q, bids, asks, _note = self.market(ticker)
         chart.set_held(self.held())
+        if q or self.held():            # (today's candle: from the live quote, as the desktop chart and the Chart tab)
+            chart.set_live(q)
+        if bids or asks or ticker in self.books or self.held():
+            chart.set_book(ticker, bids, asks)
         l2 = getattr(self, "shot_l2", None)
         if l2 is None:
             l2 = self.shot_l2 = Level2Panel(w.settings, G.APP_DIR / "schwab_token.json", w.server,
