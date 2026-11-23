@@ -26,7 +26,7 @@ const TABS = [
   { id: "ticker", label: "Ticker", icon: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-5M12 8h.01" },
   { id: "chart", label: "Chart", icon: "M3 3v18h18M6 16l3-4 3 2.5 3.5-5 2.5 2.5 3-5" },   // (x, y axes; a zigzag going up: two dips)
   { id: "l2", label: "Level II", icon: "M3 5h8M3 9h6M3 13h7M3 17h5M13 5h8M15 9h6M14 13h7M16 17h5" },
-  { id: "checklist", label: "Checklist", icon: "M3 6h11M3 12h11M3 18h11M16.5 6l1.5 1.5 2.5-2.5M16.5 12l1.5 1.5 2.5-2.5M16.5 18l1.5 1.5 2.5-2.5" },
+  { id: "checklist", label: "Checklist", icon: "M3 6h9M3 12h9M3 18h9M16.5 6l1.5 1.5 2.5-2.5M16.5 12l1.5 1.5 2.5-2.5M16.5 18l1.5 1.5 2.5-2.5" },
   { id: "orders", label: "Orders", icon: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
   { id: "alerts", label: "Alerts", icon: "M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" },
   { id: "news", label: "Inbox", icon: "M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" }
