@@ -124,7 +124,7 @@ function renderScanFilters(view) {
     f + `<label class="sfChk"><input type="checkbox" id="sfSkip"${view.skip ? " checked" : ""}> Skip warrants, rights and units</label>` +
     `<div class="sfRow"><span>Tiers</span></div><div class="sfTiers">${tiers}</div>` +
     `<div class="dlgBtns"><button class="dlgSend" style="background:#2f6fe0" data-scanf="set">Apply</button>` +
-    `<button class="dlgCancel" data-scanf="reset">Defaults</button><button class="dlgCancel" data-dlg="close">Close</button></div>`;
+    `<button class="dlgCancel" data-scanf="reset">Defaults</button><button class="dlgCancel" data-scanf="close">Close</button></div>`;
 }
 // a filter's −/+: its box's step (a price's: by its own power of 10, as the desktop's price box), in its range
 function stepFilter(b, d) {
@@ -941,6 +941,7 @@ function setup() {
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
     if (t.dataset.sfstep) { e.preventDefault(); stepFilter(t, Number(t.dataset.sfstep)); return; }
     if (t.dataset.scanfilters) { const sv = S.views["scan/" + S.account]; if (sv && sv.filters) sheet(renderScanFilters(sv)); return; }
+    if (t.dataset.scanf === "close") { sheet(""); return; }      // (no order on its way: the sheet only)
     if (t.dataset.scanf === "reset") { startAct({ kind: "scan", do: "reset" }); return; }
     if (t.dataset.scanf === "set") {
       const { values, bad } = scanFilterValues();
