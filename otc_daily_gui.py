@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.174"
+APP_VERSION = "2.7.175"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -415,6 +415,90 @@ def ticker_risk(ticker: str):
     if risk is None:
         return None
     return risk[2], f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>"
+
+
+def chart_footer(width, first, count, n):
+    """The strip under the screenshot's chart, as thinkorswim's under its chart: a small arrow at the left, the
+    scroll bar (its thumb where the candles shown are, of first..first+count of n), its arrows, the zoom out / in,
+    pan, crosshair and price buttons, "Drawing set: Default". Only a picture (nothing to click)."""
+    h = 26
+    img = QImage(width, h, QImage.Format.Format_RGB32)
+    img.fill(QColor("#000000"))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    gray, dim = QColor("#c8c8c8"), QColor("#8a8a8a")
+    font = QFont(p.font())
+    font.setPointSizeF(9)
+    p.setFont(font)
+    cy = h / 2
+
+    def tri(x, left):
+        d = -1 if left else 1
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(dim)
+        p.drawPolygon(QPolygonF([QPointF(x - 2.5 * d, cy - 3.5), QPointF(x + 2.5 * d, cy), QPointF(x - 2.5 * d, cy + 3.5)]))
+
+    tri(8, True)
+    # the right part: "Drawing set: Default", then the buttons to its left, then the scroll bar's arrows and bar
+    label = "Drawing set: Default"
+    lw = QFontMetrics(font).horizontalAdvance(label)
+    p.setPen(gray)
+    p.drawText(QRectF(width - lw - 10, 0, lw + 4, h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label)
+    x = width - lw - 24
+    pen = QPen(gray, 1.5)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    def magnifier(cx, plus):
+        p.setPen(pen)
+        p.drawEllipse(QPointF(cx - 1, cy - 1), 5.5, 5.5)
+        p.drawLine(QPointF(cx + 3, cy + 3), QPointF(cx + 7, cy + 7))
+        p.drawLine(QPointF(cx - 4, cy - 1), QPointF(cx + 2, cy - 1))
+        if plus:
+            p.drawLine(QPointF(cx - 1, cy - 4), QPointF(cx - 1, cy + 2))
+
+    # $ (the price axis), the crosshair, the pan arrows, zoom in, zoom out - right to left
+    p.setPen(gray)
+    p.drawText(QRectF(x - 10, 0, 12, h), Qt.AlignmentFlag.AlignCenter, "$")
+    p.setPen(pen)
+    p.drawLine(QPointF(x - 9, cy + 7), QPointF(x + 1, cy + 7))
+    x -= 24
+    p.drawEllipse(QPointF(x, cy), 6, 6)
+    p.drawLine(QPointF(x - 8, cy), QPointF(x + 8, cy))
+    p.drawLine(QPointF(x, cy - 8), QPointF(x, cy + 8))
+    x -= 24
+    p.drawLine(QPointF(x - 7, cy), QPointF(x + 7, cy))
+    for s in (-1, 1):
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(gray)
+        p.drawPolygon(QPolygonF([QPointF(x + 8 * s, cy), QPointF(x + 4 * s, cy - 4), QPointF(x + 4 * s, cy + 4)]))
+        p.drawRect(QRectF(x - 1.5, cy - 4, 3, 8))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    x -= 24
+    magnifier(x, True)
+    x -= 24
+    magnifier(x, False)
+    x -= 22
+    tri(x, False)
+    x -= 10
+    tri(x, True)
+    # the scroll bar: a dark track, its thumb where the candles shown are (with its grip)
+    right = x - 10
+    left = max(right - max(width * 0.19, 120), width * 0.45)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#202020"))
+    p.drawRect(QRectF(left, cy - 6, right - left, 12))
+    total = max(n + 10, count, 1)
+    a = left + (right - left) * max(first, 0) / total
+    b = left + (right - left) * min(first + count, total) / total
+    b = max(b, a + 24)
+    p.setBrush(QColor("#3a3a3a"))
+    p.drawRect(QRectF(a, cy - 6, b - a, 12))
+    p.setPen(QPen(QColor("#9a9a9a"), 1))
+    for k in (-3, 0, 3):
+        mx = (a + b) / 2 + k
+        p.drawLine(QPointF(mx, cy - 3), QPointF(mx, cy + 3))
+    p.end()
+    return img
 
 
 def camera_icon() -> QIcon:
@@ -2652,11 +2736,13 @@ class MainWindow(QMainWindow):
         dpr = top.devicePixelRatio()
         top.setDevicePixelRatio(1)          # (drawn pixel for pixel: the screen's scaling kept, not shrunk)
         w = top.width()
-        parts = [top]
+
+        def fit(x):                          # (a part drawn at the screen's size: scaled as the chart is)
+            return x.scaled(w, round(x.height() * w / x.width()), Qt.AspectRatioMode.IgnoreAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation) if dpr != 1 else x
+        parts = [top, fit(chart_footer(round(w / dpr), chart.first, chart.count, len(chart.dates)))]
         if self.level2.ticker.upper() == ticker:
-            l2 = self.level2.snapshot(round(w / dpr))
-            parts.append(l2.scaled(w, round(l2.height() * w / l2.width()), Qt.AspectRatioMode.IgnoreAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation) if dpr != 1 else l2)
+            parts.append(fit(self.level2.snapshot(round(w / dpr))))
         img = QImage(w, sum(x.height() for x in parts), QImage.Format.Format_RGB32)
         img.fill(QColor("#000000"))
         p = QPainter(img)

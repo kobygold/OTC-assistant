@@ -732,32 +732,44 @@ class Level2Panel(QWidget):
         while it holds the last close) - no signs, no status line."""
         font = QFont(self.bid_table.font())
         fm = QFontMetrics(font)
-        bar_h, row_h = fm.height() + 12, fm.height() + 4
+        row_h = fm.height() + 4
+        # the quote bar's cells as they show (rich text: their colors), each its own document
+        docs = []
+        for key in ("ticker", "name", "last", "last_change", "mark", "mark_change", "bid", "ask"):
+            html = self.cells[key].text() if key in self.cells else ""
+            if key == "ticker":
+                html = f"<b>{self.ticker}</b>"
+            if not html:
+                continue
+            doc = QTextDocument()
+            doc.setDocumentMargin(0)
+            doc.setDefaultFont(font)
+            doc.setDefaultStyleSheet(f"body {{ color: {TEXT}; }}")
+            doc.setHtml(f"<body>{html}</body>")
+            docs.append(doc)
+        bar_h = max([fm.height() + 12] + [round(d.size().height()) + 8 for d in docs])
         n = min(max(len(self.shown_rows["BID"]), len(self.shown_rows["ASK"]), 1), max_rows)
         img = QImage(width, bar_h + row_h * (n + 1) + 4, QImage.Format.Format_RGB32)
         img.fill(QColor("#000000"))
         p = QPainter(img)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setFont(font)
-        # the quote bar: the ticker, the Bid and the Ask, as their cells show them (rich text: its colors)
         p.fillRect(0, 0, width, bar_h, QColor("#333333"))
-        x = 8
-        cells = [f"<b>{self.ticker}</b>"] + [self.cells[k].text() for k in ("bid", "ask") if self.cells[k].text()]
-        for html in cells:
-            doc = QTextDocument()
-            doc.setDefaultFont(font)
-            doc.setDefaultStyleSheet(f"body {{ color: {TEXT}; }}")
-            doc.setHtml(f"<body>{html}</body>")
+        x = 0
+        for doc in docs:
+            x += 9
             p.save()
             p.translate(x, (bar_h - doc.size().height()) / 2)
             doc.drawContents(p)
             p.restore()
-            x += doc.idealWidth() + 10
-            p.fillRect(int(x), 4, 1, bar_h - 8, QColor("#5c5c5c"))
-            x += 10
+            x += doc.idealWidth() + 9
+            p.fillRect(int(x), 3, 1, bar_h - 6, QColor("#5c5c5c"))
+        p.setPen(QColor("#9a9a9a"))         # (thinkorswim's: the panel's name at the right)
+        p.drawText(QRectF(x, 0, width - x - 12, bar_h), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                   "Level II")
         # the two tables, side by side (6 px apart, as the panel)
         half = (width - 6) // 2
-        for side, left, titles in (("BID", 0, ("Ex", "Bid", "BS")), ("ASK", half + 6, ("Ex", "Ask", "AS"))):
+        for side, left, titles in (("BID", 0, ("Ex", "▾  Bid", "BS")), ("ASK", half + 6, ("Ex", "▴  Ask", "AS"))):
             cols = (left, left + half * 0.36, left + half * 0.68, left + half)
             y = bar_h
             p.fillRect(left, y, half, row_h, QColor("#151a1f"))
