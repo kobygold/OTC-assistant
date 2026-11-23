@@ -25,7 +25,7 @@ from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalett
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
-from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, order_info, position_info,
+from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, market_day, order_info, position_info,
                         transaction_fills)
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
@@ -2819,6 +2819,22 @@ class AtmTrades(QObject):
         # (a server of an older version: no fill_days, each order filled counts once)
         return sum(len(o.get("fill_days") or []) or 1 for o in orders)
 
+    def fills_today_avg(self, e, side):
+        """The trade's buys / sells in Schwab's latest list of orders: (its orders filled today - the market's day -,
+        their fills' average price, True when filled at different prices), or None when the list has none."""
+        orders = [o for o in self.trade_orders(e)
+                  if o.get("side") == side and int(o.get("filled") or 0) and o.get("fill_price")]
+        if not orders:
+            return None
+        today = market_day(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
+        n_today = sum(1 for o in orders if today in (o.get("fill_days") or []))
+        shares = sum(int(o["filled"]) for o in orders)
+        avg = sum(int(o["filled"]) * float(o["fill_price"]) for o in orders) / shares
+        # (an order filled in several fills: only their average is known; several orders' prices told apart)
+        several = len({round(float(o["fill_price"]), 6) for o in orders}) > 1 or any(int(o.get("fills") or 0) > 1
+                                                                                   for o in orders)
+        return n_today, avg, several
+
     def live_order(self, e):
         """The trade's open order (its buy while buy_open, its sell while sell_open) in Schwab's latest list of
         its account's orders (order_info()), or None."""
@@ -4525,12 +4541,25 @@ class ChecklistPanel(QWidget):
                 times, orders = self.atm.fills_count(e, side), self.atm.commissions_count(e, side)
                 parts = ([f"{times} time{'s' if times != 1 else ''}"] if times else []) + (
                     [f"{orders} order{'s' if orders != 1 else ''}"] if orders else [])
-                return f" ({', '.join(parts)})" if parts else ""
+                today = (self.atm.fills_today_avg(e, side) or (0,))[0]
+                return (f" ({', '.join(parts)})" if parts else "") + (
+                    f"({today} order{'s' if today != 1 else ''} today)" if today else "")
+
+            def at_price(side, entry=None):
+                """" @ 0.0124 (avg)": the fills' average price (" (avg)" when they were at different prices); the buys:
+                the trade's entry (its average, as "You own ... @" and its profit have it)."""
+                found = self.atm.fills_today_avg(e, side)
+                price = entry if entry else found[1] if found else None
+                if not price:
+                    return ""
+                return f" @ {fmt_price(price)}" + (" (avg)" if found and found[2] else "")
 
             def bought_line(n):
-                """"Bought so far (2 times, 1 order): 3,700 of 19,737" (the buy's fills, its earlier orders' too)."""
+                """"Bought so far (2 orders)(2 orders today): 8,150 of 10,150 @ 0.0124 (avg)" (the buy's fills, its
+                earlier orders' too)."""
                 times = times_text("BUY")
-                return f"Bought so far{times}: {n:,} of {e['shares']:,}" + (" ✔" if n >= e["shares"] else "")
+                return (f"Bought so far{times}: {n:,} of {e['shares']:,}" + at_price("BUY", e.get("entry"))
+                        + (" ✔" if n >= e["shares"] else ""))
             if state == "buy_open":
                 bought = max(int(e.get("filled") or 0), int(e.get("filled_prev") or 0) + int((o or {}).get("filled") or 0))
                 # the shares still waiting in the order, and below: all those bought so far (earlier orders too)
@@ -4549,7 +4578,8 @@ class ChecklistPanel(QWidget):
                 owned = int(e.get("filled") or 0)
                 text = (f"Sell order open{status}: {max(selling - sold, 0):,} @ {fmt_price(e['sell_price'])} GTC\n"
                         + bought_line(owned) + "\n"
-                        f"Sold so far{times}: {done:,} of {owned:,}" + (" ✔" if owned and done >= owned else ""))
+                        f"Sold so far{times}: {done:,} of {owned:,}" + (at_price("SELL") if done else "")
+                        + (" ✔" if owned and done >= owned else ""))
             elif state == "sold":
                 pl = self.atm.trade_pl(e)
                 total = pl["net"] if pl else self.atm.profit(e)
@@ -4559,7 +4589,8 @@ class ChecklistPanel(QWidget):
                 text = f"Sold {e.get('filled', 0):,}: {money}{fees}{src}."
                 # the orders the buy and the sell were filled in (a commission each)
                 n = int(e.get("filled") or 0)
-                text += f"\nBought{times_text('BUY')}: {n:,}\nSold{times_text('SELL')}: {n:,}"
+                text += (f"\nBought{times_text('BUY')}: {n:,}{at_price('BUY', e.get('entry'))}"
+                         f"\nSold{times_text('SELL')}: {n:,}{at_price('SELL')}")
             # (the trade's notes aren't shown here: they're in its history, on hover)
         self.order_text = text          # (as plain text)
         # its lines as rich text: a line's check (all bought / sold) in green
