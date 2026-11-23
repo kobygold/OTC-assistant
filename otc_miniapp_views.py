@@ -704,6 +704,7 @@ def checklist_view(panel):
     from PyQt6.QtWidgets import QLineEdit
     from otc_miniapp_orders import row_edits, row_tools
     rows_of ={id(item): (mark, text, value) for item, mark, text, value in panel.widgets}
+    order = panel.order() if panel.ticker else None
     sections = []
     for name, items in getattr(panel, "sections", []):
         rows = []
@@ -716,6 +717,9 @@ def checklist_view(panel):
             row = {"key": item.key, "kind": item.kind, "text": text.text(), "mark": m.group(2) if m else "",
                    "mark_color": m.group(1) if m else "", "tip": mark.toolTip() or text.toolTip(),
                    "split_before": item.key in checklist.SPLIT_BEFORE, "split_after": item.key in checklist.SPLIT_AFTER}
+            box_w = getattr(panel, "boxes", {}).get(item.key)
+            if box_w is not None and box_w.isHidden():
+                value = None        # (hidden on the desktop: the position $ and the entry once sent - the fixed cell only)
             if isinstance(value, QLineEdit):
                 typed = bool(value.text())
                 c = COLOR.search(value.styleSheet() or "")
@@ -731,6 +735,9 @@ def checklist_view(panel):
             edit = panel.order_edits.get(item.key)
             if edit is not None and not edit.isHidden():
                 row["plan"] = edit.text() or edit.placeholderText()
+            if order and item.key in ("shares", "fee") and "plan" not in row and "value" in row and not row.get("editable"):
+                row["plan"] = row.pop("value")      # (with a trade: under the fixed column, as the desktop's)
+                row.pop("value_color", None)
             # what the phone can work, as the desktop shows it: the row's boxes (typed in) and buttons (+ / -, pin, reset)
             box = getattr(panel, "row_boxes", {}).get(item.key)
             row["boxes"] = [{"i": i, "text": e.text(), "placeholder": e.placeholderText(),
