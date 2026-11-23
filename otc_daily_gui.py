@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.169"
+APP_VERSION = "2.7.170"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -416,12 +416,12 @@ def ticker_risk(ticker: str):
 
 
 def people_icon() -> QIcon:
-    """Two people (the connected users' count on the tabs line), light gray on the dark theme."""
+    """Two people (the connected users' count on the tabs line), green."""
     pix = QPixmap(32, 32)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(QPen(QColor("#c8c8c8"), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.setPen(QPen(QColor("#1db31d"), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawEllipse(QPointF(12, 10), 5, 5)                    # the front one: its head, its shoulders
     p.drawArc(QRect(3, 18, 18, 16), 0, 180 * 16)
@@ -3495,7 +3495,7 @@ class MainWindow(QMainWindow):
         apps = [str(a) for a in data.get("apps") or []] or [socket.gethostname() or "this computer"]
         n = len(names) + len(apps)
         btn.setText(str(n))
-        btn.setStyleSheet("QToolButton { color: %s; font-weight: bold; padding: 0 4px; }" % ("#1db31d" if names else "#c8c8c8"))
+        btn.setStyleSheet("QToolButton { color: #1db31d; font-weight: bold; padding: 0 4px; }")
         btn.setToolTip(f"Connected now: {n}\n\nMini App ({len(names)})" + (f", ...{tail}'s users" if tail else "") + ":\n"
                        + ("\n".join("  " + x for x in names) or "  none") + f"\n\nDesktop app ({len(apps)}):\n"
                        + "\n".join("  " + x for x in apps))
