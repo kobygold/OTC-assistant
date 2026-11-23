@@ -246,7 +246,7 @@ function renderCard(view) {
     `<div class="box"><div class="lab">Ask</div><div class="num"><span style="color:${moveColor(view.moved.ask)}">${esc(fp(q.ask))}</span>` +
     ` <span class="x">x</span> ${q.ask_size != null ? Number(q.ask_size).toLocaleString("en-US") : "-"}</div></div></div>`;
   out += `<div class="box"><div class="boxHead"><b>${view.steps ? "ATM trade" : "No ATM trade"}</b>${stepsSvg(view.steps, 8, 24)}</div>` +
-    (ck.order_lines || []).map(l => `<div class="orderLine">${esc(l)}</div>`).join("") + `</div>`;
+    (ck.order_lines || []).map(l => `<div class="orderLine">${orderLine(l)}</div>`).join("") + `</div>`;
   out += `<div class="rowBtns" style="margin:0 0 8px"><button data-addalert="${esc(view.ticker)}" style="background:#1d2125;color:#e3b23c;border:1px solid #2c3136">🔔 Add alert</button></div>`;
   out += renderBook(view.book);
   return out + `</div>`;
@@ -612,6 +612,9 @@ function renderAlerts(view) {
 const CAMERA = `<svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" ` +
   `stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="26" height="18" rx="3"/>` +
   `<polyline points="10,9 12.5,5 19.5,5 22,9"/><circle cx="16" cy="18" r="5"/></svg>`;
+// a trade's line (the blue comments): its ✔ (all bought / sold) in green, as on the desktop - drawn as text (iOS
+// draws the bare character as a gray emoji, its color ignored)
+function orderLine(l) { return esc(l).replace(/✔/g, `<b class="okMark">✔︎</b>`); }
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
   const ck = view.checklist, plan = ck.sections.some(s => s.rows.some(r => r.plan));
@@ -619,7 +622,7 @@ function renderChecklist(view) {
   let out = `<div class="ck" dir="rtl" lang="he"><div class="ckHead"><span class="ckName"><b>${esc(ck.title)}</b>` +
     `<b class="ckTicker" dir="ltr">${esc(view.ticker || "")}</b>${riskBadge(view.risk, 20)}</span>` +
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
-  out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${esc(l)}</div>`).join("");
+  out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${orderLine(l)}</div>`).join("");
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
     // (the trade's details: the camera beside its title - the desktop's screenshot, sent to the Telegram chat)

@@ -106,6 +106,7 @@ button { font-family: inherit; color: inherit; }
 .box .x { color: var(--dim2); font-size: 12px; }
 .boxHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .orderLine { font-size: 12.5px; color: var(--cyan); }
+.okMark { color: #1db31d; font-variant-emoji: text; }
 .l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 11.5px; }
 .l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
 .l2row .p { text-align: right; } .l2row .s { text-align: right; }
