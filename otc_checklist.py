@@ -2238,6 +2238,7 @@ class AtmTrades(QObject):
         for e in self.entries:
             if (e.get("account") or self.chosen_account()) != account or e.get("state") not in ("bought", "sell_open"):
                 continue
+            changed = self.entry_from_fills(e, orders) or changed
             if e.get("state") == "bought":
                 old = {str(x) for x in e.get("replaced_ids", [])}
                 live = [o for o in orders if o["id"] in old and o.get("ticker") == e.get("ticker")
@@ -2289,6 +2290,28 @@ class AtmTrades(QObject):
                     changed = True
         if changed:
             self.save()
+
+    def entry_from_fills(self, e, orders):
+        """A trade with a buy adopted (placed outside it): its entry checked against Schwab's fills - their average,
+        when the list has the fills of every share it bought - and corrected (an adoption by v2.7.70 or older took
+        a partly filled order's unfilled rest for shares bought at 0: FOBIF's entry 0.0124 for 0.0154). True when
+        corrected."""
+        adopted = {str(x) for x in e.get("adopted_ids") or []}
+        ids = self.trade_order_ids(e)
+        buys = [o for o in orders if o["id"] in ids and o.get("side") == "BUY" and int(o.get("filled") or 0)
+                and o.get("fill_price")]
+        if not any(o["id"] in adopted for o in buys):
+            return False
+        shares = sum(int(o["filled"]) for o in buys)
+        if shares != int(e.get("filled") or 0) or not e.get("entry"):
+            return False
+        avg = round(sum(int(o["filled"]) * float(o["fill_price"]) for o in buys) / shares, 6)
+        if abs(avg - e["entry"]) <= avg * 0.005:
+            return False
+        e["note"] = (f"Entry corrected: {fmt_price(e['entry'])} -> {fmt_price(avg)} (Schwab's fills: "
+                     f"{shares:,} bought in {len(buys)} order{'s' if len(buys) != 1 else ''}).")
+        e["entry"] = avg
+        return True
 
     def tracked_ids(self):
         """The order ids the ATM trades follow, now or before."""
