@@ -633,6 +633,18 @@ function stepShown(key, dir) {
   box.value = next.toFixed(digits); box.style.color = "#f0a020"; box.dataset.orig = box.value;
   S.stepped = { ticker: S.ticker, key, value: box.value, until: Date.now() + STEP_SHOWN_MS };
 }
+// + / − let go: a price held: its value sent (as typed in its box)
+const HOLD_START_MS = 400;
+function stepHoldEnd() {
+  const h = S.hold;
+  if (!h) return;
+  clearTimeout(h.timer);
+  S.hold = null;
+  if (h.price && h.n && h.ticker === S.ticker && S.stepped && S.stepped.key === h.key) {
+    S.stepped.until = Date.now() + STEP_SHOWN_MS;
+    startAct({ kind: "edit", ticker: h.ticker, key: h.key, what: "typed", box: 0, text: S.stepped.value }, true);
+  }
+}
 // (a view drawn before the app's answer: the stepped value kept in its box)
 function steppedValue(key, text) {
   const s = S.stepped;
@@ -921,6 +933,29 @@ function setup() {
     try { TG.BackButton.onClick(goBack); } catch (e) { /* (older Telegram) */ }
     try { TG.SettingsButton.onClick(chooseAccount); TG.SettingsButton.show(); } catch (e) { /* (older Telegram) */ }
   }
+  // + / −: a tap steps once; held, it steps on and on (faster after a second) until let go. A price (entry, exit,
+  // stop): the steps shown here at once and the value it ends at sent when let go (as typed); an amount ($, shares):
+  // each step sent (its step is the desktop's own). Each tap sent, even while the last one is on its way.
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target.closest('[data-edtool][data-name="cl_step"]');
+    if (!t || t.disabled) return;
+    e.preventDefault();
+    stepHoldEnd();
+    const key = t.dataset.key, dir = t.textContent.trim() === "+" ? 1 : -1, tool = Number(t.dataset.edtool);
+    const price = STEP_KEYS.has(key), ticker = S.ticker;
+    const send = () => startAct({ kind: "edit", ticker, key, what: "tool", tool, name: "cl_step" }, true);
+    if (price) stepShown(key, dir);
+    send();
+    const h = { key, ticker, price, n: 0, timer: null };
+    const again = () => {
+      h.n++;
+      if (price) stepShown(key, dir); else send();
+      h.timer = setTimeout(again, price ? (h.n > 10 ? 50 : 100) : 150);
+    };
+    h.timer = setTimeout(again, HOLD_START_MS);
+    S.hold = h;
+  });
+  for (const ev of ["pointerup", "pointercancel"]) document.addEventListener(ev, stepHoldEnd);
   document.addEventListener("click", (e) => {
     const t = e.target.closest("[data-shot],[data-online],[data-sfstep],[data-scanfilters],[data-scanf],[data-favseg],[data-scan],[data-scantk],[data-news],[data-accts],[data-dlg],[data-op],[data-check],[data-choice],[data-mark],[data-edtool],[data-addalert],[data-alert],[data-alertdo],[data-act],[data-cell],[data-limit],[data-seg],[data-show],[data-showall],[data-tab],[data-range],[data-open],[data-ticker],[data-soon],[data-tip],[data-acct],#sheet");
     if (!t) return;
@@ -928,12 +963,8 @@ function setup() {
     if (t.dataset.dlg || t.dataset.op || t.dataset.check || t.dataset.choice) { onDialogTap(t); return; }
     if (t.dataset.mark) { startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.mark, what: "mark" }, true); return; }
     if (t.dataset.edtool != null) {
-      // (a + / −: each tap sent, even while the last one is on its way - the main server's app clicks them in turn)
-      const step = t.dataset.name === "cl_step", busy = S.act && S.act.wait && !(S.act.act.kind === "edit" && step);
-      if (!t.disabled && !busy) {
-        if (step) stepShown(t.dataset.key, t.textContent.trim() === "+" ? 1 : -1);
-        startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
-      }
+      if (t.dataset.name === "cl_step") return;      // (+ / −: pressed and held, below - stepHold)
+      if (!t.disabled && !(S.act && S.act.wait)) startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
       return;
     }
     if (t.dataset.addalert) { startAct({ kind: "alert", do: "add", ticker: t.dataset.addalert }); return; }
