@@ -664,8 +664,11 @@ class CandleChart(DrawingsMixin, QWidget):
             for value, color in self.clean_lines:
                 y = py(value)
                 if price.top() <= y <= price.bottom():
-                    p.setPen(QPen(QColor(color), 2))
-                    p.drawLine(QPointF(price.left() + 1, y), QPointF(price.right() - 1, y))
+                    # (an exact band, on whole pixels of the screen: every line equally thick - a 2 px pen
+                    # between two pixel rows drew some 3 rows thick)
+                    dpr = self.devicePixelRatioF() or 1
+                    top, thick = round((y - 1) * dpr) / dpr, max(round(2 * dpr), 1) / dpr
+                    p.fillRect(QRectF(price.left() + 1, top, price.width() - 2, thick), QColor(color))
                     p.setPen(QColor(CLEAN_LABEL))
                     p.drawText(QRectF(price.left(), y - 18, price.width() - 6, 16),
                                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"${fmt_axis(value)}")
