@@ -256,7 +256,8 @@ function renderBook(book) {
   const side = (rows, ask) => rows.slice(0, 12).map(r => `<div class="l2row${r.mine ? " mine" : ""}" style="background:${esc(r.bg)};color:${esc(r.fg || "#e3b23c")}"${r.tip ? ` data-tip="${esc(r.tip)}"` : ""}>` +
     (`<span class="sign">${r.sign ? `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(r.sign.tip)}"><circle cx="6" cy="6" r="4.6" fill="${esc(r.sign.color)}" stroke="${esc(r.sign.ring || r.sign.color)}" stroke-width="1.6"/></svg>` : ""}</span>`) +
     `<span class="mm">${esc(r.mm)}</span><span class="p">${esc(r.price)}</span><span class="s" style="color:${r.trend > 0 ? "#1db31d" : r.trend < 0 ? "#e0404f" : esc(r.fg || "#e3b23c")}">${esc(r.size)}</span></div>`).join("");
-  return `<div class="box"><div class="boxHead"><b>Level II</b>${book.note ? `<span class="l2note">${esc(book.note)}</span>` : ""}</div><div class="l2">` +
+  // (bookWide: edge to edge, the two sides close together - room for big sizes; the Level II tab and the Ticker's)
+  return `<div class="box bookWide"><div class="boxHead"><b>Level II</b>${book.note ? `<span class="l2note">${esc(book.note)}</span>` : ""}</div><div class="l2">` +
     `<div class="bids">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
 }
 
@@ -284,8 +285,7 @@ function tickerHead(card, right) {
 // ---- the Level II tab (view "card": its book, as the desktop's Level II panel) ----
 function renderL2(card) {
   if (!card) return tickerHead(null) + `<div class="empty">Waiting for the ticker…</div>`;
-  // (edge to edge, the two sides close together: room for big sizes)
-  return tickerHead(card) + l2Bar(card) + `<div class="cardPage l2Page">` + renderBook(card.book) + `</div>`;
+  return tickerHead(card) + l2Bar(card) + `<div class="cardPage">` + renderBook(card.book) + `</div>`;
 }
 // the desktop Level II's quote bar: the last price (and its change from yesterday's close), the bid and the ask,
 // price and size each green after it went up, red after it went down, yellow before any change; gray while held

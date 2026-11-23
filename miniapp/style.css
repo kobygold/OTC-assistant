@@ -111,12 +111,13 @@ button { font-family: inherit; color: inherit; }
 .l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
 .l2row .p { text-align: right; } .l2row .s { text-align: right; }
 .l2row.mine .mm { white-space: nowrap; overflow: visible; }      /* "Me...": over the price's empty left side */
-/* the Level II tab: no side margins (the page's, the box's), the two sides 3 px apart, the rows 2 px in */
-.l2Page { padding-left: 0; padding-right: 0; }
-.l2Page .box { border-left: none; border-right: none; border-radius: 0; padding-left: 0; padding-right: 0; }
-.l2Page .boxHead { padding: 0 8px; }
-.l2Page .l2 { column-gap: 3px; }
-.l2Page .l2row { padding-left: 2px; padding-right: 2px; border-radius: 0;
+/* the Level II box (the Level II tab, the Ticker's): edge to edge - over the page's side padding (.cardPage's 14 px),
+   no side border or padding -, the two sides 3 px apart, the rows 2 px in */
+.bookWide { margin-left: -14px; margin-right: -14px; border-left: none; border-right: none; border-radius: 0;
+  padding-left: 0; padding-right: 0; }
+.bookWide .boxHead { padding: 0 8px; }
+.bookWide .l2 { column-gap: 3px; }
+.bookWide .l2row { padding-left: 2px; padding-right: 2px; border-radius: 0;
   grid-template-columns: 12px 38px minmax(0, 1fr) 76px; }     /* (the size: 11 characters, "125,000,000"; every row
                                                               alike, so the columns line up) */
 .dim { color: var(--dim2); font-size: 12px; }
