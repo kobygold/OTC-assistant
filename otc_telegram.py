@@ -530,8 +530,10 @@ class TelegramBot:
             return (f"⚠️ {t}: ATM buy order {str(e.get('status') or 'canceled').lower()} ({acct})\n"
                     f"{e.get('shares', 0):,} @ {fmt_price(entry)}, nothing bought" + note)
         if ev.startswith("sell_ended:"):
-            return (f"⚠️ {t}: ATM sell order ended ({acct})\n"
-                    f"You still own {remaining(e):,} @ {fmt_price(entry)}" + note)
+            end = str(e.get("sell_end") or "")
+            return ((f"⛔ {t}: ATM sell order REJECTED ({acct})\n" if end == "rejected" else
+                     f"⚠️ {t}: ATM sell order {end or 'ended'} ({acct})\n")
+                    + f"You still own {remaining(e):,} @ {fmt_price(entry)}" + note)
         if ev == "sold":
             return (f"💰 {t}: ATM sold ({acct})\n"
                     f"{e.get('sold', 0):,} bought @ {fmt_price(entry)}, sold for ${e.get('proceeds') or 0:,.2f}\n"

@@ -2086,6 +2086,8 @@ class AtmTrades(QObject):
                     self.save()
                     self.changed.emit()
                     continue
+                if not self.first_time(e, "rebuy", again):
+                    continue
                 self.sending.add(e["id"])
                 self.pending[e["id"]] = {"rebuy": True, "shares": int(again["shares"]), "price": float(again["price"]),
                                          "size": again.get("size"), "aon": bool(again.get("aon")),
@@ -2097,6 +2099,8 @@ class AtmTrades(QObject):
             again = e.get("resell")
             if again and again.get("by") == me and e.get("state") != "sell_open" and not self.busy(e):
                 e.pop("resell", None)
+                if not self.first_time(e, "resell", again):
+                    continue
                 left = self.remaining(e)
                 if stale(again) or e.get("state") != "bought" or left <= 0:
                     e["note"] = ("Update Sell: the rest of the order was canceled, but the new sell wasn't sent ("
@@ -2112,6 +2116,8 @@ class AtmTrades(QObject):
             if not want or want.get("by") != me or e.get("state") == "buy_open":
                 continue
             e.pop("partial_sell", None)
+            if not self.first_time(e, "partial_sell", want):
+                continue
             if stale(want):
                 e["note"] = (f"Sell Partial: the rest of the buy was canceled, but the sell wasn't sent (approved more "
                              f"than {FOLLOWUP_MAX_S // 60} minutes ago: its price may be old). Sell ATM sends it.")
@@ -2126,6 +2132,21 @@ class AtmTrades(QObject):
                 continue
             shares = left if want.get("all") else min(int(want["shares"]), left)
             self.place_sell(e, shares, float(want["price"]), bool(want.get("aon")))
+
+    def first_time(self, e, kind, want):
+        """A follow-up order's request (rebuy / resell / partial_sell, taken off the trade): True the first time
+        here - saved at once without it, so no copy of the trade brings it back -, False after (already sent:
+        nothing again)."""
+        done = self.__dict__.setdefault("followed", set())
+        key = (str(e["id"]), kind, str(want.get("at")), str(want.get("price")))
+        if key in done:
+            if e.pop(kind, None) is not None:
+                self.save()
+            return False
+        done.add(key)
+        if kind != "rebuy":         # (the rebuy's request stays until its order is placed: its own step)
+            self.save()
+        return True
 
     def place_sell(self, e, shares, price, aon=False):
         """The trade's sell order out (approved already)."""
@@ -2217,6 +2238,21 @@ class AtmTrades(QObject):
         for e in self.entries:
             if (e.get("account") or self.chosen_account()) != account or e.get("state") not in ("bought", "sell_open"):
                 continue
+            if e.get("state") == "bought":
+                old = {str(x) for x in e.get("replaced_ids", [])}
+                live = [o for o in orders if o["id"] in old and o.get("ticker") == e.get("ticker")
+                        and o.get("side") == "SELL" and o.get("open")]
+                if live:
+                    o = max(live, key=lambda o: o.get("entered") or "")
+                    e.update(state="sell_open", sell_id=o["id"], sell_price=o.get("price"),
+                             sell_filled=int(o.get("filled") or 0), sell_shares=int(o.get("quantity") or 0),
+                             sell_time=datetime.now().isoformat(timespec="seconds"))
+                    e.pop("sell_end", None)
+                    e["note"] = (f"Followed again: its sell order of {int(o.get('quantity') or 0):,} @ "
+                                 f"{fmt_price(o.get('price'))} is still open in Schwab"
+                                 + (f" ({int(o.get('filled') or 0):,} sold so far)." if o.get("filled") else "."))
+                    changed = True
+                    continue
             start, _ = self.trade_window(e)
             mine = []
             for o in orders:
@@ -3510,7 +3546,7 @@ class AtmTrades(QObject):
                 if self.remaining(e) <= 0:
                     e.update(state="sold", sold_time=now, note="")
                 else:               # Sell ATM can send it again
-                    e.update(state="bought", note=f"The sell order was {status.lower()}"
+                    e.update(state="bought", sell_end=status.lower(), note=f"The sell order was {status.lower()}"
                                                   + (f" after {filled:,} were sold." if filled else "."))
 
     # ---- the live exit and safety net, kept in atm.json beside the planned ones ----
