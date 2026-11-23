@@ -35,10 +35,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QProcess, QItemSelectionModel, QObject, QPointF, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QCursor, QDesktopServices, QKeySequence, QShortcut, QFont, QFontDatabase, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF,
-    QTextDocumentFragment, QValidator,
+    QImage, QTextDocumentFragment, QValidator,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog,
@@ -53,7 +53,7 @@ import otc_atm as atm
 from otc_alert_dialog import AlertDialog, AlertsDialog
 from otc_atm_trades import ORDER_SHOW, AtmTable, PositionsTable, SchwabOrdersTable
 import otc_checklist as checklist
-from otc_trade import STEP_NAMES, steps_score, trade_steps
+from otc_trade import STEP_NAMES, current_exit, steps_score, trade_steps
 import otc_daily as core
 import otc_zones as zones
 from otc_chart import AVG_PERIOD, CandleChart, fmt_price, fmt_volume
@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.170"
+APP_VERSION = "2.7.171"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -82,6 +82,8 @@ DRAWINGS_PATH = APP_DIR / "drawings.json"     # the chart drawings, per ticker
 DB_PATH = APP_DIR / "otc_daily.db"
 NEWS_DB = APP_DIR / "news.db"       # the news channel's history (this computer's server writes it: otc_news_db)
 ICON_PATH = APP_DIR / "app_icon.ico"
+SHOTS_DIR = APP_DIR / "screenshots"     # the camera's pictures (the chart and its Level II)
+SHOT_ENTRY, SHOT_EXIT = "#2f9bff", "#1db31d"     # the screenshot's lines: the entry (blue), the exit (green)
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
 # we reached the oldest date the plan allows (free plan: about 2 years).
@@ -413,6 +415,21 @@ def ticker_risk(ticker: str):
     if risk is None:
         return None
     return risk[2], f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>"
+
+
+def camera_icon() -> QIcon:
+    """A camera (the chart's screenshot button), light gray on the dark theme."""
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor("#d0d0d0"), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(3, 9, 26, 18), 3, 3)          # the body
+    p.drawPolyline(QPolygonF([QPointF(10, 9), QPointF(12.5, 5), QPointF(19.5, 5), QPointF(22, 9)]))    # its top
+    p.drawEllipse(QPointF(16, 18), 5, 5)                    # the lens
+    p.end()
+    return QIcon(pix)
 
 
 def people_icon() -> QIcon:
@@ -1123,6 +1140,17 @@ class MainWindow(QMainWindow):
         otc_btn.clicked.connect(self.open_otc_markets)
         self.news_told = set()          # the news keys a message was shown for (once)
         row.addWidget(otc_btn)
+        # the camera: the chart (its candles and volume, the entry and exit lines) and its Level II, a picture saved
+        self.shot_btn = QToolButton()
+        self.shot_btn.setIcon(camera_icon())
+        self.shot_btn.setIconSize(QSize(20, 20))
+        self.shot_btn.setAutoRaise(True)
+        self.shot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.shot_btn.setToolTip("Screenshot: the chart (candles and volume, no lines or labels; the entry and exit "
+                                 "as lines) and the Level II under it (its Bid and Ask), saved as a picture in the "
+                                 "screenshots folder, and copied")
+        self.shot_btn.clicked.connect(self.take_screenshot)
+        row.addWidget(self.shot_btn)
         row.addSpacing(16)
 
         self.range_group = QButtonGroup(self)
@@ -2590,6 +2618,60 @@ class MainWindow(QMainWindow):
         """The News tab: the last 7 days' count, orange (red with a warning)."""
         self.bottom_tabs.setTabText(1, f"News ({n})" if n else "News")
         self.bottom_tabs.setTabTextColor(1, QColor("#ff5050" if warn else "#f0a020") if n else QColor("#d8d8d8"))
+
+    def screenshot_lines(self, ticker):
+        """The screenshot's lines: [(price, color)] - the entry and the exit, as the checklist has them for the ticker
+        (an ATM trade's: its own; else the plan the checklist shows)."""
+        ck = self.checklist
+        if (ck.ticker or "").upper() != ticker:
+            return []
+        entry = exit_ = None
+        e = ck.order()
+        if e and e.get("entry"):
+            entry, exit_ = e["entry"], current_exit(e) or e.get("exit")
+        else:
+            ck.evaluate()
+            p = (ck.last_plan or ({}, None))[0] or {}
+            entry, exit_ = p.get("entry"), p.get("exit")
+        return [(v, c) for v, c in ((entry, SHOT_ENTRY), (exit_, SHOT_EXIT)) if v]
+
+    def take_screenshot(self):
+        """The camera: the chart as it shows now with only its candles, volume and axes (+ the entry and exit lines),
+        and under it the Level II, saved in SHOTS_DIR (and copied, to paste)."""
+        chart = self.chart
+        ticker = (chart.ticker or "").upper()
+        if not ticker or not chart.dates:
+            self.notify("Show a ticker on the chart first.", 4000)
+            return
+        chart.clean_lines = self.screenshot_lines(ticker)
+        try:
+            top = chart.grab().toImage()
+        finally:
+            chart.clean_lines = None
+            chart.update()
+        dpr = top.devicePixelRatio()
+        top.setDevicePixelRatio(1)          # (drawn pixel for pixel: the screen's scaling kept, not shrunk)
+        w = top.width()
+        parts = [top]
+        if self.level2.ticker.upper() == ticker:
+            l2 = self.level2.snapshot(round(w / dpr))
+            parts.append(l2.scaled(w, round(l2.height() * w / l2.width()), Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation) if dpr != 1 else l2)
+        img = QImage(w, sum(x.height() for x in parts), QImage.Format.Format_RGB32)
+        img.fill(QColor("#000000"))
+        p = QPainter(img)
+        y = 0
+        for x in parts:
+            p.drawImage(0, y, x)
+            y += x.height()
+        p.end()
+        SHOTS_DIR.mkdir(exist_ok=True)
+        path = SHOTS_DIR / f"{ticker}_{chart.range_label}_{datetime.now():%Y-%m-%d_%H%M%S}.png"
+        if not img.save(str(path)):
+            QMessageBox.warning(self, "Screenshot", f"Couldn't save {path}.")
+            return
+        QApplication.clipboard().setImage(img)
+        self.notify(f"Screenshot saved: {path} (and copied)", 8000)
 
     def open_otc_markets(self):
         """The OTC-Markets button: the chart's ticker (else the one typed) on OTC Markets' overview page, in the

@@ -32,8 +32,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QImage, QPainter, QTextDocument
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -50,6 +50,7 @@ RED = "#e0404f"         # a size that shrank, a fall
 MINE = "#14692c"        # the row of an open order of mine, as thinkorswim marks it
 LAST = "#f3c400"        # the last price
 TEXT = "#d8d8d8"
+SNAPSHOT_ROWS = 15      # the screenshot's Level II: at most this many rows a side
 # Market makers to watch on the ask side, from the OTC course's market maker table. Green ones
 # (retail: ETRF, CSTI, GTSM, NITE) get no sign.
 MM_RED = {"MAXM", "GLED", "CFGN", "PAUL", "JANE", "BBAR", "BLAS", "ALPS", "STXG", "AEXG"}   # bad players: diluters
@@ -321,6 +322,7 @@ class Level2Panel(QWidget):
         self.tracked = []                      # more tickers streamed for the record (favorites...)
         self.off = False                       # Level II turned off: no stream at all
         self.prev = {"BID": {}, "ASK": {}}     # market maker -> last size, per side
+        self.shown_rows = {"BID": [], "ASK": []}   # the rows as the tables show them now (the screenshot's)
         self.trend = {"BID": {}, "ASK": {}}    # market maker -> +1/-1, the last size change
         self.prev_quote = {}                   # bid/ask price and size at the last quote update
         self.quote_trend = {}                  # field -> +1/-1: its last change (kept until it changes again)
@@ -724,6 +726,59 @@ class Level2Panel(QWidget):
             lb.setVisible(bool(lb.text()))
             self.dividers[key].setVisible(bool(lb.text()))
 
+    def snapshot(self, width, max_rows=SNAPSHOT_ROWS):
+        """The Level II as a picture (the chart's screenshot, under it): the quote bar's ticker, Bid and Ask (their
+        colors as now), then the bids and asks as the tables show them, in the price levels' blue shades (also
+        while it holds the last close) - no signs, no status line."""
+        font = QFont(self.bid_table.font())
+        fm = QFontMetrics(font)
+        bar_h, row_h = fm.height() + 12, fm.height() + 4
+        n = min(max(len(self.shown_rows["BID"]), len(self.shown_rows["ASK"]), 1), max_rows)
+        img = QImage(width, bar_h + row_h * (n + 1) + 4, QImage.Format.Format_RGB32)
+        img.fill(QColor("#000000"))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setFont(font)
+        # the quote bar: the ticker, the Bid and the Ask, as their cells show them (rich text: its colors)
+        p.fillRect(0, 0, width, bar_h, QColor("#333333"))
+        x = 8
+        cells = [f"<b>{self.ticker}</b>"] + [self.cells[k].text() for k in ("bid", "ask") if self.cells[k].text()]
+        for html in cells:
+            doc = QTextDocument()
+            doc.setDefaultFont(font)
+            doc.setDefaultStyleSheet(f"body {{ color: {TEXT}; }}")
+            doc.setHtml(f"<body>{html}</body>")
+            p.save()
+            p.translate(x, (bar_h - doc.size().height()) / 2)
+            doc.drawContents(p)
+            p.restore()
+            x += doc.idealWidth() + 10
+            p.fillRect(int(x), 4, 1, bar_h - 8, QColor("#5c5c5c"))
+            x += 10
+        # the two tables, side by side (6 px apart, as the panel)
+        half = (width - 6) // 2
+        for side, left, titles in (("BID", 0, ("Ex", "Bid", "BS")), ("ASK", half + 6, ("Ex", "Ask", "AS"))):
+            cols = (left, left + half * 0.36, left + half * 0.68, left + half)
+            y = bar_h
+            p.fillRect(left, y, half, row_h, QColor("#151a1f"))
+            p.setPen(QColor("#c8c8c8"))
+            for c, title in enumerate(titles):
+                p.drawText(QRectF(cols[c] + 4, y, cols[c + 1] - cols[c] - 8, row_h),
+                           (Qt.AlignmentFlag.AlignLeft if c == 0 else Qt.AlignmentFlag.AlignRight)
+                           | Qt.AlignmentFlag.AlignVCenter, title)
+            for mm, price, size, level, mine in self.shown_rows[side][:n]:
+                y += row_h
+                p.fillRect(left, y, half, row_h - 1, QColor(MINE if mine else LEVEL_COLORS[min(level, len(LEVEL_COLORS) - 1)]))
+                trend = 0 if mine or self.held else self.trend[side].get(mm, 0)
+                texts = ((mm, GOLD), (tos_price(price), GOLD), (f"{size:,}", GREEN if trend > 0 else RED if trend < 0 else GOLD))
+                for c, (text, color) in enumerate(texts):
+                    p.setPen(QColor(color))
+                    p.drawText(QRectF(cols[c] + 4, y, cols[c + 1] - cols[c] - 8, row_h),
+                               (Qt.AlignmentFlag.AlignLeft if c == 0 else Qt.AlignmentFlag.AlignRight)
+                               | Qt.AlignmentFlag.AlignVCenter, text)
+        p.end()
+        return img
+
     @staticmethod
     def _change_text(change, close):
         """The change and its %, on two small lines as in thinkorswim."""
@@ -781,6 +836,7 @@ class Level2Panel(QWidget):
         return out
 
     def _fill(self, table, rows, side):
+        self.shown_rows[side] = list(rows)
         prev, trend = self.prev[side], self.trend[side]
         table.setRowCount(len(rows))
         for r, (mm, price, size, level, mine) in enumerate(rows):
