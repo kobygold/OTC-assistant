@@ -292,7 +292,7 @@ function renderL2(card) {
 function l2Bar(card) {
   const q = card.quote || {}, m = card.moved || {};
   const tone = (k) => card.held ? "#8c8c8c" : m[k] ? moveColor(m[k]) : "#f3c400";
-  const cells = [];
+  const cells = [], sides = [];
   if (q.last != null) {
     const chg = q.close ? q.last - q.close : null, cc = chg > 0 ? "#1db31d" : chg < 0 ? "#e0404f" : "#d8d8d8";
     cells.push(`<span class="l2last" style="color:#f3c400">${esc(fp(q.last))}</span>` +
@@ -301,9 +301,11 @@ function l2Bar(card) {
   for (const [side, lab] of [["bid", "Bid"], ["ask", "Ask"]]) {
     if (q[side] == null) continue;
     const size = q[side + "_size"] ? Number(q[side + "_size"]).toLocaleString("en-US") : "N/A";
-    cells.push(`${lab}: <span style="color:${tone(side)}">${esc(fp(q[side]))}</span> x <span style="color:${tone(side + "_size")}">${esc(size)}</span>`);
+    sides.push(`${lab}: <span style="color:${tone(side)}">${esc(fp(q[side]))}</span> x <span style="color:${tone(side + "_size")}">${esc(size)}</span>`);
   }
-  return cells.length ? `<div class="l2bar">${cells.map(c => `<div class="l2cell">${c}</div>`).join("")}</div>` : "";
+  // the price on its own line; the Bid and the Ask under it, each over its half of the Level II table below
+  return (cells.length ? `<div class="l2bar">${cells.map(c => `<div class="l2cell">${c}</div>`).join("")}</div>` : "") +
+    (sides.length ? `<div class="l2sides">${sides.map(c => `<div class="l2side">${c}</div>`).join("")}</div>` : "");
 }
 
 // ---- the chart's pinch and pan: the picture moved at once under the fingers, and the desktop's chart drawn so

@@ -172,6 +172,11 @@ button { font-family: inherit; color: inherit; }
 .l2cell { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-right: 1px solid #5c5c5c; white-space: nowrap; }
 .l2last { font-size: 17px; font-weight: 700; }
 .l2chg { display: flex; flex-direction: column; font-size: 10px; line-height: 1.2; }
+/* the Bid and the Ask: halves 3 px apart, as the Level II table's sides (.bookWide) under them */
+.l2sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 3px; background: #000;
+  border-top: 1px solid #5c5c5c; }
+.l2side { background: #333; color: #d8d8d8; font-size: 13.5px; padding: 5px 8px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
 .ranges { display: flex; gap: 3px; flex-shrink: 0; }
 .ranges button { min-width: 30px; height: 26px; padding: 0 5px; border-radius: 6px; border: 1px solid #2c3136; background: transparent;
   color: var(--dim); font-size: 11px; font-weight: 700; }
