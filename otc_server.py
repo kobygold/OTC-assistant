@@ -991,6 +991,9 @@ class Server:
         self.broadcast(info)
         if self.leader:
             self.to_peers(info)
+            mini = getattr(self, "mini", None)
+            if mini is not None:
+                mini.computers_changed()        # (the desktop apps open: in the Mini App's count)
 
     def set_state(self, state, lost=None):
         if state != self.state:

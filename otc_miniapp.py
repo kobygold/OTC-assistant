@@ -16,8 +16,8 @@ A phone's WebSocket (/ws):
   server -> {"t": "hello", "user", "accounts": [{"tail", "mode", "trading"}], "server"}
             {"t": "denied", "why"} (then closed) · {"t": "status", "text"} · {"t": "view", "key", "data"}
             {"t": "result", "req", "result"}
-            {"t": "online", "n", "names"}: the users with the Mini App open now (of the phone's accounts), again
-                                           whenever one opens or closes it
+            {"t": "online", "n", "names", "apps"}: the Mini Apps open now (of the phone's accounts' users) and the
+                                           desktop apps (the computers online); again whenever one opens or closes
 
 Only the main server answers, and only phones linked to an account (the Telegram tab's), each seeing only its
 accounts. The views are made by the main server's app with the desktop's code (otc_miniapp_views.py): the
@@ -39,8 +39,8 @@ from urllib.parse import parse_qsl
 PAGE_DIR = Path(__file__).resolve().parent / "miniapp"
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
-ONLINE_KEY = "telegram/miniapp_online"     # the shared data: {"users": [{"name", "accounts"}], "by"} - who has the
-                                            # Mini App open now (the desktop's count, on every computer)
+ONLINE_KEY = "telegram/miniapp_online"     # the shared data: {"users": [{"name", "accounts"}], "apps": [computer],
+                                            # "by"} - the Mini Apps and the desktop apps open now (every computer's count)
 PLATFORMS = {"ios": "iPhone", "android": "Android", "android_x": "Android", "tdesktop": "Telegram Desktop",
              "macos": "Mac", "weba": "Telegram Web", "webk": "Telegram Web", "web": "Telegram Web", "unknown": ""}
 BIND_RETRY_S, BIND_TRIES = 2, 30  # the page's port taken (the last server still closing): tried again this often
@@ -140,6 +140,7 @@ class MiniApp:
         self.wanted = set()         # the keys asked of the apps, as last sent
         self.listener = None
         self.retry_task = None      # (the port taken at the start: tried again)
+        self.apps_told = None       # the desktop apps last told (the computers online)
         self.dns_name = None        # this computer's tailnet name: the page's https:// address
         self.acts = {}              # req -> (phone, its req number, time): orders waiting for the app's answer
         self.act_n = 0
@@ -267,17 +268,35 @@ class MiniApp:
         """Every phone: the Mini Apps open now - each phone or computer (the same user on three: three), of the
         users who share one of its accounts: "Koby (iPhone)" (the Favorites tab's count, by the account chip)."""
         phones = [p for p in list(self.phones) if p.user]
-        self.publish_online()
+        apps = self.desktop_apps()
+        self.apps_told = apps
+        self.publish_online(apps)
         for phone in phones:
             names = sorted(p.label() for p in phones if set(p.accounts) & set(phone.accounts))
-            await phone.send({"t": "online", "n": len(names), "names": names})
+            await phone.send({"t": "online", "n": len(names) + len(apps), "names": names, "apps": apps})
 
-    def publish_online(self):
+    def desktop_apps(self):
+        """The desktop apps open now: the computers online (a computer's server runs while its app is open)."""
+        try:
+            return sorted(c["name"] for c in self.server.cluster_info()["computers"] if c.get("online") and c.get("name"))
+        except Exception:
+            return [self.server.name]
+
+    def computers_changed(self):
+        """(main server) A computer came or went: everyone told again, when the desktop apps open changed."""
+        if self.apps_told is not None and self.desktop_apps() != self.apps_told:
+            try:
+                asyncio.get_running_loop().create_task(self.tell_online())
+            except RuntimeError:
+                pass
+
+    def publish_online(self, apps=None):
         """(main server) Who has the Mini App open now, in the shared data (ONLINE_KEY) for every computer's app:
         each user once, with the accounts their phones are linked to. Empty when a computer becomes the main
         server (no phone on it yet)."""
         users = [{"name": p.label(), "accounts": sorted(p.accounts)} for p in list(self.phones) if p.user]
-        self.server.put_shared(ONLINE_KEY, {"users": sorted(users, key=lambda u: u["name"]), "by": self.server.name})
+        self.server.put_shared(ONLINE_KEY, {"users": sorted(users, key=lambda u: u["name"]),
+                                            "apps": apps if apps is not None else self.desktop_apps(), "by": self.server.name})
 
     def accounts_of(self, user_id):
         """The accounts the Telegram user's chat is linked to: tail -> {"tail", "mode", "trading"}."""

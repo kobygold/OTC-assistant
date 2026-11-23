@@ -68,7 +68,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.168"
+APP_VERSION = "2.7.169"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -413,6 +413,22 @@ def ticker_risk(ticker: str):
     if risk is None:
         return None
     return risk[2], f"<p style='white-space:pre'>{ticker[-1]}: <b>{risk[0]}</b> - {risk[1]}</p>"
+
+
+def people_icon() -> QIcon:
+    """Two people (the connected users' count on the tabs line), light gray on the dark theme."""
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor("#c8c8c8"), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QPointF(12, 10), 5, 5)                    # the front one: its head, its shoulders
+    p.drawArc(QRect(3, 18, 18, 16), 0, 180 * 16)
+    p.drawArc(QRect(15, 3, 10, 10), -90 * 16, 180 * 16)     # the one behind: half a head, a shoulder
+    p.drawArc(QRect(18, 18, 12, 16), 0, 90 * 16)
+    p.end()
+    return QIcon(pix)
 
 
 def risk_icon(level: int) -> QIcon:
@@ -1278,14 +1294,6 @@ class MainWindow(QMainWindow):
         self.orders_seen_btn.setEnabled(False)
         self.orders_seen_btn.clicked.connect(self.calm_orders_btn)
         row.addWidget(self.orders_seen_btn)
-        # who has the Mini App open now (the main server's count, in the shared data): this account's users
-        self.mini_online_btn = QToolButton()
-        self.mini_online_btn.setAutoRaise(True)
-        self.mini_online_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.mini_online_btn.clicked.connect(lambda: QToolTip.showText(
-            QCursor.pos(), self.mini_online_btn.toolTip(), self.mini_online_btn))
-        row.addWidget(self.mini_online_btn)
-        self.show_mini_online()
 
         root.addLayout(row)
         root.addWidget(self.chart_opts)
@@ -3103,11 +3111,24 @@ class MainWindow(QMainWindow):
         row.setSpacing(6)
         row.addWidget(QLabel("Account:"))
         self.schwab_account = QComboBox()
-        self.schwab_account.setMinimumWidth(220)
+        self.schwab_account.setMinimumWidth(150)
+        self.schwab_account.setMaximumWidth(170)
+        self.schwab_account.view().setMinimumWidth(240)     # (its list as wide as before)
         self.schwab_account.setToolTip("The BUY and SELL orders of the checklist go to this account, "
                                        "until it is changed here. Only its last 3 digits are kept.")
         self.schwab_account.activated.connect(self.on_schwab_account)
         row.addWidget(self.schwab_account)
+        # who's connected now: the Mini Apps (this account's users) and the desktop apps (the main server's count,
+        # in the shared data); a click or hover: who
+        self.mini_online_btn = QToolButton()
+        self.mini_online_btn.setAutoRaise(True)
+        self.mini_online_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mini_online_btn.setIcon(people_icon())
+        self.mini_online_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.mini_online_btn.clicked.connect(lambda: QToolTip.showText(
+            QCursor.pos(), self.mini_online_btn.toolTip(), self.mini_online_btn))
+        row.addWidget(self.mini_online_btn)
+        self.show_mini_online()
         # the Schwab login lasts 7 days: renewed at the weekend (it reminds), it never runs out
         # in the middle of a market week
         self.renew_btn = QPushButton("Renew Schwab login...")
@@ -3471,10 +3492,13 @@ class MainWindow(QMainWindow):
         tail = self.settings.get("schwab_account") or ""
         users = [u for u in data.get("users") or [] if isinstance(u, dict) and (not tail or tail in (u.get("accounts") or []))]
         names = [str(u.get("name") or "?") for u in users]
-        btn.setText(f"📱 {len(users)}")
-        btn.setStyleSheet("QToolButton { color: %s; font-weight: bold; }" % ("#1db31d" if users else "#7a828a"))
-        btn.setToolTip(f"The Mini App: {len(users)} open now" + (f" (...{tail}'s users)" if tail else "")
-                       + (":\n" + "\n".join(names) if names else ""))
+        apps = [str(a) for a in data.get("apps") or []] or [socket.gethostname() or "this computer"]
+        n = len(names) + len(apps)
+        btn.setText(str(n))
+        btn.setStyleSheet("QToolButton { color: %s; font-weight: bold; padding: 0 4px; }" % ("#1db31d" if names else "#c8c8c8"))
+        btn.setToolTip(f"Connected now: {n}\n\nMini App ({len(names)})" + (f", ...{tail}'s users" if tail else "") + ":\n"
+                       + ("\n".join("  " + x for x in names) or "  none") + f"\n\nDesktop app ({len(apps)}):\n"
+                       + "\n".join("  " + x for x in apps))
 
     def notify(self, text, ms=0):
         """A message in the status bar at the bottom (ms: for that long; 0: until the next one)."""

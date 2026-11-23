@@ -816,7 +816,7 @@ function connect() {
     } else if (m.t === "result") {
       onResult(m);
     } else if (m.t === "online") {          // (who has the Mini App open now: the chip by the account's)
-      S.online = { n: m.n, names: m.names || [] }; render();
+      S.online = { n: m.n, names: m.names || [], apps: m.apps || [] }; render();
     } else if (m.t === "status") {
       banner(m.text);
     } else if (m.t === "denied") {
@@ -944,9 +944,11 @@ function setup() {
     if (t.dataset.acct) { S.account = t.dataset.acct; localSet("account", S.account); sheet(""); subscribe(); render(); return; }
     if (t.dataset.accts) { chooseAccount(); return; }
     if (t.dataset.online) {
-      const o = S.online || { n: 0, names: [] };
-      sheet(`<div class="dlgTitle">Connected now (${o.n})</div>` + o.names.map(n => `<div class="onlineName">${esc(n)}</div>`).join("") +
-        `<div class="tip">The Mini Apps open now (each phone or computer), of this account's users.</div>`);
+      const o = S.online || { n: 0, names: [], apps: [] };
+      sheet(`<div class="dlgTitle">Connected now (${o.n})</div>` +
+        `<div class="onlineHead">Mini App (${o.names.length})</div>` + o.names.map(n => `<div class="onlineName">${esc(n)}</div>`).join("") +
+        `<div class="onlineHead">Desktop app (${o.apps.length})</div>` + o.apps.map(n => `<div class="onlineName">${esc(n)}</div>`).join("") +
+        `<div class="tip">The Mini Apps open now (each phone or computer) of this account's users, and the desktop apps open (the computers online).</div>`);
       return;
     }
     if (t.dataset.favseg) { S.favSeg = t.dataset.favseg; localSet("favSeg", S.favSeg); subscribe(); render(); return; }
