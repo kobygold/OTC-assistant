@@ -4978,10 +4978,12 @@ class ChecklistPanel(QWidget):
         return chr(10).join(lines)      # one line each
 
     def locked_texts(self, e):
-        """The fixed cells' texts: the plan sent with Buy ATM, and what it gives."""
+        """The fixed cells' texts: the plan sent with Buy ATM, and what it gives - its exit as planned at the buy
+        (exit-original: kept when the sell order's price was changed since; the trade's exit follows the order)."""
         fee = FEE_USD if e.get("fee") is None else e["fee"]
         size = e.get("size") or e.get("usd")
-        p = plan(None, None, [], size, e["entry"], e.get("exit"), e.get("safety-net"), fee, e.get("shares"))
+        p = plan(None, None, [], size, e["entry"], e.get("exit-original") or e.get("exit"), e.get("safety-net"), fee,
+                 e.get("shares"))
         price = lambda v: NA if v is None else fmt_price(v)
         pct = lambda v: NA if v is None else f"{v:+.1f}%"
         usd = lambda v: NA if v is None else usd_signed(v)

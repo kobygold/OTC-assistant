@@ -90,7 +90,8 @@ COLUMNS = [
     ("Sent", "When the Buy ATM was sent"),
     ("Shares", "Step 1: the amount ordered. Steps 2-3: the amount owned. Step 4: the amount sold."),
     ("Entry", "The buy order's limit price"),
-    ("Exit plan", "The exit price planned at the buy"),
+    ("Exit plan", "The exit price planned at the buy (kept when the sell order's price was changed since: hover)"),
+    ("Exit actual", "The price it sold at: the sells' average (Schwab's fills); (avg) when sold at different prices"),
     ("Safety Net", "The safety net (stop) planned at the buy"),
     ("Fee", "Schwab's fee for each buy and each sell, read at the buy"),
     ("Bid then", "The bid when the buy was sent. Hover: its size, and the Level II then."),
@@ -374,8 +375,12 @@ class AtmTable(SortMixin, QTableWidget):
             return e.get("time")
         if title == "Shares":
             return e.get("shares")
-        if title in ("Entry", "Exit plan", "Safety Net", "Fee"):
-            return e.get({"Entry": "entry", "Exit plan": "exit", "Safety Net": "safety-net", "Fee": "fee"}[title])
+        if title == "Exit plan":
+            return e.get("exit-original") or e.get("exit")
+        if title == "Exit actual":
+            return (self.actual_exit(e) or (None,))[0]
+        if title in ("Entry", "Safety Net", "Fee"):
+            return e.get({"Entry": "entry", "Safety Net": "safety-net", "Fee": "fee"}[title])
         if title in ("Bid then", "Ask then"):
             return first(e.get("bid" if title == "Bid then" else "ask"))
         if title in ("Bid now", "Ask now"):
@@ -444,6 +449,21 @@ class AtmTable(SortMixin, QTableWidget):
                                         else Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
         self.setItem(row, col, item)
         return item
+
+    def actual_exit(self, e):
+        """(the sells' average price, True when at different prices, the shares sold) of the trade so far, or None
+        before any: Schwab's fills (its latest list), else the trade's own count (each sell at its limit)."""
+        found = self.atm.fills_today_avg(e, "SELL")
+        sold = int(e.get("sold") or 0) + (int(e.get("sell_filled") or 0) if e.get("state") == "sell_open" else 0)
+        if found is not None:
+            return found[1], found[2], sold
+        if not sold:
+            return None
+        before, now = int(e.get("sold") or 0), int(e.get("sell_filled") or 0) if e.get("state") == "sell_open" else 0
+        value = (e.get("proceeds") or 0.0) + now * (e.get("sell_price") or 0)
+        # (sold before at another price than the open order's: an average)
+        several = bool(before and now and abs((e.get("proceeds") or 0.0) / before - (e.get("sell_price") or 0)) > 1e-9)
+        return value / sold, several, sold
 
     # the usual order, as the Mini Favorites': the most circles first (a yellow, partly filled one: half a circle,
     # so a sell partly sold comes before a sell sent), canceled last; by ticker within each
@@ -652,7 +672,15 @@ class AtmTable(SortMixin, QTableWidget):
         self.cell(row, COL["Shares"], shares + (" AON" if aon else ""), bold=True,
                   tip="All or none: filled all at once, or not at all" if aon else "")
         self.cell(row, COL["Entry"], fmt_price(e.get("entry")), ORDER_COLOR, bold=True)
-        self.cell(row, COL["Exit plan"], fmt_price(e.get("exit")), GREEN, bold=True)
+        planned = e.get("exit-original") or e.get("exit")
+        self.cell(row, COL["Exit plan"], fmt_price(planned), GREEN, bold=True,
+                  tip=f"Planned at the buy; the exit now (the sell order's price): {fmt_price(e.get('exit'))}"
+                  if e.get("exit-original") and e.get("exit") != planned else "Planned at the buy")
+        actual = self.actual_exit(e)
+        if actual is not None:
+            avg, several, shares = actual
+            self.cell(row, COL["Exit actual"], fmt_price(avg) + (" (avg)" if several else ""), GREEN, bold=True,
+                      tip=f"{shares:,} sold at {fmt_price(avg)}" + (" on average" if several else ""))
         self.cell(row, COL["Safety Net"], fmt_price(e.get("safety-net")), RED, bold=True)
         fee = e.get("fee")
         self.cell(row, COL["Fee"], "-" if fee is None else f"${fee:.2f}", YELLOW if fee and fee > FEE_HIGH else None,
