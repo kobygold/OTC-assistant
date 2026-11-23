@@ -246,9 +246,13 @@ class MiniApp:
             await phone.send({"t": "denied", "why": "Not signed by this bot (open it from the bot's menu)."})
             return False
         if not s.leader:
-            await phone.send({"t": "denied", "why": f"{s.name} isn't the main server now"
+            go = ((s.store.items.get("telegram/state") or {}).get("data") or {}).get("miniapp")
+            if go == self.url():
+                go = None               # (this one's own: stale)
+            await phone.send({"t": "denied", "go": go,
+                              "why": f"{s.name} isn't the main server now"
                               + (f" ({s.leader_name} is)" if getattr(s, "leader_name", "") else "")
-                              + ": open the app again from the bot's menu."})
+                              + (": opening it there..." if go else ": open the app again from the bot's menu.")})
             return False
         phone.user = user
         phone.accounts = self.accounts_of(user["id"])

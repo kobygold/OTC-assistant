@@ -57,6 +57,8 @@ from otc_trade import bid_fill, current_exit, fmt_price, steps_line, plan_profit
 API = os.environ.get("OTC_FAKE_TELEGRAM") or "https://api.telegram.org"     # tests: a local stub
 POLL_S = 25                 # getUpdates waits this long for news (long polling)
 RETRY_S = 5                 # after a failed call
+MENU_EVERY_S = 600          # the menu button set again this often (another computer, main server a moment, may
+                            # have pointed it at itself)
 CONFLICT_RETRY_S = 10       # another computer still polls (409): the one that was the main server, ending
 LATE_AFTER_S = 120          # news found this late (taking over): marked late
 LATE_MAX_S = 6 * 3600       # ...older than this: not sent at all (only marked as sent)
@@ -194,10 +196,12 @@ class TelegramBot:
         self.tries = {}             # chat id -> [times of wrong codes]
         self.chat_locks = {}        # chat id -> a lock: its messages go one at a time, in order
         self.conflict_told = False
+        self.menu_url = None        # the menu button's address, as last set here
 
     # ---- running ----
     def start(self):
-        self.tasks = [asyncio.create_task(self.run()), asyncio.create_task(self.login_loop())]
+        self.tasks = [asyncio.create_task(self.run()), asyncio.create_task(self.login_loop()),
+                      asyncio.create_task(self.menu_loop())]
         return self.tasks
 
     async def stop(self):
@@ -378,11 +382,21 @@ class TelegramBot:
         try:
             await self.call("setChatMenuButton", menu_button={"type": "web_app", "text": "Open app",
                                                               "web_app": {"url": url}})
-            self.server.log(f"Telegram: the menu button opens {url}")
+            if url != self.menu_url:
+                self.server.log(f"Telegram: the menu button opens {url}")
+            self.menu_url = url
+            self.update_state(miniapp=url)      # (the other computers send a phone that reached them on, here)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self.server.log(f"Telegram: the menu button wasn't set ({type(e).__name__}: {e})")
+
+    async def menu_loop(self):
+        """The menu button set again every MENU_EVERY_S (once the bot runs): it opens this main server's Mini App."""
+        while True:
+            await asyncio.sleep(MENU_EVERY_S)
+            if self.username:
+                await self.set_menu()
 
     def remember(self, tails, text, ticker=""):
         """A message sent to the accounts' phones, kept for the Mini App's Inbox (the last NEWS_KEEP of each)."""

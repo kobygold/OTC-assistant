@@ -821,6 +821,13 @@ function connect() {
       banner(m.text);
     } else if (m.t === "denied") {
       banner(m.why, true); S.live = false; ws.onclose = null; render();
+      // not the main server: on to the main server's page (its Telegram sign-in kept: the address' # part)
+      if (m.go) {
+        try {
+          const to = new URL(m.go);
+          if (to.origin !== location.origin) location.replace(to.origin + "/" + location.search + location.hash);
+        } catch (e) { /* (a bad address: the banner stays) */ }
+      }
     }
   };
   ws.onclose = () => { S.live = false; render(); banner("Reconnecting…"); setTimeout(connect, wait); wait = Math.min(wait * 2, 15000); };
