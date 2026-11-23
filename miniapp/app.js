@@ -632,7 +632,10 @@ function stepShown(key, dir) {
   if (!(next > 0)) return;
   box.value = next.toFixed(digits); box.style.color = "#f0a020"; box.dataset.orig = box.value;
   S.stepped = { ticker: S.ticker, key, value: box.value, until: Date.now() + STEP_SHOWN_MS };
+  clearTimeout(S.steppedTimer);         // (its time up: drawn as the app has it - nothing else may draw it again)
+  S.steppedTimer = setTimeout(() => { S.stepped = null; render(); }, STEP_SHOWN_MS + 50);
 }
+function steppedDrop(key) { if (S.stepped && (!key || S.stepped.key === key)) { S.stepped = null; clearTimeout(S.steppedTimer); } }
 // + / − let go: a price held: its value sent (as typed in its box)
 const HOLD_START_MS = 400;
 function stepHoldEnd() {
@@ -648,7 +651,9 @@ function stepHoldEnd() {
 // (a view drawn before the app's answer: the stepped value kept in its box)
 function steppedValue(key, text) {
   const s = S.stepped;
-  return s && s.ticker === S.ticker && s.key === key && Date.now() < s.until ? s.value : text;
+  if (s && s.key === key && text === s.value && !S.hold) steppedDrop(key);     // (the app has it now)
+  const k = S.stepped;
+  return k && k.ticker === S.ticker && k.key === key && Date.now() < k.until ? k.value : text;
 }
 function renderChecklist(view) {
   if (!view) return `<div class="empty">Waiting for the checklist…</div>`;
@@ -964,7 +969,9 @@ function setup() {
     if (t.dataset.mark) { startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.mark, what: "mark" }, true); return; }
     if (t.dataset.edtool != null) {
       if (t.dataset.name === "cl_step") return;      // (+ / −: pressed and held, below - stepHold)
-      if (!t.disabled && !(S.act && S.act.wait)) startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
+      if (!t.disabled) steppedDrop(t.dataset.key);   // (the pin, the reset: their answer drawn, not a step kept)
+      // (also while an edit is on its way: the app does them in turn - only another kind of command waits)
+      if (!t.disabled && !(S.act && S.act.wait && S.act.act.kind !== "edit")) startAct({ kind: "edit", ticker: S.ticker, key: t.dataset.key, what: "tool", tool: Number(t.dataset.edtool), name: t.dataset.name }, true);
       return;
     }
     if (t.dataset.addalert) { startAct({ kind: "alert", do: "add", ticker: t.dataset.addalert }); return; }
@@ -1067,7 +1074,7 @@ function setup() {
   document.addEventListener("focusout", (e) => {
     const b = e.target;
     if (!b.classList || !b.classList.contains("ckIn")) return;
-    if (b.value.trim() !== b.dataset.orig) startAct({ kind: "edit", ticker: S.ticker, key: b.dataset.key, what: "typed", box: Number(b.dataset.box), text: b.value.trim() }, true);
+    if (b.value.trim() !== b.dataset.orig) { steppedDrop(b.dataset.key); startAct({ kind: "edit", ticker: S.ticker, key: b.dataset.key, what: "typed", box: Number(b.dataset.box), text: b.value.trim() }, true); }
     setTimeout(() => { if (S.later) { S.later = false; render(); } }, 0);
   });
   // a value typed in the order sheet: sent when done (the desktop's box takes it: 12 -> 0.0012)
