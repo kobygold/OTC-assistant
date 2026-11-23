@@ -861,7 +861,7 @@ class Level2Panel(QWidget):
             while at < len(out) and (out[at][1] >= price if side == "BID" else out[at][1] <= price):
                 at += 1
             level = out[at - 1][3] if at else 0
-            out.insert(at, (f"Me ...{o.get('account') or ''}", price, int(o["shares"]), level, True))
+            out.insert(at, ("Me...", price, int(o["shares"]), level, True))     # (short: the chosen account's)
         return out
 
     def _fill(self, table, rows, side):
