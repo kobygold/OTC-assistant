@@ -149,20 +149,14 @@ def parse_time(text):
         return None
 
 
-def short_price(p):
-    """A price as thinkorswim's order lines write it: no leading zero, no trailing zeros (0.0160 -> ".016")."""
-    s = f"{float(p or 0):.6f}".rstrip("0").rstrip(".")
-    return s[1:] if s.startswith("0.") else s
-
-
 def sold_now(e):
     """The trade's shares sold so far (its open sell order's fills too)."""
     return int(e.get("sold") or 0) + (int(e.get("sell_filled") or 0) if e.get("state") == "sell_open" else 0)
 
 
 def fill_lines(old, new):
-    """The fills in a trade's change (old -> new): {"BUY": "BOT +11,450 SMEV @.0131 (Filled)", "SELL": "SOLD -5,000
-    SMEV @.016 (6,450 remain)"} - the shares of this fill, and what's left of the order (bought) / of those owned
+    """The fills in a trade's change (old -> new): {"BUY": "BOT +11,450 SMEV @0.0131 (Filled)", "SELL": "SOLD -5,000
+    SMEV @0.0160 (6,450 remain)"} - the shares of this fill, and what's left of the order (bought) / of those owned
     (sold); {} when none."""
     out = {}
     if not old or not new:
@@ -172,12 +166,12 @@ def fill_lines(old, new):
     if got > 0:
         shares, filled = int(new.get("shares") or 0), int(new.get("filled") or 0)
         end = ("Filled" if filled >= shares else f"{shares - filled:,} remain" if new.get("state") == "buy_open"
-               else f"the other {shares - filled:,} not bought")
-        out["BUY"] = f"BOT +{got:,} {t} @{short_price(new.get('entry'))} ({end})"
+               else f"the remaining {shares - filled:,} canceled")
+        out["BUY"] = f"BOT +{got:,} {t} @{fmt_price(new.get('entry') or 0)} ({end})"
     sold = sold_now(new) - sold_now(old)
     if sold > 0:
         left = int(new.get("filled") or 0) - sold_now(new)
-        out["SELL"] = (f"SOLD -{sold:,} {t} @{short_price(new.get('sell_price'))} "
+        out["SELL"] = (f"SOLD -{sold:,} {t} @{fmt_price(new.get('sell_price') or 0)} "
                        f"({'Filled' if left <= 0 else f'{left:,} remain'})")
     return out
 
@@ -532,7 +526,7 @@ class TelegramBot:
     def trade_text(self, ev, e, tail, market=None, fill=None):
         """The news's text: its title, the trade's 4 steps (🟢-🟢-⚪-⚪ Step 2/4...), what happened and
         the Bid / Ask now. market: the "Now: ..." line to use (a demo's), instead of the stream's. fill: a fill's
-        line ("BOT +11,450 SMEV @.0131 (Filled)"): the title instead."""
+        line ("BOT +11,450 SMEV @0.0131 (Filled)"): the title instead."""
         text = self.trade_body(ev, e, tail, market)
         if not text:
             return ""
