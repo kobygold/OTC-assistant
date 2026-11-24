@@ -23,6 +23,7 @@ from otc_recorder import market_date, read_day, session
 
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"
 EPS = 1e-9
+CHECK = "✓"                     # a day with enough volume (Cascadia Mono has it, as wide as a digit)
 ENOUGH_X = 2                    # a day had enough volume: this many times the shares
 CANDLES_AGAIN_S = 60            # a ticker's 1-minute candles read from Schwab again after this long
 _candles = {}                   # ticker -> (time read, Schwab's candles)
@@ -146,12 +147,17 @@ def candle_table_html(vols, entry, exit_, shares=0):
     from otc_trade import fmt_price
     head = ("Day", f"BUY ≤ {fmt_price(entry)}", f"SELL ≥ {fmt_price(exit_)}")
     days = list(reversed(vols["rows"]))
-    rows = [(f"{int(r[0][5:7])}/{int(r[0][8:10])}", f"{r[1]:,}", f"{r[2]:,}") for r in days]
     need = ENOUGH_X * (shares or 0)
-    summary = ("Summary", f"{sum(1 for r in days if need and r[1] >= need)}/{len(days)}",
-               f"{sum(1 for r in days if need and r[2] >= need)}/{len(days)}")
-    w = [max(len(x[i]) for x in [head, summary] + rows) for i in range(3)]
-    line = lambda x: f"{x[0]:<{w[0]}} | {x[1]:>{w[1]}} | {x[2]:>{w[2]}}"
-    rule = f"{'-' * w[0]}-|-{'-' * w[1]}-|-{'-' * w[2]}"
-    text = "\n".join([line(head), rule] + [line(x) for x in rows] + [rule, line(summary)])
-    return f"<pre style='font-family: Consolas, \"Courier New\", monospace;'>{html.escape(text)}</pre>"
+    ok = lambda v: bool(need) and v >= need
+    rows = [(f"{int(r[0][5:7])}/{int(r[0][8:10])}", (ok(r[1]), f"{r[1]:,}"), (ok(r[2]), f"{r[2]:,}")) for r in days]
+    summary = ("Summary", (False, f"{sum(1 for r in days if ok(r[1]))}/{len(days)}"),
+               (False, f"{sum(1 for r in days if ok(r[2]))}/{len(days)}"))
+    w0 = max(len(x[0]) for x in [head, summary] + rows)
+    w = [max([len(head[i])] + [len(x[i][1]) + 2 for x in rows + [summary]]) for i in (1, 2)]
+    cell = lambda c, i: (CHECK if c[0] else " ") + c[1].rjust(w[i] - 1)       # (the ✓ at the cell's left)
+    line = lambda x: f"{x[0]:<{w0}} | {cell(x[1], 0)} | {cell(x[2], 1)}"
+    rule = f"{'-' * w0}-|-{'-' * w[0]}-|-{'-' * w[1]}"
+    top = f"{head[0]:<{w0}} | {head[1]:>{w[0]}} | {head[2]:>{w[1]}}"
+    text = html.escape("\n".join([top, rule] + [line(x) for x in rows] + [rule, line(summary)]))
+    text = text.replace(CHECK, f"<span style='color:#1db31d; font-weight:bold;'>{CHECK}</span>")
+    return f"<pre style='font-family: \"Cascadia Mono\", Consolas, monospace;'>{text}</pre>"
