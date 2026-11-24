@@ -138,12 +138,14 @@ def candle_day_lines(vols, entry, exit_):
     return out
 
 
-def candle_tables_html(vols, entry, exit_):
-    """The hover's two tables, newest day first: BUY (≤ entry) volume per day, then SELL (≥ exit)."""
+def candle_table_html(vols, entry, exit_):
+    """The hover: a table in a fixed-width font, newest day first - the day, the BUY (≤ entry) and SELL (≥ exit)
+    volume, aligned."""
+    import html
     from otc_trade import fmt_price
-
-    def table(title, col):
-        cells = "".join(f"<tr><td>{int(r[0][5:7])}/{int(r[0][8:10])}</td><td align='right'>&nbsp;&nbsp;{r[col]:,}</td></tr>"
-                        for r in reversed(vols["rows"]))
-        return f"<b>{title}</b><table cellspacing='0' cellpadding='1'>{cells}</table>"
-    return (table(f"BUY ≤ {fmt_price(entry)}", 1) + "<br>" + table(f"SELL ≥ {fmt_price(exit_)}", 2))
+    head = ("Day", f"BUY ≤ {fmt_price(entry)}", f"SELL ≥ {fmt_price(exit_)}")
+    rows = [(f"{int(r[0][5:7])}/{int(r[0][8:10])}", f"{r[1]:,}", f"{r[2]:,}") for r in reversed(vols["rows"])]
+    w = [max(len(x[i]) for x in [head] + rows) for i in range(3)]
+    line = lambda x: f"{x[0]:<{w[0]}}   {x[1]:>{w[1]}}   {x[2]:>{w[2]}}"
+    text = "\n".join([line(head), "-" * (w[0] + w[1] + w[2] + 6)] + [line(x) for x in rows])
+    return f"<pre style='font-family: Consolas, \"Courier New\", monospace;'>{html.escape(text)}</pre>"

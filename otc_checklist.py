@@ -5060,7 +5060,7 @@ class ChecklistPanel(QWidget):
         self.fills_summary = "\n".join(otc_fills.candle_lines(found, key[1], key[2]))
         self.fills_days = otc_fills.candle_day_lines(found, key[1], key[2])
         self.fills_label.setText(self.fills_summary)
-        self.fills_label.setToolTip(otc_fills.candle_tables_html(found, key[1], key[2]))
+        self.fills_label.setToolTip(otc_fills.candle_table_html(found, key[1], key[2]))
         self.fills_label.show()
 
     def refresh(self):
