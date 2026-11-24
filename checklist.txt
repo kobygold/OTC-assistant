@@ -39,6 +39,12 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
         least 3x the loss), else an X
 - יחס רווח/הפסד (בהתעלם מעמלות)
   info(ratio): shown as 1:X, where X = profit % / loss %, without the fees (N/A when the loss is 0)
+- יש מספיק נפח מכירות במחיר הכניסה
+  auto(vol_entry): the days (Schwab's 1-minute candles, the last 10 calendar days) on which the volume traded at the
+        entry or lower was at least 2x our amount of stocks, of the days: a check when at least 2 days were, else an X
+        (as the BUY line under the title)
+- יש מספיק נפח מכירות במחיר היציאה
+  auto(vol_exit): the same at the exit or higher (as the SELL line under the title)
 - עמלת קניה/מכירה
   auto(fee): the buy fee read from Schwab (the order preview of a $150 buy, nothing is placed), commission plus
         fees; the sell is taken to cost the same. An X when it's more than $6.95, in yellow (like the section titles) when more than $7.

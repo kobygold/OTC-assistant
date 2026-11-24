@@ -3778,6 +3778,7 @@ class ChecklistPanel(QWidget):
         root.addWidget(self.fills_label)
         self.fills_key, self.fills_at = None, 0.0
         self.fills_summary, self.fills_days = "", []        # the lines, a line per day (the Mini App's too)
+        self.fills_vols = None          # (the inputs, otc_fills.candle_volumes') shown: the vol_entry / vol_exit rows
         self._fills_done.connect(self.show_fills)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -4918,6 +4919,7 @@ class ChecklistPanel(QWidget):
             "ratio": (INFO, f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA, "1 : profit % / loss % (the fees are left out)"),
         }
 
+        r.update(self.volume_rows())
         r["range"] = range_check(self.rows, self.range)
         r["min_shares"] = min_shares_check(p["shares"], p["entry"])
         if not self.l2_live:
@@ -4939,6 +4941,25 @@ class ChecklistPanel(QWidget):
         else:
             r["no_dilution"] = (OK, "", "")
         return r
+
+    def volume_rows(self):
+        """vol_entry / vol_exit: of the days in the candles (otc_fills), those with enough volume at / past the entry
+        and the exit (the BUY / SELL lines'): "2/3", a check from ENOUGH_DAYS days."""
+        import otc_fills
+        got = self.fills_vols
+        if not got or got[0][0] != self.ticker or not got[1]["days"]:
+            why = "Schwab's 1-minute candles not read (yet)" if not got or got[0][0] != self.ticker else "No candles"
+            return {"vol_entry": (UNKNOWN, NA, why), "vol_exit": (UNKNOWN, NA, why)}
+        (_, entry, exit_, shares), vols = got
+        out = {}
+        for key, col, what in (("vol_entry", 1, f"at {fmt_price(entry)} or lower"),
+                               ("vol_exit", 2, f"at {fmt_price(exit_)} or higher")):
+            n = otc_fills.enough_days(vols, shares, col)
+            out[key] = (OK if n >= otc_fills.ENOUGH_DAYS else BAD, f"{n}/{vols['days']}",
+                        f"The days with at least {otc_fills.ENOUGH_X * shares:,} ({otc_fills.ENOUGH_X}x the {shares:,} "
+                        f"shares) traded {what}, of the {vols['days']} days (Schwab's 1-minute candles): a check from "
+                        f"{otc_fills.ENOUGH_DAYS} days")
+        return out
 
     @staticmethod
     def risk_of(ticker):
@@ -5032,6 +5053,7 @@ class ChecklistPanel(QWidget):
         got = self.fills_inputs()
         if got is None or self.fee_reader is None:
             self.fills_key = None
+            self.fills_vols = None
             self.fills_summary, self.fills_days = "", []
             self.fills_label.hide()
             return
@@ -5054,15 +5076,18 @@ class ChecklistPanel(QWidget):
         import otc_fills
         if key != self.fills_key:
             return              # (older inputs)
+        self.fills_vols = None if isinstance(found, str) else (key, found)
         if isinstance(found, str) or not found["days"]:
             self.fills_summary, self.fills_days = "", []
             self.fills_label.hide()
+            self.refresh()          # (the vol_entry / vol_exit rows)
             return
         self.fills_summary = "\n".join(otc_fills.candle_lines(found, key[1], key[2], key[3]))
         self.fills_days = otc_fills.candle_day_lines(found, key[1], key[2])
         self.fills_label.setText(otc_fills.check_html(self.fills_summary))      # (the ✓ green)
         self.fills_label.setToolTip(otc_fills.candle_table_html(found, key[1], key[2], key[3]))
         self.fills_label.show()
+        self.refresh()              # (the vol_entry / vol_exit rows: their marks; the same inputs: not read again)
 
     def refresh(self):
         # (the step circles: as Schwab's latest orders show it, at once)
