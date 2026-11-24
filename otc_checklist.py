@@ -5078,8 +5078,8 @@ class ChecklistPanel(QWidget):
             + ("\n".join(self.fills_days) or "No recorded days.")
             + "\n\nAn estimate: trades between two updates come merged, shares ahead that left still count."
             + ("\n\nBUY / SELL volume: from Schwab's 1-minute candles (any ticker, recorded or not), the regular "
-               "session: a minute whose whole range is at / past the price counts all its volume, one that crosses "
-               "it a part (the share of its price steps at / past it). No Bid / Ask in a candle: rougher.\n\n"
+               "session: a quarter of a minute's volume for each of its open, high, low and close at / past "
+               "the price (all of it when the whole minute was). No Bid / Ask in a candle: rougher.\n\n"
                + "\n".join(self.fills_candle_days) if self.fills_candles else ""))
         self.fills_label.show()
 

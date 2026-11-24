@@ -1044,7 +1044,7 @@ function setup() {
         `<div class="tip">Each recorded day replayed (US Eastern times): a buy at the entry joins the Bid's queue when the day's record starts, behind the shares already shown at that price; sales on the Bid at or below the entry fill it. A sell at the exit, on its own (a trade can be bought one day and sold another), joins the Ask's queue the same way: buys on the Ask at or above the exit fill it. In brackets: if your order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / Ask: then only trades at exactly its price reach it). An estimate: trades between two updates come merged, shares ahead that left still count.</div>` +
         ((f.candles || []).length ? `<div class="dlgTitle">${(f.candles || []).map(esc).join("<br>")}</div>` +
           (f.candle_days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
-          `<div class="tip">From Schwab's 1-minute candles (any ticker, recorded or not), the regular session: a minute whose whole range is at / past the price counts all its volume, one that crosses it a part (the share of its price steps at / past it). No Bid / Ask in a candle: rougher.</div>` : "") +
+          `<div class="tip">From Schwab's 1-minute candles (any ticker, recorded or not), the regular session: a quarter of a minute's volume for each of its open, high, low and close at / past the price (all of it when the whole minute was). No Bid / Ask in a candle: rougher.</div>` : "") +
         `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`);
       return;
     }

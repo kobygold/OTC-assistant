@@ -18,8 +18,10 @@ moved) are still counted ahead, merged trades are taken as one at the last price
 
 Also from Schwab's 1-minute candles (any ticker, recorded or not: candle_volumes): the volume traded at or below the
 entry and at or above the exit, the regular session of the last days. A candle tells no Bid / Ask and no prices of
-its own trades: a minute whose whole range is at / past the price counts all its volume, one that crosses it a part -
-the share of its price steps (0.0001 under $1) at / past the price.
+its own trades: a quarter of a minute's volume for each of its four prices (open, high, low, close: each a trade) at /
+past the price - all of it when the whole minute was. (Checked against the recorded trades of the favorites, 11/16-11/23:
+the closest of the rules tried; spreading a minute evenly over its range missed FOBIF's 544,739 at 0.0200 in a
+0.0181-0.0200 minute.)
 """
 
 import threading
@@ -190,12 +192,12 @@ def day_lines(rows, entry, exit_, shares):
     return out
 
 
-def _part(low, high, price, below):
-    """The share of a candle's price steps (low..high) at or below `price` (below) / at or above it."""
-    step = 0.0001 if high < 1 else 0.01
-    steps = round((high - low) / step) + 1
-    k = round(((price - low) if below else (high - price)) / step) + 1
-    return max(0, min(steps, k)) / steps
+def _part(candle, price, below):
+    """The share of a candle's volume at or below `price` (below) / at or above it: a quarter for each of its open,
+    high, low and close there."""
+    prices = [candle.get(k) for k in ("open", "high", "low", "close")]
+    prices = [p for p in prices if p is not None]
+    return sum(1 for p in prices if (p <= price + EPS if below else p >= price - EPS)) / len(prices)
 
 
 def candles_of(ticker, settings, token_path):
@@ -227,8 +229,8 @@ def candle_volumes(candles, entry, exit_):
         if not times[day] or not times[day][0] <= ms < times[day][1]:
             continue
         row = per_day.setdefault(day, [0.0, 0.0])
-        row[0] += v * _part(low, high, entry, True)
-        row[1] += v * _part(low, high, exit_, False)
+        row[0] += v * _part(c, entry, True)
+        row[1] += v * _part(c, exit_, False)
     rows = [(d.isoformat(), round(b), round(s)) for d, (b, s) in sorted(per_day.items())]
     return {"days": len(rows), "buy": sum(r[1] for r in rows), "sell": sum(r[2] for r in rows), "rows": rows}
 
