@@ -62,6 +62,33 @@ EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed
 # Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
 TARGETS = {"profit": 25.0, "ratio": 3.0}
 MIN_SHARES, MIN_SHARES_PENNY = 10_000, 5_000     # the least amount of stocks (Pennies: an entry of 0.01 and up)
+# the lines' tooltips (their label and mark): short, in Hebrew, by the item's key
+LABEL_TIPS = {
+    "ticker": "הטיקר שבגרף. ✘ כשהאות החמישית מסוכנת (Q, E, D, W, R)",
+    "size": "גודל הפוזיציה ב-$ (ברירת המחדל מההגדרות)",
+    "shares": f"כמות המניות: גודל הפוזיציה / מחיר הכניסה. ✔ מ-{MIN_SHARES:,} (פני: מ-{MIN_SHARES_PENNY:,})",
+    "entry": "מחיר כניסה: טריפס - הביד; דאבס ומעלה - הביד + 0.0001",
+    "exit": "מחיר יציאה: טריפס - האסק; דאבס ומעלה - האסק - 0.0001",
+    "stop": f"כרית בטחון: מחיר יציאה שמכסה לפחות פי-{COVER_X} מכמות המניות שיש לנו",
+    "profit": f"(יציאה - כניסה) / כניסה. ✔ מ-{TARGETS['profit']:g}%",
+    "loss": f"(כניסה - כרית) / כניסה. ✔ כשהרווח לפחות פי {TARGETS['ratio']:g} ממנו",
+    "ratio": f"רווח % / הפסד %, בלי עמלות. ✔ מ-1:{TARGETS['ratio']:g}",
+    "vol_entry": "ימים עם נפח של פי 2 מכמות המניות במחיר הכניסה ומטה (נרות דקה). ✔ מ-2 ימים",
+    "vol_exit": "ימים עם נפח של פי 2 מכמות המניות במחיר היציאה ומעלה (נרות דקה). ✔ מ-2 ימים",
+    "fee": f"עמלת קנייה לפי Schwab (המכירה - אותו דבר). ✘ מעל ${FEE_USD:.2f}",
+    "profit_gross": "כמות × (יציאה - כניסה)",
+    "loss_gross": "כמות × (כניסה - כרית), במינוס",
+    "profit_usd": "כמות × (יציאה - כניסה), פחות עמלות הקנייה והמכירה",
+    "loss_usd": "כמות × (כניסה - כרית) ועמלות הקנייה והמכירה, במינוס",
+    "range": "טווח הקפיצות הנוכחי התחיל לפני 30 יום לפחות",
+    "no_diluter": "מי ראשון באסק: ✘ מדלל, ? עושה שוק לא ברור, ✔ אף אחד מהם",
+    "buyers": "טריפס: סך הביד ≥ סך האסק. דאבס ומעלה: האסק עד פי 2 מהביד",
+    "cushion": f"בידים מתחת לכניסה של לפחות פי {COVER_X} מכמות המניות",
+    "avg_volume": "ווליום חציוני (30 יום) לפחות פי 2 מכמות המניות",
+    "no_spike": "אין יום עם פי 2 ומעלה מהחציון ב-30 הימים האחרונים (✔ גם אם סימנת שבדקת חדשות)",
+    "steady": f"עד 10 ימים בלי מסחר ב-30 הימים האחרונים, ולא {DEAD_RUN} האחרונים ברצף",
+}
+MANUAL_TIP = "לחיצה: ✔ / ✘ / ריק"
 
 
 def min_shares_check(shares, entry):
@@ -5361,5 +5388,9 @@ class ChecklistPanel(QWidget):
                 w.setToolTip(tip)
             total += 1
             passed += state in (OK, SOLVED)
+        for item, mark, text, _value in self.widgets:      # (the labels' tips: short, in Hebrew)
+            tip = MANUAL_TIP if item.kind == "manual" else LABEL_TIPS.get(item.key, "")
+            mark.setToolTip(tip)
+            text.setToolTip(tip)
         self.summary.setText(f"{self.ticker} · {passed}/{total} ✔" if self.ticker else "")
         self.score = (passed, total)        # Buy ATM asks first when not all are ✔
