@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.231"
+APP_VERSION = "2.7.232"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1546,6 +1546,9 @@ class MainWindow(QMainWindow):
         self.fee_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.fee_bar.setStyleSheet("QLabel { background: #e3b23c; color: #111111; font-weight: bold; padding: 3px; }")
         self.fee_bar.hide()
+        # (its text's width isn't a minimum: a long one pushed the checklist off the screen - cut instead, in full
+        # on its tooltip)
+        self.fee_bar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         chart_box = QWidget()
         cbl = QVBoxLayout(chart_box)
         cbl.setContentsMargins(0, 0, 0, 0)
@@ -1665,7 +1668,7 @@ class MainWindow(QMainWindow):
             self.fee_bar.setText(bar["text"])
             self.fee_bar.setStyleSheet(f"QLabel {{ background: {bar['bg']}; color: {bar['fg']}; font-weight: bold; "
                                        f"padding: 3px; }}")
-            self.fee_bar.setToolTip(bar["tip"])
+            self.fee_bar.setToolTip(bar["text"] + ("\n\n" + bar["tip"] if bar["tip"] else ""))
         self.fee_bar.setVisible(bool(bar))
 
     def on_orders_show(self):
