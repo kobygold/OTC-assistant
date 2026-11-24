@@ -4036,9 +4036,6 @@ class ChecklistPanel(QWidget):
             {"size": r"\$?[\d,]{0,9}(\.\d{0,2})?", "shares": r"[\d,]{0,12}"}.get(key, r"\d{0,6}(\.\d{0,6})?")), edit))
         edit.setStyleSheet(f"color: {ORDER_COLOR};")
         edit.setReadOnly(True)
-        edit.setToolTip({"size": "The buy order's position in $ now.", "entry": "The buy order's limit price now.",
-                         "shares": "The buy order's amount of stocks now."}[key]
-                        + " To change the order: type the new values beside it, then Update Buy at the top.")
         edit.hide()
         return edit
 
@@ -5136,8 +5133,7 @@ class ChecklistPanel(QWidget):
             lock.setVisible(bool(order) and not (changeable and key in self.order_edits))
             if order:
                 lock.setText(fixed.get(key, NA))
-                lock.setToolTip("Fixed: the plan sent with Buy ATM" + (
-                    "" if key in ("entry", "size") else ". Beside it: now, from the live prices."))
+                lock.setToolTip("")
         for key in LOCKED + ("shares", "fee"):     # no copy buttons by the live cells once sent
             if isinstance(self.boxes.get(key), CopyBox):
                 self.boxes[key].set_copyable(not order)
@@ -5254,7 +5250,8 @@ class ChecklistPanel(QWidget):
                 # while the order was being sent: that would count as typed when the box is left)
                 if value.text() != typed_text and (not value.hasFocus() or not self.draft.get(item.key)):
                     value.setText(typed_text)
-                value.setToolTip({"size": "New position $ for the buy order: the amount of stocks follows",
+                value.setToolTip("")        # (no tips on the boxes: the line's label has it)
+                text.setToolTip({"size": "New position $ for the buy order: the amount of stocks follows",
                                   "entry": "New limit price for the buy order: the amount of stocks follows (for "
                                            "the same position $). 12 = 0.0012",
                                   "shares": "New amount of stocks for the buy order: the position $ follows"}[item.key]
@@ -5276,8 +5273,7 @@ class ChecklistPanel(QWidget):
                 elif not value.hasFocus():
                     amount = self.override_text("shares")
                     value.setText(f"{int(float(amount)):,}" if amount else "")
-                value.setToolTip(tip if order else f"{tip}. Type an amount (or + / -) to pin it for this ticker: "
-                                                   f"the position $ then follows it.")
+                value.setToolTip("")
                 shares_mark(mark, text)
                 continue
             if isinstance(value, QLineEdit):
@@ -5296,7 +5292,8 @@ class ChecklistPanel(QWidget):
                     value.setPlaceholderText(val)
                 elif order and item.key == "exit":
                     tip += " Sell ATM sells at it. Pinned, it's kept on every computer (and the Telegram Sell as planned)."
-                value.setToolTip(tip)
+                value.setToolTip("")
+                text.setToolTip(tip)
                 value.setReadOnly(locked)
                 tools = self.price_tools.get(item.key)
                 own = self.override_text(item.key)
@@ -5316,7 +5313,8 @@ class ChecklistPanel(QWidget):
                 continue
             if item.kind == "info":
                 value.setText(val)
-                value.setToolTip(tip)
+                value.setToolTip("")
+                text.setToolTip(tip)
                 if item.key == "shares":
                     value.setStyleSheet(f"color: {ORDER_COLOR};" if order else "")
                 if item.key in ("profit", "profit_gross", "loss_gross", "profit_usd", "loss_usd"):
