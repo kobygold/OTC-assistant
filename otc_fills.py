@@ -15,7 +15,15 @@ Each market day's regular session is replayed from its record:
     trade on the Ask at or above the exit takes them, then the order's.
 Each day on its own ("had the order been placed that morning"). An estimate: shares ahead that left (canceled,
 moved) are still counted ahead, merged trades are taken as one at the last price.
+
+Also from Schwab's 1-minute candles (any ticker, recorded or not: candle_volumes): the volume traded at or below the
+entry and at or above the exit, the regular session of the last days. A candle tells no Bid / Ask and no prices of
+its own trades: a minute whose whole range is at / past the price counts all its volume, one that crosses it a part -
+the share of its price steps (0.0001 under $1) at / past the price.
 """
+
+import threading
+import time
 
 from datetime import datetime, timezone
 
@@ -26,6 +34,9 @@ MARKET_LOG = Path(__file__).resolve().parent / "market_log"
 FILL_DAYS = 10          # the market days looked at (today's first), those recorded
 EPS = 1e-9
 LATE_START_MS = 30 * 60_000     # a day's record that started this long after the open: "from HH:MM" (a part only)
+CANDLES_AGAIN_S = 60            # a ticker's 1-minute candles read from Schwab again after this long
+_candles = {}                   # ticker -> (time read, Schwab's candles)
+_candles_lock = threading.Lock()
 
 
 def _level(books, side, price):
@@ -177,3 +188,62 @@ def day_lines(rows, entry, exit_, shares):
         out.append(f"{day}{part}: {buy} | {sell}" + (f" · {r['merged']} of {r['trades']} trades merged"
                                                      if r["merged"] else ""))
     return out
+
+
+def _part(low, high, price, below):
+    """The share of a candle's price steps (low..high) at or below `price` (below) / at or above it."""
+    step = 0.0001 if high < 1 else 0.01
+    steps = round((high - low) / step) + 1
+    k = round(((price - low) if below else (high - price)) / step) + 1
+    return max(0, min(steps, k)) / steps
+
+
+def candles_of(ticker, settings, token_path):
+    """Schwab's 1-minute candles of the ticker (otc_intraday.read_candles), kept CANDLES_AGAIN_S."""
+    from otc_intraday import read_candles
+    with _candles_lock:
+        got = _candles.get(ticker)
+    if got and time.time() - got[0] < CANDLES_AGAIN_S:
+        return got[1]
+    candles = read_candles(settings, token_path, ticker)
+    with _candles_lock:
+        _candles[ticker] = (time.time(), candles)
+    return candles
+
+
+def candle_volumes(candles, entry, exit_):
+    """The regular session's volume at or below the entry ("buy") and at or above the exit ("sell") in 1-minute
+    candles (see the module's notes): {"days", "buy", "sell", "rows": [(day, buy, sell)] oldest first}."""
+    from otc_recorder import market_date, session
+    per_day, times = {}, {}
+    for c in candles:
+        ms, v = c.get("datetime"), float(c.get("volume") or 0)
+        low, high = c.get("low"), c.get("high")
+        if ms is None or not v or low is None or high is None:
+            continue
+        day = market_date(ms)
+        if day not in times:
+            times[day] = session(day)
+        if not times[day] or not times[day][0] <= ms < times[day][1]:
+            continue
+        row = per_day.setdefault(day, [0.0, 0.0])
+        row[0] += v * _part(low, high, entry, True)
+        row[1] += v * _part(low, high, exit_, False)
+    rows = [(d.isoformat(), round(b), round(s)) for d, (b, s) in sorted(per_day.items())]
+    return {"days": len(rows), "buy": sum(r[1] for r in rows), "sell": sum(r[2] for r in rows), "rows": rows}
+
+
+def candle_lines(vols, entry, exit_):
+    """"BUY volume at price<=0.0131: 18,000 (7 days)", "SELL volume at price>=0.0160: 20,000 (7 days)"."""
+    from otc_trade import fmt_price
+    n = vols["days"]
+    days = f" ({n} day{'s' if n != 1 else ''})"
+    return [f"BUY volume at price<={fmt_price(entry)}: {vols['buy']:,}{days}",
+            f"SELL volume at price>={fmt_price(exit_)}: {vols['sell']:,}{days}"]
+
+
+def candle_day_lines(vols, entry, exit_):
+    """A line per day, newest first: "11/23: BUY ≤ 0.0131 18,000 | SELL ≥ 0.0160 20,000"."""
+    from otc_trade import fmt_price
+    return [f"{int(d[5:7])}/{int(d[8:10])}: BUY ≤ {fmt_price(entry)} {b:,} | SELL ≥ {fmt_price(exit_)} {s:,}"
+            for d, b, s in reversed(vols["rows"])]

@@ -24,6 +24,33 @@ def israel_time(millis: float) -> datetime:
         return datetime.fromtimestamp(millis / 1000)
 
 
+def schwab_candles(client, ticker, days=DAYS):
+    """Schwab's 1-minute candles of the last `days` calendar days (extended hours too): [{"datetime" (ms), "open",
+    "high", "low", "close", "volume"}], oldest first."""
+    r = client.get_price_history_every_minute(
+        ticker, start_datetime=datetime.now(timezone.utc) - timedelta(days=days), need_extended_hours_data=True)
+    if r.status_code != 200:
+        raise RuntimeError(f"Schwab price history: HTTP {r.status_code} {r.text[:150]}")
+    return r.json().get("candles", [])
+
+
+_reader = {"client": None, "lock": threading.Lock()}
+
+
+def read_candles(settings, token_path, ticker, days=DAYS):
+    """schwab_candles() on a client of this module's own (one call at a time) - for a thread; raises when there's
+    no Schwab login."""
+    key = settings.get("schwab_app_key", "").strip()
+    secret = settings.get("schwab_app_secret", "").strip()
+    if not (key and secret and token_path and Path(token_path).exists()):
+        raise RuntimeError("log in to Schwab first (the Level II panel)")
+    with _reader["lock"]:
+        if _reader["client"] is None:
+            from otc_server_link import make_client
+            _reader["client"] = make_client(key, secret)     # on the server's token
+        return schwab_candles(_reader["client"], ticker, days)
+
+
 class MinuteLoader(QObject):
     """done(ticker, rows, error) arrives in the GUI thread. rows: (Israel time, open, high, low,
     close, volume, None, market date), oldest first; error is "" when it worked."""
@@ -54,13 +81,8 @@ class MinuteLoader(QObject):
         from otc_server_link import make_client
         if self._client is None:
             self._client = make_client(key, secret)     # on the server's token
-        r = self._client.get_price_history_every_minute(
-            ticker, start_datetime=datetime.now(timezone.utc) - timedelta(days=DAYS),
-            need_extended_hours_data=True)
-        if r.status_code != 200:
-            raise RuntimeError(f"Schwab price history: HTTP {r.status_code} {r.text[:150]}")
         rows = []
-        for c in r.json().get("candles", []):
+        for c in schwab_candles(self._client, ticker):
             ms = c["datetime"]
             rows.append((israel_time(ms), c["open"], c["high"], c["low"], c["close"],
                          float(c.get("volume") or 0), None, eastern_date(ms)))

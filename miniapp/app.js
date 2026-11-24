@@ -664,7 +664,8 @@ function renderChecklist(view) {
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${orderLine(l)}</div>`).join("");
   // the fill chances (the desktop's): a line; a tap, each recorded day
-  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${esc(ck.fills.summary)} ›</button>`;
+  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${esc(ck.fills.summary)} ›` +
+    (ck.fills.candles || []).map(c => `<span class="fillsVol">${esc(c)}</span>`).join("") + `</button>`;
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
     // (the trade's details: the camera beside its title - the desktop's screenshot, sent to the Telegram chat)
@@ -1041,6 +1042,9 @@ function setup() {
       const f = ((((S.views["card/" + S.account + "/" + S.ticker] || {}).checklist) || {}).fills) || null;
       if (f) sheet(`<div class="dlgTitle">${esc(f.summary)}</div>` + (f.days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
         `<div class="tip">Each recorded day replayed (US Eastern times): a buy at the entry joins the Bid's queue when the day's record starts, behind the shares already shown at that price; sales on the Bid at or below the entry fill it. A sell at the exit, on its own (a trade can be bought one day and sold another), joins the Ask's queue the same way: buys on the Ask at or above the exit fill it. In brackets: if your order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / Ask: then only trades at exactly its price reach it). An estimate: trades between two updates come merged, shares ahead that left still count.</div>` +
+        ((f.candles || []).length ? `<div class="dlgTitle">${(f.candles || []).map(esc).join("<br>")}</div>` +
+          (f.candle_days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
+          `<div class="tip">From Schwab's 1-minute candles (any ticker, recorded or not), the regular session: a minute whose whole range is at / past the price counts all its volume, one that crosses it a part (the share of its price steps at / past it). No Bid / Ask in a candle: rougher.</div>` : "") +
         `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`);
       return;
     }
