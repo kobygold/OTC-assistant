@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.234"
+APP_VERSION = "2.7.235"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -4333,6 +4333,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "Search problem", message[:1500])
             if self.atm_search_again:
                 self.run_atm_search(reload=False)
+            elif getattr(self, "auto_check_after_scan", False):
+                self.auto_check_scanned()
 
         self.atm_job = Job(fn)
         self.atm_job.signals.finished.connect(finished)
@@ -4666,7 +4668,21 @@ class MainWindow(QMainWindow):
             return          # (a check running already: it's recorded as well)
         tbl = self.atm_table
         if not any(tbl.item(r, ATM_TICKER_COL) for r in range(tbl.rowCount())):
-            self.atm_status.setText("Auto Check L1/L2 before the close: no tickers shown (scan first).")
+            # none shown (the app restarted since the last scan - the check was skipped so on 11/20-11/24):
+            # the scan first, with the filters kept; its end starts the check (run_atm_search)
+            self.auto_check_after_scan = True
+            self.run_atm_search(reload=True)
+            return
+        self.check_market("atm", auto=True)
+
+    def auto_check_scanned(self):
+        """The scan the automatic check waited for ended: the check now (still before the close)."""
+        self.auto_check_after_scan = False
+        tbl = self.atm_table
+        if self.auto_check_due() is None or self.probe.running or self.atm_check_job is not None:
+            return
+        if not any(tbl.item(r, ATM_TICKER_COL) for r in range(tbl.rowCount())):
+            self.atm_status.setText("Auto Check L1/L2 before the close: the scan found no tickers to check.")
             return
         self.check_market("atm", auto=True)
 
