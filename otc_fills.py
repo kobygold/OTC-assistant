@@ -126,8 +126,11 @@ def candle_lines(vols, entry, exit_, shares=0):
     from otc_trade import fmt_price
     n = vols["days"]
     days = f" ({n} day{'s' if n != 1 else ''})"
-    mark = lambda col: ("" if not shares else f" {CHECK}" if enough_days(vols, shares, col) >= ENOUGH_DAYS
-                        else f" {CROSS}")
+    def mark(col):          # " - 2/3 ✓": the days with enough volume, of the days
+        if not shares:
+            return ""
+        k = enough_days(vols, shares, col)
+        return f" - {k}/{n} {CHECK if k >= ENOUGH_DAYS else CROSS}"
     return [f"BUY volume at price<={fmt_price(entry)}: {vols['buy']:,}{days}{mark(1)}",
             f"SELL volume at price>={fmt_price(exit_)}: {vols['sell']:,}{days}{mark(2)}"]
 
