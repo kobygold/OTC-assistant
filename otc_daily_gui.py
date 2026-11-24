@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.223"
+APP_VERSION = "2.7.224"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5523,8 +5523,15 @@ class MainWindow(QMainWindow):
             self.orders_seen_btn.setEnabled(ev is not None)
         how = "\n\nA click: its ticker on the chart. Right-click: the Monitor tab's Order Log."
         self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} from Schwab (newest first):\n\n"
-                                   + "\n".join(self.order_news) + how if self.order_news else
+                                   + "\n".join(map(self.stamp_last, self.order_news)) + how if self.order_news else
                                    "New orders, fills and cancels from Schwab show here." + how)
+
+    @staticmethod
+    def stamp_last(line):
+        """An Order Log line with its time and date at the end: "2026-11-23 21:46:14  MIXE: ..." ->
+        "MIXE: ... [21:46 11/23]"."""
+        m = re.match(r"(\d{4})-(\d\d)-(\d\d) (\d\d:\d\d):\d\d\s+(.*)", line)
+        return f"{m.group(5)} [{m.group(4)} {int(m.group(2))}/{int(m.group(3))}]" if m else line
 
     # ---- the Monitor tab: its period, its sections folded ----
     def on_monitor_period(self, *_args, save=True):
