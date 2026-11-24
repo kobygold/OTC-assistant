@@ -809,6 +809,7 @@ def checklist_view(panel):
     return {"title": panel.title.text(), "summary": panel.summary.text(),
             "steps": sv.steps if not sv.isHidden() else None,
             "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
+            "fills": {"summary": panel.fills_summary, "days": panel.fills_days} if panel.fills_summary else None,
             "sections": sections, "buttons": buttons}
 
 

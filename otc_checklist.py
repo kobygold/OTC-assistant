@@ -82,6 +82,7 @@ SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "fee", "loss_usd")
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_gross", "loss_gross", "profit_usd", "loss_usd",
           "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
+FILLS_AGAIN_S = 60        # the fill chances worked out again this often (today's record grows)
 ORDER_EDITS = ("size", "entry", "shares")   # an open buy's values that can be changed (the order is replaced)
 CHANGED_COLOR = "#f0a020"   # a changed value in the change-order dialog
 LIVE_INDENT = 6           # px: a live value's text, where the text in the live price boxes starts
@@ -135,6 +136,7 @@ PANEL_STYLE = """
 #checklist QLabel#cl_section { font-weight: bold; color: #e3b23c; padding-top: 3px; }
 #checklist QLabel#cl_value { font-weight: bold; color: #ffffff; }
 #checklist QLabel#cl_summary { color: #a8a8a8; }
+#checklist QLabel#cl_fills { color: #c9a0ff; }
 #checklist QToolButton { color: #c8c8c8; border: none; }
 #checklist QToolButton#cl_copy { border-radius: 3px; padding: 1px; }
 #checklist QToolButton#cl_copy:hover { background: #2c3136; }
@@ -3671,6 +3673,7 @@ class AtmTrades(QObject):
 # ---------------------------------------------------------------- the panel ---
 class ChecklistPanel(QWidget):
     ticks_changed = pyqtSignal()
+    _fills_done = pyqtSignal(object, object)    # (from the reading thread) the fill chances' inputs, (rows, summary)
     fee_changed = pyqtSignal(str)       # a ticker's fee read from Schwab (the chart's yellow bar when high)
 
     def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None, share=None):
@@ -3766,6 +3769,16 @@ class ChecklistPanel(QWidget):
         self.summary = QLabel()
         self.summary.setObjectName("cl_summary")
         root.addWidget(self.summary)
+        # the fill chances (otc_fills): on the recorded days, would the buy at the entry, then the sell at the exit,
+        # have filled - a line, the days on hover
+        self.fills_label = QLabel()
+        self.fills_label.setObjectName("cl_fills")
+        self.fills_label.setWordWrap(True)
+        self.fills_label.hide()
+        root.addWidget(self.fills_label)
+        self.fills_key, self.fills_at = None, 0.0
+        self.fills_summary, self.fills_days = "", []        # (the Mini App's too)
+        self._fills_done.connect(self.show_fills)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -4994,6 +5007,56 @@ class ChecklistPanel(QWidget):
                 "profit_usd": usd(p["profit_usd"]), "loss_usd": usd(p["loss_usd"]),
                 "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
 
+    def fills_inputs(self):
+        """The fill chances' (ticker, entry, exit, shares): an ATM trade's own (its exit now), else the plan shown."""
+        if not self.ticker:
+            return None
+        e = self.order()
+        if e and e.get("entry"):
+            return self.ticker, e["entry"], current_exit(e) or e.get("exit"), int(e.get("shares") or 0)
+        p = (getattr(self, "last_plan", None) or ({}, None))[0] or {}
+        if not p.get("entry") or not p.get("exit") or not p.get("shares"):
+            return None
+        return self.ticker, p["entry"], p["exit"], int(p["shares"])
+
+    def update_fills(self):
+        """The fill chances worked out again (in a thread: the record's files) when the ticker, the entry, the exit or
+        the shares changed, and every FILLS_AGAIN_S (today's record grows)."""
+        import otc_fills
+        got = self.fills_inputs()
+        if got is None:
+            self.fills_key = None
+            self.fills_summary, self.fills_days = "", []
+            self.fills_label.hide()
+            return
+        key = (got[0], round(got[1], 6), round(got[2], 6), got[3])
+        if key == self.fills_key and time.time() - self.fills_at < FILLS_AGAIN_S:
+            return
+        self.fills_key, self.fills_at = key, time.time()
+
+        def work():
+            try:
+                found = otc_fills.estimate(*key)
+            except Exception as ex:      # (never stops the app)
+                found = ([], {"days": 0, "bought": 0, "round_trips": 0, "error": f"{type(ex).__name__}: {ex}"})
+            self._fills_done.emit(key, found)
+        threading.Thread(target=work, name="fills", daemon=True).start()
+
+    def show_fills(self, key, found):
+        import otc_fills
+        if key != self.fills_key:
+            return              # (older inputs)
+        rows, summary = found
+        self.fills_summary = otc_fills.summary_text(summary)
+        self.fills_days = otc_fills.day_lines(rows, key[1], key[2], key[3])
+        self.fills_label.setText(self.fills_summary)
+        self.fills_label.setToolTip(
+            f"Buy {key[3]:,} @ {fmt_price(key[1])}, then sell @ {fmt_price(key[2])} - replayed on each recorded day "
+            "(US Eastern times; the shares already shown at the price: ahead in the queue):\n\n"
+            + ("\n".join(self.fills_days) or "No recorded days.")
+            + "\n\nAn estimate: trades between two updates come merged, shares ahead that left still count.")
+        self.fills_label.show()
+
     def refresh(self):
         # (the step circles: as Schwab's latest orders show it, at once)
         self.steps_view.set_trade(self.atm.live_view(self.order()) if self.ticker else None)
@@ -5002,6 +5065,7 @@ class ChecklistPanel(QWidget):
         results = self.evaluate()
         order = self.order()
         self.update_trade_buttons()
+        self.update_fills()             # (the plan just worked out: its entry, exit and shares)
         fixed = self.locked_texts(order) if order else {}
         changeable = self.can_change_order(order)
         if self.new_plan_btn is not None:
