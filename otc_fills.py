@@ -23,6 +23,7 @@ from otc_recorder import market_date, read_day, session
 
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"
 EPS = 1e-9
+ENOUGH_X = 2                    # a day had enough volume: this many times the shares
 CANDLES_AGAIN_S = 60            # a ticker's 1-minute candles read from Schwab again after this long
 _candles = {}                   # ticker -> (time read, Schwab's candles)
 _candles_lock = threading.Lock()
@@ -138,14 +139,19 @@ def candle_day_lines(vols, entry, exit_):
     return out
 
 
-def candle_table_html(vols, entry, exit_):
+def candle_table_html(vols, entry, exit_, shares=0):
     """The hover: a table in a fixed-width font, newest day first - the day, the BUY (≤ entry) and SELL (≥ exit)
-    volume, aligned."""
+    volume - and a summary: the days with enough volume (ENOUGH_X times the shares) of them all."""
     import html
     from otc_trade import fmt_price
     head = ("Day", f"BUY ≤ {fmt_price(entry)}", f"SELL ≥ {fmt_price(exit_)}")
-    rows = [(f"{int(r[0][5:7])}/{int(r[0][8:10])}", f"{r[1]:,}", f"{r[2]:,}") for r in reversed(vols["rows"])]
-    w = [max(len(x[i]) for x in [head] + rows) for i in range(3)]
-    line = lambda x: f"{x[0]:<{w[0]}}   {x[1]:>{w[1]}}   {x[2]:>{w[2]}}"
-    text = "\n".join([line(head), "-" * (w[0] + w[1] + w[2] + 6)] + [line(x) for x in rows])
+    days = list(reversed(vols["rows"]))
+    rows = [(f"{int(r[0][5:7])}/{int(r[0][8:10])}", f"{r[1]:,}", f"{r[2]:,}") for r in days]
+    need = ENOUGH_X * (shares or 0)
+    summary = ("Summary", f"{sum(1 for r in days if need and r[1] >= need)}/{len(days)}",
+               f"{sum(1 for r in days if need and r[2] >= need)}/{len(days)}")
+    w = [max(len(x[i]) for x in [head, summary] + rows) for i in range(3)]
+    line = lambda x: f"{x[0]:<{w[0]}} | {x[1]:>{w[1]}} | {x[2]:>{w[2]}}"
+    rule = f"{'-' * w[0]}-|-{'-' * w[1]}-|-{'-' * w[2]}"
+    text = "\n".join([line(head), rule] + [line(x) for x in rows] + [rule, line(summary)])
     return f"<pre style='font-family: Consolas, \"Courier New\", monospace;'>{html.escape(text)}</pre>"
