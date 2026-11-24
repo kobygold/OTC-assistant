@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.233"
+APP_VERSION = "2.7.234"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1157,6 +1157,7 @@ class MainWindow(QMainWindow):
         drow.addStretch()
         dl.addLayout(drow)
         self.details_status = QLabel()
+        self.details_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         dl.addWidget(self.details_status)
         tier_hint = QLabel(
             "Massive doesn't provide OTC tiers. Download a securities list that has a "
@@ -1801,6 +1802,7 @@ class MainWindow(QMainWindow):
         exp.clicked.connect(self.export_screener)
         brow.addWidget(exp)
         self.scr_status = QLabel("Double-click a row to open its chart.")
+        self.scr_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         brow.addWidget(self.scr_status, 1)
         root.addLayout(brow)
 
@@ -1938,6 +1940,7 @@ class MainWindow(QMainWindow):
         brow.addWidget(self.zone_progress)
         self.zone_status = QLabel("Scan the database first. The filters then apply instantly. "
                                   "Double-click a row to check it on the chart.")
+        self.zone_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         brow.addWidget(self.zone_status, 1)
         root.addLayout(brow)
 
@@ -3370,6 +3373,7 @@ class MainWindow(QMainWindow):
         self.renew_btn.clicked.connect(self.renew_login)
         row.addWidget(self.renew_btn)
         self.schwab_status = QLabel("")
+        self.schwab_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         self.schwab_status.setStyleSheet("color: #a8a8a8;")
         row.addWidget(self.schwab_status)
         # how many tickers the server streams (and records), of Schwab's 500
@@ -4208,6 +4212,7 @@ class MainWindow(QMainWindow):
         self.af_checks.valueChanged.connect(self.schedule_atm_filter)
         brow.addWidget(self.af_checks)
         self.atm_status = QLabel("Scan the database first. Double-click a row, or press Enter, to check it on the chart.")
+        self.atm_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         brow.addWidget(self.atm_status, 1)
         root.addLayout(brow)
 
@@ -5236,6 +5241,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.fav_check_btn)
         row.addSpacing(16)
         self.fav_status = QLabel()
+        self.fav_status.setWordWrap(True)     # (a long status wraps: never wider than the screen)
         row.addWidget(self.fav_status, 1)
         root.addLayout(row)
 
