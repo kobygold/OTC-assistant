@@ -664,7 +664,7 @@ function renderChecklist(view) {
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${orderLine(l)}</div>`).join("");
   // the volume at / past the entry and the exit (the desktop's): its lines; a tap, each day
-  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${String(ck.fills.summary).split("\n").map(l => esc(l).replace("\u2713", '<span class="okMark">\u2713</span>')).join("<br>")} ›</button>`;
+  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${String(ck.fills.summary).split("\n").map(l => esc(l).replace("\u2713", '<span class="okMark">\u2713</span>').replace("\u2717", '<span class="badMark">\u2717</span>')).join("<br>")} ›</button>`;
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
     // (the trade's details: the camera beside its title - the desktop's screenshot, sent to the Telegram chat)

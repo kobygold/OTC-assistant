@@ -24,6 +24,7 @@ from otc_recorder import market_date, read_day, session
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"
 EPS = 1e-9
 CHECK = "✓"                     # a day with enough volume (Cascadia Mono has it, as wide as a digit)
+CROSS = "✗"                     # a line without enough days (red)
 ENOUGH_X = 2                    # a day had enough volume: this many times the shares
 ENOUGH_DAYS = 2                 # a line's ✓: at least this many days had enough
 CANDLES_AGAIN_S = 60            # a ticker's 1-minute candles read from Schwab again after this long
@@ -125,7 +126,8 @@ def candle_lines(vols, entry, exit_, shares=0):
     from otc_trade import fmt_price
     n = vols["days"]
     days = f" ({n} day{'s' if n != 1 else ''})"
-    mark = lambda col: f" {CHECK}" if enough_days(vols, shares, col) >= ENOUGH_DAYS else ""
+    mark = lambda col: ("" if not shares else f" {CHECK}" if enough_days(vols, shares, col) >= ENOUGH_DAYS
+                        else f" {CROSS}")
     return [f"BUY volume at price<={fmt_price(entry)}: {vols['buy']:,}{days}{mark(1)}",
             f"SELL volume at price>={fmt_price(exit_)}: {vols['sell']:,}{days}{mark(2)}"]
 
@@ -137,10 +139,11 @@ def enough_days(vols, shares, col):
 
 
 def check_html(text):
-    """Plain text -> HTML, its ✓ green."""
+    """Plain text -> HTML, its ✓ green, its ✗ red."""
     import html
     return html.escape(text).replace("\n", "<br>").replace(
-        CHECK, f"<span style='color:#1db31d; font-weight:bold;'>{CHECK}</span>")
+        CHECK, f"<span style='color:#1db31d; font-weight:bold;'>{CHECK}</span>").replace(
+        CROSS, f"<span style='color:#e0404f; font-weight:bold;'>{CROSS}</span>")
 
 
 def candle_day_lines(vols, entry, exit_):
