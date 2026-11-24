@@ -5059,7 +5059,9 @@ class ChecklistPanel(QWidget):
         self.fills_label.setText(self.fills_summary)
         self.fills_label.setToolTip(
             f"Buy {key[3]:,} @ {fmt_price(key[1])} and sell @ {fmt_price(key[2])}, each on its own - replayed on each recorded day "
-            "(US Eastern times; the shares already shown at the price: ahead in the queue):\n\n"
+            "(US Eastern times; the shares already shown at the price: ahead in the queue). In brackets: if your "
+            "order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / "
+            "Ask: then only trades at exactly its price reach it):\n\n"
             + ("\n".join(self.fills_days) or "No recorded days.")
             + "\n\nAn estimate: trades between two updates come merged, shares ahead that left still count.")
         self.fills_label.show()

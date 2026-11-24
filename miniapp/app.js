@@ -1040,7 +1040,7 @@ function setup() {
     if (t.dataset.fills) {
       const f = ((((S.views["card/" + S.account + "/" + S.ticker] || {}).checklist) || {}).fills) || null;
       if (f) sheet(`<div class="dlgTitle">${esc(f.summary)}</div>` + (f.days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
-        `<div class="tip">Each recorded day replayed (US Eastern times): a buy at the entry joins the Bid's queue when the day's record starts, behind the shares already shown at that price; sales on the Bid at or below the entry fill it. A sell at the exit, on its own (a trade can be bought one day and sold another), joins the Ask's queue the same way: buys on the Ask at or above the exit fill it. An estimate: trades between two updates come merged, shares ahead that left still count.</div>` +
+        `<div class="tip">Each recorded day replayed (US Eastern times): a buy at the entry joins the Bid's queue when the day's record starts, behind the shares already shown at that price; sales on the Bid at or below the entry fill it. A sell at the exit, on its own (a trade can be bought one day and sold another), joins the Ask's queue the same way: buys on the Ask at or above the exit fill it. In brackets: if your order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / Ask: then only trades at exactly its price reach it). An estimate: trades between two updates come merged, shares ahead that left still count.</div>` +
         `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`);
       return;
     }

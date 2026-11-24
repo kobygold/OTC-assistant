@@ -35,18 +35,36 @@ def _level(books, side, price):
 
 def replay_day(lines, times, entry, exit_, shares):
     """One market day: its record's lines (oldest first) and its session (open, close) in ms -> a dict, or None
-    when nothing was recorded in the session. See the module's notes."""
+    when nothing was recorded in the session. See the module's notes. Each side twice: as if the order is shown
+    (it becomes the best Bid / Ask when its price is better, and is taken first), and "_c" (cautious: not shown -
+    a market maker may hold a customer's order without showing it, as FOBIF's sell at 0.0199 under the shown 0.0200:
+    a trade reaches it only at exactly its price, or when its price wasn't better than the shown Bid / Ask then)."""
     if not times:
         return None
     lines = [ln for ln in lines if times[0] <= ln.get("t", 0) < times[1]]
     if not lines:
         return None
     out = {"start": lines[0]["t"], "end": lines[-1]["t"], "open": times[0], "close": times[1], "trades": 0,
-           "merged": 0, "volume": 0, "bid_vol": 0, "ask_vol": 0,                 # on the Bid <= entry, on the Ask >= exit
-           "buy_ahead": None, "bought": 0, "buy_time": None,
-           "sell_ahead": None, "sold": 0, "sell_time": None}
+           "merged": 0, "volume": 0, "buy_ahead": None, "sell_ahead": None}
+    for c in ("", "_c"):
+        out.update({"bid_vol" + c: 0, "ask_vol" + c: 0, "bought" + c: 0, "buy_time" + c: None,
+                    "sold" + c: 0, "sell_time" + c: None})
+    left = {}               # (side, mode) -> the shares still ahead of the order
     bid = ask = last = vol = None
     books = {}
+
+    def take(side, mode, size, t):
+        """A trade that reaches the order (side "b" buy / "a" sell): the shares ahead first, then the order's."""
+        done, when = ("bought", "buy_time") if side == "b" else ("sold", "sell_time")
+        if out[done + mode] >= shares:
+            return
+        ahead = left.setdefault((side, mode), out["buy_ahead" if side == "b" else "sell_ahead"] or 0)
+        used = min(ahead, size)
+        left[(side, mode)] = ahead - used
+        out[done + mode] = min(shares, out[done + mode] + size - used)
+        if out[done + mode] >= shares:
+            out[when + mode] = t
+
     for ln in lines:
         k, d, t = ln.get("k"), ln.get("d") or {}, ln["t"]
         if k == "L2":
@@ -56,9 +74,9 @@ def replay_day(lines, times, entry, exit_, shares):
                 for price, sizes in d.get(side) or []:
                     levels[side][round(price, 6)] = levels[side].get(round(price, 6), 0) + sum(s for _, s in sizes)
             books[d.get("s", "N")] = levels
-            if out["buy_ahead"] is None and not out["bought"]:
-                out["buy_ahead"] = _level(books, "b", entry)        # (the orders join the queues: who's there)
-            if out["sell_ahead"] is None and not out["sold"]:
+            if out["buy_ahead"] is None:            # (the orders join the queues when the day starts: who's there)
+                out["buy_ahead"] = _level(books, "b", entry)
+            if out["sell_ahead"] is None:
                 out["sell_ahead"] = _level(books, "a", exit_)
             continue
         if k not in ("L1", "Q"):
@@ -71,34 +89,28 @@ def replay_day(lines, times, entry, exit_, shares):
             out["volume"] += size
             if d.get("LAST_SIZE") and size > d["LAST_SIZE"]:
                 out["merged"] += 1
+            for key, price in (("buy_ahead", entry), ("sell_ahead", exit_)):
+                if out[key] is None:
+                    out[key] = _level(books, "b" if key == "buy_ahead" else "a", price)
             side = "ASK" if ask and last >= ask - EPS else "BID" if bid and last <= bid + EPS else "MID"
+            at_entry, at_exit = abs(last - entry) < EPS, abs(last - exit_) < EPS
             if side == "BID" and last <= entry + EPS:
                 out["bid_vol"] += size
-                if out["bought"] < shares:
-                    if out["buy_ahead"] is None:
-                        out["buy_ahead"] = _level(books, "b", entry)
-                    ahead = out.setdefault("_ahead_b", out["buy_ahead"])
-                    used = min(ahead, size)
-                    out["_ahead_b"] = ahead - used
-                    out["bought"] = min(shares, out["bought"] + size - used)
-                    if out["bought"] >= shares:
-                        out["buy_time"] = t
+                take("b", "", size, t)
+            # (not shown: at exactly the entry, or the entry wasn't above the shown Bid - in its queue)
+            if at_entry or (side == "BID" and last <= entry + EPS and bid is not None and entry <= bid + EPS):
+                out["bid_vol_c"] += size
+                take("b", "_c", size, t)
             if side == "ASK" and last >= exit_ - EPS:
                 out["ask_vol"] += size
-                if out["sold"] < shares:
-                    if out["sell_ahead"] is None:
-                        out["sell_ahead"] = _level(books, "a", exit_)
-                    ahead = out.setdefault("_ahead_a", out["sell_ahead"])
-                    used = min(ahead, size)
-                    out["_ahead_a"] = ahead - used
-                    out["sold"] = min(shares, out["sold"] + size - used)
-                    if out["sold"] >= shares:
-                        out["sell_time"] = t
+                take("a", "", size, t)
+            # (not shown: at exactly the exit, or the exit wasn't under the shown Ask - in its queue)
+            if at_exit or (side == "ASK" and last >= exit_ - EPS and ask is not None and exit_ >= ask - EPS):
+                out["ask_vol_c"] += size
+                take("a", "_c", size, t)
         if v is not None:
             vol = v        # (the last one: a day's first can be the day before's total; a "Q": the count from there)
         bid, ask = d.get("BID_PRICE", bid), d.get("ASK_PRICE", ask)
-    out.pop("_ahead_b", None)
-    out.pop("_ahead_a", None)
     for k in ("buy_ahead", "sell_ahead"):
         if out[k] is None:
             out[k] = 0
@@ -111,15 +123,20 @@ def estimate(ticker, entry, exit_, shares, folder=MARKET_LOG, days=FILL_DAYS, mi
     the sell would have (each on its own), and the shares traded on the Bid at or below the entry / on the Ask at or
     above the exit, on them all."""
     if not ticker or not entry or not exit_ or not shares or shares <= 0:
-        return [], {"days": 0, "bought": 0, "sold": 0, "bid_vol": 0, "ask_vol": 0}
+        return [], {"days": 0, "bought": 0, "sold": 0, "bid_vol": 0, "ask_vol": 0,
+                    "bought_c": 0, "sold_c": 0, "bid_vol_c": 0, "ask_vol_c": 0}
     rows = []
     for day in market_days_back(days, millis):
         r = replay_day(read_day(folder, day.isoformat(), ticker), session(day), entry, exit_, int(shares))
         if r is not None:
             rows.append(dict(r, day=day.isoformat()))
-    return rows, {"days": len(rows), "bought": sum(1 for r in rows if r["buy_time"]),
-                  "sold": sum(1 for r in rows if r["sell_time"]),
-                  "bid_vol": sum(r["bid_vol"] for r in rows), "ask_vol": sum(r["ask_vol"] for r in rows)}
+    out = {"days": len(rows)}
+    for c in ("", "_c"):
+        out.update({"bought" + c: sum(1 for r in rows if r["buy_time" + c]),
+                    "sold" + c: sum(1 for r in rows if r["sell_time" + c]),
+                    "bid_vol" + c: sum(r["bid_vol" + c] for r in rows),
+                    "ask_vol" + c: sum(r["ask_vol" + c] for r in rows)})
+    return rows, out
 
 
 def et_time(millis):
@@ -130,27 +147,33 @@ def et_time(millis):
 
 
 def summary_text(summary):
-    """"Fill chances (3 recorded days): the buy would have filled on 2, the sell on 1 · Bid ≤ entry 150,142 ·
-    Ask ≥ exit 89,350"."""
+    """"Fill chances (5 recorded days) · buy: 2 days (1 if not shown) · sell: 2 (1) · Bid ≤ entry 150,142 (27,142) ·
+    Ask ≥ exit 89,350 (5,000)" - in brackets: if the order isn't shown (cautious)."""
     n = summary["days"]
     if not n:
         return "Fill chances: no recorded days of this ticker yet."
-    return (f"Fill chances ({n} recorded day{'s' if n != 1 else ''}): the buy would have filled on {summary['bought']}"
-            f", the sell on {summary['sold']} · Bid ≤ entry {summary['bid_vol']:,} · Ask ≥ exit {summary['ask_vol']:,}")
+    return (f"Fill chances ({n} recorded day{'s' if n != 1 else ''}) · buy: {summary['bought']} "
+            f"({summary['bought_c']} if not shown) · sell: {summary['sold']} ({summary['sold_c']}) · Bid ≤ entry "
+            f"{summary['bid_vol']:,} ({summary['bid_vol_c']:,}) · Ask ≥ exit {summary['ask_vol']:,} "
+            f"({summary['ask_vol_c']:,})")
 
 
 def day_lines(rows, entry, exit_, shares):
-    """A line per recorded day: "11/23: BUY ✔ 10:42 · 41,308 sold ≤ 0.0131 (10,000 ahead) | SELL ✔ 14:05 · ..."."""
+    """A line per recorded day: "11/23: BUY ✔ 12:34 (not shown ✘ 0) · 123,000 sold ≤ 0.0131 (63,000), 0 ahead |
+    SELL ..." - in brackets: if the order isn't shown."""
     from otc_trade import fmt_price
+
+    def mark(r, side, c=""):
+        done, when = ("bought", "buy_time") if side == "b" else ("sold", "sell_time")
+        return f"✔ {et_time(r[when + c])}" if r[when + c] else f"✘ {r[done + c]:,}"
     out = []
     for r in rows:
         day = f"{int(r['day'][5:7])}/{int(r['day'][8:10])}"
         part = f" (from {et_time(r['start'])})" if r["start"] - r["open"] > LATE_START_MS else ""
-        buy = (f"BUY ✔ {et_time(r['buy_time'])}" if r["buy_time"] else
-               f"BUY ✘ {r['bought']:,} of {shares:,}") + (f" · {r['bid_vol']:,} sold ≤ {fmt_price(entry)}"
-                                                         f" ({r['buy_ahead']:,} ahead)")
-        sell = (f"SELL ✔ {et_time(r['sell_time'])}" if r["sell_time"] else f"SELL ✘ {r['sold']:,} of {shares:,}") + (
-            f" · {r['ask_vol']:,} bought ≥ {fmt_price(exit_)} ({r['sell_ahead']:,} ahead)")
+        buy = (f"BUY {mark(r, 'b')} (not shown {mark(r, 'b', '_c')}) · {r['bid_vol']:,} sold ≤ {fmt_price(entry)} "
+               f"({r['bid_vol_c']:,}), {r['buy_ahead']:,} ahead")
+        sell = (f"SELL {mark(r, 'a')} (not shown {mark(r, 'a', '_c')}) · {r['ask_vol']:,} bought ≥ "
+                f"{fmt_price(exit_)} ({r['ask_vol_c']:,}), {r['sell_ahead']:,} ahead")
         out.append(f"{day}{part}: {buy} | {sell}" + (f" · {r['merged']} of {r['trades']} trades merged"
                                                      if r["merged"] else ""))
     return out
