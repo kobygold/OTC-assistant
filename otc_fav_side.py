@@ -369,32 +369,14 @@ class FavSidePanel(QWidget):
         return -1
 
     def fill(self, i):
-        """Row i's change, checks and tooltip, from its data and the live quote."""
+        """Row i's checks, from its data (no tooltip on the rows)."""
         t = self.table
         ticker = t.item(i, 0).data(Qt.ItemDataRole.UserRole)
         r = self.rows.get(ticker, {})
-        price, change, live = r.get("close"), r.get("change"), False
-        q = self.live.get(ticker)
-        if q and q.get("LAST_PRICE") and q.get("CLOSE_PRICE"):
-            price, change, live = q["LAST_PRICE"], q["LAST_PRICE"] / q["CLOSE_PRICE"] - 1, True
         ck = t.item(i, CHECKS_COL)
         checks, total = r.get("checks"), r.get("total")
         ck.setText("" if checks is False else "N/A" if checks is None else f"{checks}")
         ck.setForeground(QColor(checklist.MARKS[checklist.OK][1] if checks and checks == total else "#c8c8c8"))
-        lines = [f"{ticker}" + (f" · {r['name']}" if r.get("name") else ""),
-                 f"Favorites {r.get('group')} ({r.get('group_name', '')})"]
-        if price:
-            lines.append(f"{'Live' if live else 'Last close'}: {price:g}"
-                         + (f" ({change * 100:+.1f}%)" if change is not None else ""))
-        if checks is not False:
-            lines.append("Check L1/L2: " + ("N/A" if checks is None else f"{checks}/{total} passed"))
-        lines.append(r.get("atm_tip") or "No ATM trade")
-        if r.get("notes"):
-            lines.append(f"Notes: {r['notes']}")
-        lines.append("Click (or Up / Down): open its chart · The star (or a right-click): its color, or out of the favorites")
-        tip = "\n".join(lines)
-        for c in range(len(COLUMNS)):
-            t.item(i, c).setToolTip(tip)
 
     def set_checks(self, ticker, checks, total):
         """A favorite's Check L1/L2 result now (None: N/A)."""
