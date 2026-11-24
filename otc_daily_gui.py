@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.235"
+APP_VERSION = "2.7.236"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5655,8 +5655,14 @@ class MainWindow(QMainWindow):
         extra = bar.sizeHint().height() if bar.maximum() > 0 else 0
         margins = log.contentsMargins().top() + log.contentsMargins().bottom()
         doc = 2 * int(log.document().documentMargin())
-        log.setFixedHeight(max(len(lines), 2) * log.fontMetrics().lineSpacing() + margins + doc + 2 * log.frameWidth()
-                           + extra + 4)
+        # each line's own height (a 🔔 alert's emoji line is taller than the font's): all of them shown, no scrolling
+        # of its own (the wheel scrolls the page)
+        tall, block = 0.0, log.document().firstBlock()
+        while block.isValid():
+            tall += log.blockBoundingRect(block).height()
+            block = block.next()
+        tall = max(tall, 2 * log.fontMetrics().lineSpacing())
+        log.setFixedHeight(int(tall + 0.999) + margins + doc + 2 * log.frameWidth() + extra + 4)
         log.verticalScrollBar().setValue(0)
 
     def toggle_monitor_box(self, box):
