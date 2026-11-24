@@ -663,9 +663,8 @@ function renderChecklist(view) {
     `<b class="ckTicker" dir="ltr">${esc(view.ticker || "")}</b>${riskBadge(view.risk, 20)}</span>` +
     `${ck.steps ? `<span class="ckSteps" dir="ltr">${stepsSvg(ck.steps, 8, 24)}</span>` : ""}</div>`;
   out += (ck.order_lines || []).map(l => `<div class="orderLine" dir="ltr">${orderLine(l)}</div>`).join("");
-  // the fill chances (the desktop's): a line; a tap, each recorded day
-  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${esc(ck.fills.summary)} ›` +
-    (ck.fills.candles || []).map(c => `<span class="fillsVol">${esc(c)}</span>`).join("") + `</button>`;
+  // the volume at / past the entry and the exit (the desktop's): its lines; a tap, each day
+  if (ck.fills) out += `<button class="fillsLine" dir="ltr" data-fills="1">${String(ck.fills.summary).split("\n").map(esc).join("<br>")} ›</button>`;
   const mark = (r) => `<span class="mark${(r.mark || "").length > 1 ? " small" : ""}" style="color:${esc(r.mark_color)}">${MARK_SVG[r.mark] || esc(r.mark)}</span>`;
   ck.sections.forEach((sec, i) => {
     // (the trade's details: the camera beside its title - the desktop's screenshot, sent to the Telegram chat)
@@ -1040,11 +1039,8 @@ function setup() {
     if (t.dataset.scan) { if (!t.disabled) startAct({ kind: "scan", do: t.dataset.scan }); return; }
     if (t.dataset.fills) {
       const f = ((((S.views["card/" + S.account + "/" + S.ticker] || {}).checklist) || {}).fills) || null;
-      if (f) sheet(`<div class="dlgTitle">${esc(f.summary)}</div>` + (f.days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
-        `<div class="tip">Each recorded day replayed (US Eastern times): a buy at the entry joins the Bid's queue when the day's record starts, behind the shares already shown at that price; sales on the Bid at or below the entry fill it. A sell at the exit, on its own (a trade can be bought one day and sold another), joins the Ask's queue the same way: buys on the Ask at or above the exit fill it. In brackets: if your order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / Ask: then only trades at exactly its price reach it). An estimate: trades between two updates come merged, shares ahead that left still count.</div>` +
-        ((f.candles || []).length ? `<div class="dlgTitle">${(f.candles || []).map(esc).join("<br>")}</div>` +
-          (f.candle_days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
-          `<div class="tip">From Schwab's 1-minute candles (any ticker, recorded or not), the regular session: a quarter of a minute's volume for each of its open, high, low and close at / past the price (all of it when the whole minute was). No Bid / Ask in a candle: rougher.</div>` : "") +
+      if (f) sheet(`<div class="dlgTitle">${String(f.summary).split("\n").map(esc).join("<br>")}</div>` + (f.days || []).map(d => `<div class="fillsDay" dir="ltr">${esc(d)}</div>`).join("") +
+        `<div class="tip">From Schwab's 1-minute candles (any ticker), the regular session of the last days (US Eastern): a minute wholly at / past the price counts all its volume. A minute across the price (traded at more than one price): split as our record's trades of that minute were, when we recorded it; else a quarter for each of its open, high, low and close at / past the price. The volume traded there - not only the trades that would have filled your order (no Bid / Ask in a candle).</div>` +
         `<div class="dlgBtns"><button class="dlgCancel" data-dlg="close">Close</button></div>`);
       return;
     }

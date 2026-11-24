@@ -3769,16 +3769,14 @@ class ChecklistPanel(QWidget):
         self.summary = QLabel()
         self.summary.setObjectName("cl_summary")
         root.addWidget(self.summary)
-        # the fill chances (otc_fills): on the recorded days, would the buy at the entry, then the sell at the exit,
-        # have filled - a line, the days on hover
+        # the volume traded at / past the entry and the exit in the last days (otc_fills) - the days on hover
         self.fills_label = QLabel()
         self.fills_label.setObjectName("cl_fills")
         self.fills_label.setWordWrap(True)
         self.fills_label.hide()
         root.addWidget(self.fills_label)
         self.fills_key, self.fills_at = None, 0.0
-        self.fills_summary, self.fills_days = "", []        # (the Mini App's too)
-        self.fills_candles, self.fills_candle_days = [], []  # the 1-minute candles' volume lines, a line per day
+        self.fills_summary, self.fills_days = "", []        # the lines, a line per day (the Mini App's too)
         self._fills_done.connect(self.show_fills)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -5027,60 +5025,42 @@ class ChecklistPanel(QWidget):
         return None
 
     def update_fills(self):
-        """The fill chances worked out again (in a thread: the record's files) when the ticker, the entry, the exit or
-        the shares changed, and every FILLS_AGAIN_S (today's record grows)."""
+        """The volume at / past the entry and the exit (otc_fills: Schwab's 1-minute candles, our record where there
+        is one) worked out again in a thread when the ticker, the entry or the exit changed, and every FILLS_AGAIN_S."""
         import otc_fills
         got = self.fills_inputs()
-        if got is None:
+        if got is None or self.fee_reader is None:
             self.fills_key = None
             self.fills_summary, self.fills_days = "", []
-            self.fills_candles, self.fills_candle_days = [], []
             self.fills_label.hide()
             return
-        key = (got[0], round(got[1], 6), round(got[2], 6), got[3])
+        key = (got[0], round(got[1], 6), round(got[2], 6))
         if key == self.fills_key and time.time() - self.fills_at < FILLS_AGAIN_S:
             return
         self.fills_key, self.fills_at = key, time.time()
-
         reader = self.fee_reader
 
         def work():
             try:
-                found = otc_fills.estimate(*key)
-            except Exception as ex:      # (never stops the app)
-                found = ([], {"days": 0, "bought": 0, "sold": 0, "bid_vol": 0, "ask_vol": 0, "error": f"{type(ex).__name__}: {ex}"})
-            vols = None
-            try:            # (Schwab's 1-minute candles: any ticker, recorded or not)
-                if reader is not None:
-                    vols = otc_fills.candle_volumes(otc_fills.candles_of(key[0], reader.settings, reader.token_path),
-                                                    key[1], key[2])
-            except Exception:
-                vols = None         # (no Schwab login, or it failed: the lines left out)
-            self._fills_done.emit(key, (found, vols))
+                found = otc_fills.candle_volumes(otc_fills.candles_of(key[0], reader.settings, reader.token_path),
+                                                 key[1], key[2], key[0])
+            except Exception as ex:      # (no Schwab login, or it failed: never stops the app)
+                found = f"{type(ex).__name__}: {ex}"
+            self._fills_done.emit(key, found)
         threading.Thread(target=work, name="fills", daemon=True).start()
 
     def show_fills(self, key, found):
         import otc_fills
         if key != self.fills_key:
             return              # (older inputs)
-        (rows, summary), vols = found
-        self.fills_summary = (f"{key[3]:,} @ {fmt_price(key[1])} → {fmt_price(key[2])}: "
-                              + otc_fills.summary_text(summary))
-        self.fills_days = otc_fills.day_lines(rows, key[1], key[2], key[3])
-        self.fills_candles = otc_fills.candle_lines(vols, key[1], key[2]) if vols and vols["days"] else []
-        self.fills_candle_days = otc_fills.candle_day_lines(vols, key[1], key[2]) if self.fills_candles else []
-        self.fills_label.setText("\n".join([self.fills_summary] + self.fills_candles))
-        self.fills_label.setToolTip(
-            f"Buy {key[3]:,} @ {fmt_price(key[1])} and sell @ {fmt_price(key[2])}, each on its own - replayed on each recorded day "
-            "(US Eastern times; the shares already shown at the price: ahead in the queue). In brackets: if your "
-            "order isn't shown (a market maker may hold it unshown when its price is better than the shown Bid / "
-            "Ask: then only trades at exactly its price reach it):\n\n"
-            + ("\n".join(self.fills_days) or "No recorded days.")
-            + "\n\nAn estimate: trades between two updates come merged, shares ahead that left still count."
-            + ("\n\nBUY / SELL volume: from Schwab's 1-minute candles (any ticker, recorded or not), the regular "
-               "session: a quarter of a minute's volume for each of its open, high, low and close at / past "
-               "the price (all of it when the whole minute was). No Bid / Ask in a candle: rougher.\n\n"
-               + "\n".join(self.fills_candle_days) if self.fills_candles else ""))
+        if isinstance(found, str) or not found["days"]:
+            self.fills_summary, self.fills_days = "", []
+            self.fills_label.hide()
+            return
+        self.fills_summary = "\n".join(otc_fills.candle_lines(found, key[1], key[2]))
+        self.fills_days = otc_fills.candle_day_lines(found, key[1], key[2])
+        self.fills_label.setText(self.fills_summary)
+        self.fills_label.setToolTip(otc_fills.EXPLAIN + " US Eastern days:\n\n" + "\n".join(self.fills_days))
         self.fills_label.show()
 
     def refresh(self):
