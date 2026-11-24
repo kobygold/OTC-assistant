@@ -78,7 +78,7 @@ def min_shares_check(shares, entry):
 # the buy; the gains and losses worked out from them)
 # the thin lines between the panel's groups of rows: above the ticker, and after these (the Mini App draws them too)
 SPLIT_BEFORE = ("ticker",)
-SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "fee", "loss_usd")
+SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "vol_exit", "fee", "loss_usd")
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_gross", "loss_gross", "profit_usd", "loss_usd",
           "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
