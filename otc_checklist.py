@@ -3773,6 +3773,7 @@ class ChecklistPanel(QWidget):
         self.fills_label = QLabel()
         self.fills_label.setObjectName("cl_fills")
         self.fills_label.setWordWrap(True)
+        self.fills_label.setTextFormat(Qt.TextFormat.RichText)     # (its ✓ green)
         self.fills_label.hide()
         root.addWidget(self.fills_label)
         self.fills_key, self.fills_at = None, 0.0
@@ -5057,9 +5058,9 @@ class ChecklistPanel(QWidget):
             self.fills_summary, self.fills_days = "", []
             self.fills_label.hide()
             return
-        self.fills_summary = "\n".join(otc_fills.candle_lines(found, key[1], key[2]))
+        self.fills_summary = "\n".join(otc_fills.candle_lines(found, key[1], key[2], key[3]))
         self.fills_days = otc_fills.candle_day_lines(found, key[1], key[2])
-        self.fills_label.setText(self.fills_summary)
+        self.fills_label.setText(otc_fills.check_html(self.fills_summary))      # (the ✓ green)
         self.fills_label.setToolTip(otc_fills.candle_table_html(found, key[1], key[2], key[3]))
         self.fills_label.show()
 

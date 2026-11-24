@@ -25,6 +25,7 @@ MARKET_LOG = Path(__file__).resolve().parent / "market_log"
 EPS = 1e-9
 CHECK = "✓"                     # a day with enough volume (Cascadia Mono has it, as wide as a digit)
 ENOUGH_X = 2                    # a day had enough volume: this many times the shares
+ENOUGH_DAYS = 2                 # a line's ✓: at least this many days had enough
 CANDLES_AGAIN_S = 60            # a ticker's 1-minute candles read from Schwab again after this long
 _candles = {}                   # ticker -> (time read, Schwab's candles)
 _candles_lock = threading.Lock()
@@ -118,13 +119,24 @@ def candle_volumes(candles, entry, exit_, ticker=None, folder=MARKET_LOG):
     return {"days": len(rows), "buy": sum(r[1] for r in rows), "sell": sum(r[2] for r in rows), "rows": rows}
 
 
-def candle_lines(vols, entry, exit_):
-    """"BUY volume at price<=0.0131: 18,000 (7 days)", "SELL volume at price>=0.0160: 20,000 (7 days)"."""
+def candle_lines(vols, entry, exit_, shares=0):
+    """"BUY volume at price<=0.0131: 18,000 (7 days) ✓", "SELL volume at price>=0.0160: 20,000 (7 days)" - the ✓
+    when at least ENOUGH_DAYS days had enough of it (ENOUGH_X times the shares)."""
     from otc_trade import fmt_price
     n = vols["days"]
     days = f" ({n} day{'s' if n != 1 else ''})"
-    return [f"BUY volume at price<={fmt_price(entry)}: {vols['buy']:,}{days}",
-            f"SELL volume at price>={fmt_price(exit_)}: {vols['sell']:,}{days}"]
+    need = ENOUGH_X * (shares or 0)
+    mark = lambda col: (f" {CHECK}" if need and sum(1 for r in vols["rows"] if r[col] >= need) >= ENOUGH_DAYS
+                        else "")
+    return [f"BUY volume at price<={fmt_price(entry)}: {vols['buy']:,}{days}{mark(1)}",
+            f"SELL volume at price>={fmt_price(exit_)}: {vols['sell']:,}{days}{mark(2)}"]
+
+
+def check_html(text):
+    """Plain text -> HTML, its ✓ green."""
+    import html
+    return html.escape(text).replace("\n", "<br>").replace(
+        CHECK, f"<span style='color:#1db31d; font-weight:bold;'>{CHECK}</span>")
 
 
 def candle_day_lines(vols, entry, exit_):
