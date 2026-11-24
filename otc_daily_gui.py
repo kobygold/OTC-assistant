@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.226"
+APP_VERSION = "2.7.227"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5512,7 +5512,7 @@ class MainWindow(QMainWindow):
         line = self.log_order_line(self.order_text(ev), ev.get("account"))
         if ev.get("account") != self.checklist.atm.chosen_account():
             return
-        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired", "placed"):
+        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):     # (a new order: the log only)
             self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
             del self.order_news[ORDER_TIP_LINES:]
             # (a rejection stays on the button a while: not covered by a new order of the same moment - FOBIF's
@@ -5524,7 +5524,7 @@ class MainWindow(QMainWindow):
             self.show_orders_btn(ev)
 
     def show_orders_btn(self, ev):
-        """The chart's Orders button: the latest news in green (a fill), blue (a new order), red (rejected) or amber
+        """The chart's Orders button: the latest news in green (a fill), purple (an alert), red (rejected) or amber
         (ended), else plain."""
         if ev is None:
             style = "QPushButton { padding: 3px 14px; }"
@@ -5532,7 +5532,6 @@ class MainWindow(QMainWindow):
             kind = ev["kind"]
             mark, bg, fg = (("", "#8e44ad", "#ffffff") if kind == "alert" else     # (its text has its 🔔)
                             ("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
-                            ("+ ", "#2f6fe0", "#ffffff") if kind == "placed" else
                             ("⛔ ", "#d32f2f", "#ffffff") if kind == "rejected" else ("✘ ", "#e3b23c", "#111111"))
             text = ev.get("text") or self.order_text(ev)
             self.orders_btn.setText(mark + text.split(" · ")[0] + datetime.now().strftime(" [%H:%M ")
@@ -5651,7 +5650,7 @@ class MainWindow(QMainWindow):
         news = []
         for line in reversed(self.order_log_lines):
             text, _, acct = line.partition(ORDER_LOG_TAG)
-            if (acct and acct != tail) or ": REPLACED " in text:     # (a replace isn't the button's news)
+            if (acct and acct != tail) or ": REPLACED " in text or ": New " in text:    # (not the button's news)
                 continue
             news.append(text)
             if len(news) >= ORDER_TIP_LINES:
