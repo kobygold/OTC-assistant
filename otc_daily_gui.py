@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.230"
+APP_VERSION = "2.7.231"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5522,7 +5522,8 @@ class MainWindow(QMainWindow):
         line = self.log_order_line(self.order_text(ev), ev.get("account"))
         if ev.get("account") != self.checklist.atm.chosen_account():
             return
-        if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):     # (a new order: the log only)
+        # (a new order, or one canceled - the user's own doing: the log only)
+        if ev["kind"] in ("filled", "partial", "rejected", "expired"):
             self.add_order_news(line)
             # (a rejection stays on the button a while: not covered by a new order of the same moment - FOBIF's
             # rejected sell went unseen under the other one placed with it)
@@ -5729,7 +5730,7 @@ class MainWindow(QMainWindow):
         news = []
         for line in reversed(self.order_log_lines):
             text, _, acct = line.partition(ORDER_LOG_TAG)
-            if (acct and acct != tail) or ": REPLACED " in text or ": New " in text:    # (not the button's news)
+            if (acct and acct != tail) or ": REPLACED " in text or ": CANCELED " in text or ": New " in text:    # (not the button's news)
                 continue
             news.append(text)
             if len(news) >= ORDER_TIP_LINES:

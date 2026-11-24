@@ -179,6 +179,11 @@ def fill_lines(old, new):
 FILL_SIDE = {"bought": "BUY", "partial": "BUY", "sold": "SELL", "sell_partial": "SELL"}   # an event's fill line
 
 
+def self_canceled(e):
+    """A buy that ended as canceled (the user's own cancel: no message); rejected / expired still are."""
+    return str(e.get("status") or "CANCELED").upper() == "CANCELED"
+
+
 def trade_events(old, new):
     """The news in a trade's change (old -> new, as the app wrote it): [event], an event a string
     unique to that moment of the trade (so it's sent once)."""
@@ -190,7 +195,7 @@ def trade_events(old, new):
         out.append(f"partial:{new['filled']}")
     if s0 == "buy_open" and s1 in ("bought", "sell_open", "sold"):
         out.append("bought")
-    if s0 == "buy_open" and s1 == "canceled":
+    if s0 == "buy_open" and s1 == "canceled" and not self_canceled(new):
         out.append("canceled")
     if s0 == "sell_open" and s1 == "sell_open" and sold_now(new) > sold_now(old):
         out.append(f"sell_partial:{new.get('sell_id')}:{sold_now(new)}")        # (a part of the sell filled)
@@ -208,7 +213,7 @@ def state_events(e):
     out = []
     if s in ("bought", "sell_open", "sold"):
         out.append(("bought", parse_time(e.get("bought_time"))))
-    if s == "canceled":
+    if s == "canceled" and not self_canceled(e):
         out.append(("canceled", parse_time(e.get("canceled_time"))))
     if s == "sold":
         out.append(("sold", parse_time(e.get("sold_time"))))
