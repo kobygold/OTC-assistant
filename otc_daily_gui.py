@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.232"
+APP_VERSION = "2.7.233"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1395,7 +1395,7 @@ class MainWindow(QMainWindow):
         # the latest order news from Schwab: green on a fill, amber on a cancel; a click: its ticker on the chart.
         # It takes all the room left to the right (its text never widens the window: a long one is cut)
         self.orders_btn = QPushButton("Orders: no news yet")
-        self.orders_btn.setMinimumWidth(200)
+        self.orders_btn.setMinimumWidth(90)    # (narrow: the row fits a small screen with a risk sign / News too)
         self.orders_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.orders_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.orders_btn.clicked.connect(self.open_order_news)      # its ticker on the chart
@@ -1430,6 +1430,7 @@ class MainWindow(QMainWindow):
         self.on_chart_opts_toggled(self.chart_opts_btn.isChecked())
 
         self.chart_info = QLabel("Mouse wheel zooms, drag pans, double-click resets the view.")
+        self.chart_info.setWordWrap(True)       # (a long line wraps: it never widens the window past the screen)
         root.addWidget(self.chart_info)
         self.zone_info = QLabel()
         self.zone_info.setWordWrap(True)
