@@ -136,3 +136,14 @@ def candle_day_lines(vols, entry, exit_):
             line += f" · {rec} of {across} minute{'s' if across != 1 else ''} across the prices from our record"
         out.append(line)
     return out
+
+
+def candle_tables_html(vols, entry, exit_):
+    """The hover's two tables, newest day first: BUY (≤ entry) volume per day, then SELL (≥ exit)."""
+    from otc_trade import fmt_price
+
+    def table(title, col):
+        cells = "".join(f"<tr><td>{int(r[0][5:7])}/{int(r[0][8:10])}</td><td align='right'>&nbsp;&nbsp;{r[col]:,}</td></tr>"
+                        for r in reversed(vols["rows"]))
+        return f"<b>{title}</b><table cellspacing='0' cellpadding='1'>{cells}</table>"
+    return (table(f"BUY ≤ {fmt_price(entry)}", 1) + "<br>" + table(f"SELL ≥ {fmt_price(exit_)}", 2))
