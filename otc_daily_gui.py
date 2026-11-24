@@ -69,13 +69,16 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.228"
+APP_VERSION = "2.7.229"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
 ORDER_LOG_LOAD = 500                    # its last lines shown at the start
 ORDER_LOG_TAG = "\t@"                   # a line's account, after its text (not shown): "...\t@159"
 MONITOR_PERIODS = (("Last day", 1), ("Last 2 days", 2), ("Last week", 7), ("All", 0))     # the Monitor tab's Show
+ORDERS_BLINK_S = 10                     # the Orders button blinks this long with new news (or until seen)
+ORDERS_BLINK_MS = 450                   # ...its color on / off this often
+ORDERS_PLAIN = "QPushButton { padding: 3px 14px; }"      # the Orders button without news (or seen)
 ORDER_TIP_LINES = 10                    # the chart's Orders button's tooltip: the latest news (new, filled, ended)
 SETTINGS_PATH = APP_DIR / "settings.json"
 FAVORITES_PATH = APP_DIR / "favorites.json"
@@ -1403,6 +1406,11 @@ class MainWindow(QMainWindow):
         self.orders_unseen = 0          # the news since the button was last seen (✓ or a click): "+N new" beside it
         self.orders_base = "Orders: no news yet"     # the button's text without that count
         self.orders_pop = None          # a click's list of the latest news
+        self.orders_style = ORDERS_PLAIN    # the button's style now (its news' color, or plain)
+        self.orders_blink_until, self.orders_blink_on = 0.0, False
+        self.orders_blink = QTimer(self)    # new news: its color blinks ORDERS_BLINK_S (until seen)
+        self.orders_blink.setInterval(ORDERS_BLINK_MS)
+        self.orders_blink.timeout.connect(self.blink_orders_btn)
         self.show_orders_btn(None)
         row.addWidget(self.orders_btn, 1)
         # beside it: seen (the color off, without opening anything)
@@ -5530,6 +5538,19 @@ class MainWindow(QMainWindow):
         del self.order_news[ORDER_TIP_LINES:]
         self.orders_unseen += 1
         self.count_orders_btn()
+        self.orders_blink_until = time.time() + ORDERS_BLINK_S      # (blinks: see blink_orders_btn)
+        if not self.orders_blink.isActive():
+            self.orders_blink.start()
+
+    def blink_orders_btn(self):
+        """The Orders button's color on / off while new news is fresh (ORDERS_BLINK_S); then it stays on, until
+        seen (a click, or ✓: plain)."""
+        if time.time() >= self.orders_blink_until or self.orders_style == ORDERS_PLAIN:
+            self.orders_blink.stop()
+            self.orders_btn.setStyleSheet(self.orders_style)
+            return
+        self.orders_blink_on = not self.orders_blink_on
+        self.orders_btn.setStyleSheet(self.orders_style if self.orders_blink_on else ORDERS_PLAIN)
 
     def count_orders_btn(self):
         """The button's text: its news, and "+N new" when more came since it was last seen."""
@@ -5540,7 +5561,8 @@ class MainWindow(QMainWindow):
         """The chart's Orders button: the latest news in green (a fill), purple (an alert), red (rejected) or amber
         (ended), else plain."""
         if ev is None:
-            style = "QPushButton { padding: 3px 14px; }"
+            style = ORDERS_PLAIN
+            self.orders_blink.stop()
         else:
             kind = ev["kind"]
             mark, bg, fg = (("", "#8e44ad", "#ffffff") if kind == "alert" else     # (its text has its 🔔)
@@ -5552,6 +5574,7 @@ class MainWindow(QMainWindow):
             self.count_orders_btn()
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
+        self.orders_style = style
         self.orders_btn.setStyleSheet(style)
         if hasattr(self, "orders_seen_btn"):
             self.orders_seen_btn.setEnabled(ev is not None)
