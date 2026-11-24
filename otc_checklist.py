@@ -5044,7 +5044,7 @@ class ChecklistPanel(QWidget):
             try:
                 found = otc_fills.estimate(*key)
             except Exception as ex:      # (never stops the app)
-                found = ([], {"days": 0, "bought": 0, "round_trips": 0, "error": f"{type(ex).__name__}: {ex}"})
+                found = ([], {"days": 0, "bought": 0, "sold": 0, "bid_vol": 0, "ask_vol": 0, "error": f"{type(ex).__name__}: {ex}"})
             self._fills_done.emit(key, found)
         threading.Thread(target=work, name="fills", daemon=True).start()
 
@@ -5058,7 +5058,7 @@ class ChecklistPanel(QWidget):
         self.fills_days = otc_fills.day_lines(rows, key[1], key[2], key[3])
         self.fills_label.setText(self.fills_summary)
         self.fills_label.setToolTip(
-            f"Buy {key[3]:,} @ {fmt_price(key[1])}, then sell @ {fmt_price(key[2])} - replayed on each recorded day "
+            f"Buy {key[3]:,} @ {fmt_price(key[1])} and sell @ {fmt_price(key[2])}, each on its own - replayed on each recorded day "
             "(US Eastern times; the shares already shown at the price: ahead in the queue):\n\n"
             + ("\n".join(self.fills_days) or "No recorded days.")
             + "\n\nAn estimate: trades between two updates come merged, shares ahead that left still count.")
