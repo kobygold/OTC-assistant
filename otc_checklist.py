@@ -3841,7 +3841,7 @@ class ChecklistPanel(QWidget):
         self.locked = {}        # key -> its fixed cell (the plan sent with Buy ATM), shown once sent
         self.order_edits = {}   # key -> its box while the buy order is open (ORDER_EDITS): changes it
         self.changing_order = False     # the change-order dialog is open
-        self.draft = {}         # new values typed for the open buy: {"id", "entry", "size", "shares", "last"}
+        # (self.draft: the new values typed for the open buy, kept with the ticker's pinned prices - see draft)
         # the default position $ (the app sets it: the chosen account's, in the shared data); a hidden copy: the app's
         if getattr(self, "shared_with", None) is None:
             self.default_usd = lambda: default_position(self.settings)
@@ -4063,6 +4063,31 @@ class ChecklistPanel(QWidget):
         e = self.order()
         return e if self.can_change_order(e) else None
 
+    @property
+    def draft(self):
+        """The new values typed for the ticker's open buy: {"id" (its trade), "entry", "size", "shares", "last"} -
+        kept in its pinned prices (checklist_prices[ticker]["draft"]: saved, and shared as the exit is), so
+        another ticker or a restart doesn't lose them."""
+        mine = (self.settings.get("checklist_prices") or {}).get(getattr(self, "ticker", None) or "") or {}
+        d = mine.get("draft")
+        return d if isinstance(d, dict) else {}
+
+    @draft.setter
+    def draft(self, value):
+        ticker = getattr(self, "ticker", None)
+        if not ticker or (self.draft or {}) == (value or {}):
+            return
+        prices = self.settings.setdefault("checklist_prices", {})
+        if value:
+            prices.setdefault(ticker, {})["draft"] = value
+        else:
+            mine = prices.get(ticker)
+            if mine:
+                mine.pop("draft", None)
+                if not mine:
+                    prices.pop(ticker, None)
+        self.save_settings(self.settings)
+
     def draft_of(self, e):
         if self.draft.get("id") != e["id"]:
             self.draft = {"id": e["id"]}
@@ -4104,13 +4129,14 @@ class ChecklistPanel(QWidget):
         e = self.drafting()
         if e is None:
             return
-        d = self.draft_of(e)
+        d = dict(self.draft_of(e))
         d[key] = text.strip()
         if key in ("size", "shares"):
             other = "shares" if key == "size" else "size"
             if d[key]:
                 d[other] = ""       # one of the two is typed, the other follows it (shown in white)
             d["last"] = key if d[key] else None
+        self.draft = d              # (saved)
         self.refresh()
 
     def draft_done(self, key, edit):
@@ -5133,8 +5159,8 @@ class ChecklistPanel(QWidget):
             for i, w in enumerate(tools):
                 w.setVisible(not order or (changeable and i == 0))     # the pin: only before Buy ATM
         draft = self.draft_values(order) if changeable else None
-        if draft is None:
-            self.draft = {}
+        if draft is None and not (order and order.get("state") == "buy_open"):
+            self.draft = {}         # (no open buy any more; one busy for a moment keeps its new values)
         for key, tools in self.draft_tools.items():
             before = not order and key != "entry"       # the $ and the amount before a trade, too
             for w in tools:
