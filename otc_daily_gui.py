@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.225"
+APP_VERSION = "2.7.226"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5172,9 +5172,20 @@ class MainWindow(QMainWindow):
             return                  # (an old one, read at the start)
         self.sound("alerts")
         now = a.get("triggered_value")
-        self.notify(f"🔔 Alert: {a.get('ticker')} {otc_alerts.describe(a)}" +
-                    (f" (now {fmt_price(now) if a.get('field') != 'volume' else f'{int(now):,}'})" if now is not None else "")
-                    + f", account ...{key[len(otc_alerts.PREFIX):].split('/')[0]}", 30000)
+        account = key[len(otc_alerts.PREFIX):].split('/')[0]
+        what = (f"{a.get('ticker')} {otc_alerts.describe(a)}" +
+                (f" (now {fmt_price(now) if a.get('field') != 'volume' else f'{int(now):,}'})" if now is not None else ""))
+        self.notify(f"🔔 Alert: {what}, account ...{account}", 30000)
+        # the Orders button (purple) and the Order Log, as an order's news (kept after a restart)
+        line = self.log_order_line(f"🔔 ALERT {what}", account)
+        if account == str(self.checklist.atm.chosen_account() or ""):
+            self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
+            del self.order_news[ORDER_TIP_LINES:]
+            if time.time() - getattr(self, "rejected_shown_at", 0) < REJECT_KEEP_S:
+                return          # (a rejection stays on the button a while)
+            self.rejected_shown_at = 0
+            self.order_news_ticker = str(a.get("ticker") or "")
+            self.show_orders_btn({"kind": "alert", "text": f"🔔 ALERT {what}"})
 
     # ================================================== Favorites ===
     def _build_favorites_tab(self):
@@ -5456,16 +5467,23 @@ class MainWindow(QMainWindow):
             if tickers else "No favorites yet. Add a ticker here, or click a star on the Zones or Chart tab.")
 
     # ================================================== Order news ===
+    @staticmethod
+    def line_ticker(text):
+        """The ticker of an Order Log line's text (its stamp left out): "BOT +200 BTAIQ @0.0076 (...)", "SOLD -...",
+        "🔔 ALERT SMEV ..." or "BTAIQ: ..."."""
+        m = re.match(r"(?:BOT \+|SOLD -)[\d,]+ ([A-Z0-9.]+)|🔔 ALERT ([A-Z0-9.]+)|([A-Z0-9.]+):", text.strip())
+        return next((g for g in m.groups() if g), "") if m else ""
+
     def order_text(self, ev):
-        """An order event as a line: "BTAIQ: You got +200 @ 0.0076 (partly: 3,700 of 19,737 so far) · ATM"."""
+        """An order event as a line: "BOT +200 BTAIQ @0.0076 (3,700 remain) · ATM", "BTAIQ: New BUY order: ..."."""
         kind, side, n, t = ev["kind"], ev["side"], ev.get("shares") or 0, ev["ticker"]
         price = ev.get("fill_price") if kind in ("filled", "partial") and ev.get("fill_price") else ev.get("price")
         at = f" @ {fmt_price(price)}" if price else ""
-        got = f"You got +{n:,}" if side == "BUY" else f"You sold -{n:,}"
-        if kind == "filled":
-            text = f"{t}: {got}{at} (the order filled: {ev['filled']:,} of {ev['quantity']:,})"
-        elif kind == "partial":
-            text = f"{t}: {got}{at} (partly: {ev['filled']:,} of {ev['quantity']:,} so far)"
+        if kind in ("filled", "partial"):        # as the Telegram bot's: "BOT +11,450 SMEV @0.0131 (Filled)"
+            left = int(ev.get("quantity") or 0) - int(ev.get("filled") or 0)
+            end = "Filled" if kind == "filled" or left <= 0 else f"{left:,} remain"
+            text = (f"{'BOT +' if side == 'BUY' else 'SOLD -'}{n:,} {t}"
+                    + (f" @{fmt_price(price)}" if price else "") + f" ({end})")
         elif kind == "placed":
             text = f"{t}: New {side} order: {n:,}{at}"
         else:
@@ -5512,19 +5530,22 @@ class MainWindow(QMainWindow):
             style = "QPushButton { padding: 3px 14px; }"
         else:
             kind = ev["kind"]
-            mark, bg, fg = (("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
+            mark, bg, fg = (("", "#8e44ad", "#ffffff") if kind == "alert" else     # (its text has its 🔔)
+                            ("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
                             ("+ ", "#2f6fe0", "#ffffff") if kind == "placed" else
                             ("⛔ ", "#d32f2f", "#ffffff") if kind == "rejected" else ("✘ ", "#e3b23c", "#111111"))
-            self.orders_btn.setText(mark + self.order_text(ev).split(" · ")[0])
+            text = ev.get("text") or self.order_text(ev)
+            self.orders_btn.setText(mark + text.split(" · ")[0] + datetime.now().strftime(" [%H:%M ")
+                                    + f"{datetime.now().month}/{datetime.now().day}]")
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
         self.orders_btn.setStyleSheet(style)
         if hasattr(self, "orders_seen_btn"):
             self.orders_seen_btn.setEnabled(ev is not None)
         how = "\n\nA click: its ticker on the chart. Right-click: the Monitor tab's Order Log."
-        self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} from Schwab (newest first):\n\n"
+        self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} (newest first):\n\n"
                                    + "\n".join(map(self.stamp_last, self.order_news)) + how if self.order_news else
-                                   "New orders, fills and cancels from Schwab show here." + how)
+                                   "New orders, fills and cancels from Schwab, and fired alerts, show here." + how)
 
     @staticmethod
     def stamp_last(line):
@@ -5560,7 +5581,7 @@ class MainWindow(QMainWindow):
             text, _, tag = x.partition(ORDER_LOG_TAG)
             # the account's only (a line from before the lines had their account: shown in every one)
             if (cutoff is None or x[:19] >= cutoff) and (not tag or tag == account) \
-                    and (not flt or flt in text[19:].strip().split(":")[0].upper()):       # (the line's ticker)
+                    and (not flt or flt in self.line_ticker(text[19:]).upper()):       # (the line's ticker)
                 lines.append(text)
         return lines
 
@@ -5638,10 +5659,9 @@ class MainWindow(QMainWindow):
         if not news:
             return
         self.order_news = news
-        m = re.match(r"\S+ \S+\s+([A-Z0-9.]+):", news[0])
-        self.order_news_ticker = m.group(1) if m else ""
+        self.order_news_ticker = self.line_ticker(news[0][19:])
         self.show_orders_btn(None)
-        self.orders_btn.setText(news[0].split("  ", 1)[-1].split(" · ")[0])
+        self.orders_btn.setText(self.stamp_last(news[0].split(" · ")[0]))
 
     def calm_orders_btn(self):
         """The Orders button back to plain, keeping its last news' text."""
