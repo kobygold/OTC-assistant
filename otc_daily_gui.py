@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.227"
+APP_VERSION = "2.7.228"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1399,7 +1399,10 @@ class MainWindow(QMainWindow):
         self.orders_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.orders_btn.customContextMenuRequested.connect(lambda _p: self.open_order_log())    # right-click: the log
         self.order_news = []            # the latest fills / cancels, newest first (the tooltip)
-        self.order_news_ticker = ""     # the latest news' ticker (a click opens it)
+        self.order_news_ticker = ""     # the latest news' ticker
+        self.orders_unseen = 0          # the news since the button was last seen (✓ or a click): "+N new" beside it
+        self.orders_base = "Orders: no news yet"     # the button's text without that count
+        self.orders_pop = None          # a click's list of the latest news
         self.show_orders_btn(None)
         row.addWidget(self.orders_btn, 1)
         # beside it: seen (the color off, without opening anything)
@@ -5179,8 +5182,7 @@ class MainWindow(QMainWindow):
         # the Orders button (purple) and the Order Log, as an order's news (kept after a restart)
         line = self.log_order_line(f"🔔 ALERT {what}", account)
         if account == str(self.checklist.atm.chosen_account() or ""):
-            self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
-            del self.order_news[ORDER_TIP_LINES:]
+            self.add_order_news(line)
             if time.time() - getattr(self, "rejected_shown_at", 0) < REJECT_KEEP_S:
                 return          # (a rejection stays on the button a while)
             self.rejected_shown_at = 0
@@ -5513,8 +5515,7 @@ class MainWindow(QMainWindow):
         if ev.get("account") != self.checklist.atm.chosen_account():
             return
         if ev["kind"] in ("filled", "partial", "canceled", "rejected", "expired"):     # (a new order: the log only)
-            self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
-            del self.order_news[ORDER_TIP_LINES:]
+            self.add_order_news(line)
             # (a rejection stays on the button a while: not covered by a new order of the same moment - FOBIF's
             # rejected sell went unseen under the other one placed with it)
             if ev["kind"] != "rejected" and time.time() - getattr(self, "rejected_shown_at", 0) < REJECT_KEEP_S:
@@ -5522,6 +5523,18 @@ class MainWindow(QMainWindow):
             self.rejected_shown_at = time.time() if ev["kind"] == "rejected" else 0
             self.order_news_ticker = ev["ticker"]
             self.show_orders_btn(ev)
+
+    def add_order_news(self, line):
+        """A line of news for the Orders button (the Order Log's line): first in its list, counted as new."""
+        self.order_news.insert(0, line.split(ORDER_LOG_TAG)[0])
+        del self.order_news[ORDER_TIP_LINES:]
+        self.orders_unseen += 1
+        self.count_orders_btn()
+
+    def count_orders_btn(self):
+        """The button's text: its news, and "+N new" when more came since it was last seen."""
+        more = self.orders_unseen - 1
+        self.orders_btn.setText(self.orders_base + (f"     +{more} new" if more > 0 else ""))
 
     def show_orders_btn(self, ev):
         """The chart's Orders button: the latest news in green (a fill), purple (an alert), red (rejected) or amber
@@ -5534,17 +5547,16 @@ class MainWindow(QMainWindow):
                             ("✔ ", "#00a83c", "#ffffff") if kind in ("filled", "partial") else
                             ("⛔ ", "#d32f2f", "#ffffff") if kind == "rejected" else ("✘ ", "#e3b23c", "#111111"))
             text = ev.get("text") or self.order_text(ev)
-            self.orders_btn.setText(mark + text.split(" · ")[0] + datetime.now().strftime(" [%H:%M ")
-                                    + f"{datetime.now().month}/{datetime.now().day}]")
+            self.orders_base = (mark + text.split(" · ")[0] + datetime.now().strftime(" [%H:%M ")
+                                + f"{datetime.now().month}/{datetime.now().day}]")
+            self.count_orders_btn()
             style = (f"QPushButton {{ background: {bg}; color: {fg}; font-weight: bold; border: 1px solid {bg};"
                      f" border-radius: 4px; padding: 3px 14px; }}")
         self.orders_btn.setStyleSheet(style)
         if hasattr(self, "orders_seen_btn"):
             self.orders_seen_btn.setEnabled(ev is not None)
-        how = "\n\nA click: its ticker on the chart. Right-click: the Monitor tab's Order Log."
-        self.orders_btn.setToolTip(f"The latest {ORDER_TIP_LINES} (newest first):\n\n"
-                                   + "\n".join(map(self.stamp_last, self.order_news)) + how if self.order_news else
-                                   "New orders, fills and cancels from Schwab, and fired alerts, show here." + how)
+        self.orders_btn.setToolTip(f"Click: the latest {ORDER_TIP_LINES} (a line: its chart). "
+                                   "Right-click: the Monitor tab's Order Log.")
 
     @staticmethod
     def stamp_last(line):
@@ -5633,14 +5645,58 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(text)
             checklist.show_copied(f"Copied: {text}", 1000)
 
+    @staticmethod
+    def news_color(text):
+        """A news line's color in the Orders button's list: a fill green, an alert purple, a rejection red, an end
+        amber."""
+        if "🔔" in text:
+            return "#b57edc"
+        if re.match(r"(BOT|SOLD) ", text) or ": You got " in text or ": You sold " in text:
+            return "#1db31d"
+        if " REJECTED " in text:
+            return "#e0404f"
+        if " CANCELED " in text or " EXPIRED " in text:
+            return "#e3b23c"
+        return ""
+
     def open_order_news(self):
-        """The Orders button: the latest news' ticker on the chart (the button back to plain); none yet: the log."""
-        ticker = self.order_news_ticker
-        if not ticker:
+        """The Orders button: a list of its latest news under it, newest first, each in its color with its time - a
+        line opens its ticker's chart (the button back to plain); no news yet: the Order Log."""
+        if not self.order_news:
             self.open_order_log()
             return
-        self.tabs.setCurrentIndex(1)
-        self.show_chart(ticker)
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+        pop = QFrame(self, Qt.WindowType.Popup)
+        lay = QVBoxLayout(pop)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lst = QListWidget(pop)
+        lst.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lst.setStyleSheet("QListWidget { font-size: 10pt; } QListWidget::item { padding: 3px 8px; }")
+        for line in self.order_news:
+            text = self.stamp_last(line.split(" · ")[0])
+            it = QListWidgetItem(text)
+            color = self.news_color(text)
+            if color:
+                it.setForeground(QColor(color))
+            it.setData(Qt.ItemDataRole.UserRole, self.line_ticker(line[19:]))
+            lst.addItem(it)
+
+        def chosen(it):
+            pop.close()
+            ticker = it.data(Qt.ItemDataRole.UserRole)
+            if ticker:
+                self.tabs.setCurrentIndex(1)
+                self.show_chart(ticker)
+        lst.itemClicked.connect(chosen)
+        lay.addWidget(lst)
+        rows = sum(lst.sizeHintForRow(i) for i in range(lst.count()))
+        lst.setFixedHeight(rows + 2 * lst.frameWidth())
+        pop.resize(max(self.orders_btn.width(), lst.sizeHintForColumn(0) + 2 * lst.frameWidth() + 4),
+                   rows + 2 * lst.frameWidth())
+        pop.move(self.orders_btn.mapToGlobal(QPoint(0, self.orders_btn.height())))
+        self.orders_pop = pop
+        pop.show()
         self.calm_orders_btn()
 
     def restore_order_news(self):
@@ -5660,13 +5716,16 @@ class MainWindow(QMainWindow):
         self.order_news = news
         self.order_news_ticker = self.line_ticker(news[0][19:])
         self.show_orders_btn(None)
-        self.orders_btn.setText(self.stamp_last(news[0].split(" · ")[0]))
+        self.orders_base, self.orders_unseen = self.stamp_last(news[0].split(" · ")[0]), 0
+        self.count_orders_btn()
 
     def calm_orders_btn(self):
         """The Orders button back to plain, keeping its last news' text."""
-        text = self.orders_btn.text()
         self.show_orders_btn(None)
-        self.orders_btn.setText(text if self.order_news else "Orders: no news yet")
+        self.orders_unseen = 0
+        if not self.order_news:
+            self.orders_base = "Orders: no news yet"
+        self.count_orders_btn()
 
     def open_order_log(self):
         """The Orders button's right-click: the Monitor tab's Order Log (newest first), opened and in sight (the
