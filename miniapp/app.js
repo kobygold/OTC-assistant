@@ -785,8 +785,23 @@ function sendAct() {
   actTimer = setTimeout(() => { if (S.act === a && a.wait) { a.wait = false; a.done = { sent: false, messages: [{ icon: "warning", title: "No answer", text: "The main server's app didn't answer. Check the order on the Orders tab before trying again." }] }; showAct(); } }, 35000);
   showAct();
 }
+// a short note at the bottom that goes by itself (no OK to tap)
+function toast(html) {
+  let el = document.getElementById("toast");
+  if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+  el.innerHTML = html; el.classList.add("on");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("on"), 2500);
+}
 function showAct() {
   const a = S.act;
+  // an order sent without a word to add: a note that goes by itself, not a sheet with OK
+  if (a && a.done && a.done.sent && !(a.done.messages || []).length) {
+    S.act = null;
+    if (S.edit) showEdit(); else sheet("");
+    toast(`<b>✔ Sent to Schwab</b><div>${esc((a.done.what || "").replace(/[?]$/, ""))}</div>`);
+    return;
+  }
   // a quiet change (the checklist's): its sheet stays, unless a dialog or a message comes
   if (a && a.quiet && !a.dialog && !(a.done && (a.done.messages || []).length)) { if (a.done) S.act = null; showEdit(); return; }
   // the scanner's buttons and filters: done without a word, the sheet closes (its page shows it)

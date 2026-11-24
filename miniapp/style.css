@@ -110,6 +110,11 @@ button { font-family: inherit; color: inherit; }
   font-size: 12.5px; color: #c9a0ff; }
 .fillsDay { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); color: var(--text); }
 .badMark { color: var(--red); font-weight: 700; }
+#toast { position: fixed; left: 12px; right: 12px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 60;
+  background: #16361f; color: #e6e9ec; border: 1px solid #1db31d; border-radius: 12px; padding: 10px 14px;
+  font-size: 14px; opacity: 0; transform: translateY(12px); transition: opacity .2s, transform .2s; pointer-events: none; }
+#toast.on { opacity: 1; transform: none; }
+#toast b { color: #3ddc5c; }
 .okMark { color: #1db31d; font-variant-emoji: text; }
 .l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 11.5px; }
 .l2row { display: grid; grid-template-columns: 12px 38px minmax(0, 1fr) 62px; column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
