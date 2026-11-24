@@ -5008,16 +5008,22 @@ class ChecklistPanel(QWidget):
                 "ratio": f"1:{p['ratio']:.2f}" if p["ratio"] is not None else NA}
 
     def fills_inputs(self):
-        """The fill chances' (ticker, entry, exit, shares): an ATM trade's own (its exit now), else the plan shown."""
+        """The fill chances' (ticker, entry, exit, shares): the values the checklist shows (typed, or worked out) -
+        tried as they're changed (an open buy: the new values typed beside it); an ATM trade's own only when the
+        checklist has none."""
         if not self.ticker:
             return None
-        e = self.order()
-        if e and e.get("entry"):
-            return self.ticker, e["entry"], current_exit(e) or e.get("exit"), int(e.get("shares") or 0)
         p = (getattr(self, "last_plan", None) or ({}, None))[0] or {}
-        if not p.get("entry") or not p.get("exit") or not p.get("shares"):
-            return None
-        return self.ticker, p["entry"], p["exit"], int(p["shares"])
+        e = self.drafting()
+        if e is not None and p.get("exit"):     # an open buy: its new values typed (Update Buy's), the exit shown
+            price, shares, _size, _ = self.draft_values(e)
+            return self.ticker, price, p["exit"], int(shares)
+        if p.get("entry") and p.get("exit") and p.get("shares"):
+            return self.ticker, p["entry"], p["exit"], int(p["shares"])
+        e = self.order()
+        if e and e.get("entry") and (current_exit(e) or e.get("exit")):
+            return self.ticker, e["entry"], current_exit(e) or e.get("exit"), int(e.get("shares") or 0)
+        return None
 
     def update_fills(self):
         """The fill chances worked out again (in a thread: the record's files) when the ticker, the entry, the exit or
@@ -5047,7 +5053,8 @@ class ChecklistPanel(QWidget):
         if key != self.fills_key:
             return              # (older inputs)
         rows, summary = found
-        self.fills_summary = otc_fills.summary_text(summary)
+        self.fills_summary = (f"{key[3]:,} @ {fmt_price(key[1])} → {fmt_price(key[2])}: "
+                              + otc_fills.summary_text(summary))
         self.fills_days = otc_fills.day_lines(rows, key[1], key[2], key[3])
         self.fills_label.setText(self.fills_summary)
         self.fills_label.setToolTip(
