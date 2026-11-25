@@ -265,6 +265,14 @@ class SharedData(QObject):
     def put(self, key, data):
         self.sync_items({key: data}, [])
 
+    def version(self, key):
+        """The item's version in this copy (0: never had it)."""
+        return (self.items.get(key) or [0, None])[0]
+
+    def versions(self, prefix):
+        """{key: version} of the items under prefix that hold data."""
+        return {k: v for k, (v, d) in self.items.items() if k.startswith(prefix) and d is not None}
+
     def sync(self, prefix, items: dict):
         """Makes the items under prefix these ({the rest of the key: data}): changes only for
         those that differ; the ones not there any more are deleted."""
@@ -272,14 +280,18 @@ class SharedData(QObject):
         gone = [k for k, (_, d) in self.items.items() if k.startswith(prefix) and d is not None and k not in new]
         self.sync_items(new, gone)
 
-    def sync_items(self, new: dict, gone):
+    def sync_items(self, new: dict, gone, bases=None):
+        """bases: {key: the version the owner's data was made from} - a change from an older version than
+        this copy's is refused by the server (someone changed it meanwhile: never overwritten with old data);
+        none given: this copy's version."""
+        bases = bases or {}
         for key, data in new.items():
             data = json.loads(json.dumps(data))         # as it travels (tuples as lists...)
             v, old = self.items.get(key, [0, None])
             if old != data:
-                self._change(key, v, data)
+                self._change(key, bases.get(key, v), data)
         for key in gone:
-            self._change(key, self.items[key][0], None)
+            self._change(key, bases.get(key, self.items[key][0]), None)
 
     def _change(self, key, base, data):
         cid = f"{self.app_id}-{next(self._ids)}"

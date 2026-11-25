@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.243"
+APP_VERSION = "2.7.244"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3693,6 +3693,8 @@ class MainWindow(QMainWindow):
         """Shared data changed elsewhere (or a change of ours refused): shown again."""
         if not self.shared_imported:
             return
+        if key == "" or key.startswith("atm/"):
+            self.checklist.atm.reload_shared()      # first: what follows can save the trades (from this list)
         if key == "" or key.startswith(self.checklist_prefix()):
             self.load_checklist_prices()
         if key == "" or key.startswith(f"favorites/{self.shared_account()}/"):
@@ -3701,8 +3703,6 @@ class MainWindow(QMainWindow):
             self.update_tracked()
         if key == "" or key.startswith(f"drawings/{self.shared_account()}/"):
             self.reload_drawings()
-        if key == "" or key.startswith("atm/"):
-            self.checklist.atm.reload_shared()
         if key in ("", "telegram/miniapp_online"):
             self.show_mini_online()
         if key == "" or key == f"settings/{self.shared_account()}":

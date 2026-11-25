@@ -1915,6 +1915,9 @@ class AtmTrades(QObject):
         # new Sell-at price act on a trade that isn't in the list any more
         old = {e["id"]: e for e in self.entries}
         entries = []
+        # the versions the list is made from: a save changes only these (from them), so a list not
+        # reloaded yet never deletes a newer trade nor writes an old copy over a newer one (BUDZ, 2026-11-25)
+        self.shared_versions = self.shared.versions("atm/")
         for e in self._fixed(list(self.shared.get("atm/").values())):
             same = old.get(e["id"])
             if same is not None:
@@ -1969,8 +1972,13 @@ class AtmTrades(QObject):
         for e in self.entries:
             self.keep_history(e)
         if getattr(self, "shared", None) is not None:
-            # only the trades that changed go to the server, each from the version it had here
-            self.shared.sync("atm/", {self.shared_key(e): e for e in self.entries})
+            # only the trades that changed go to the server, each from the version the list was made
+            # from; deleted: only the trades the list had (one added elsewhere since isn't in it yet)
+            known = getattr(self, "shared_versions", {})
+            new = {"atm/" + self.shared_key(e): e for e in self.entries}
+            gone = [k for k in known if k not in new and self.shared.has(k)]
+            self.shared.sync_items(new, gone, bases=known)
+            self.shared_versions = {k: self.shared.version(k) for k in new}
             return
         text = json.dumps(self.entries, indent=1)
         # each [price, amount] / [market maker, price, amount] on one line
