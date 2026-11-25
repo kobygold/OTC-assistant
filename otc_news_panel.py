@@ -13,10 +13,10 @@ chart's ticker's news from the news channel's history (news.db, otc_news_db), mo
 import html
 from datetime import datetime, timedelta
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette, QPen
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                             QStyledItemDelegate, QToolTip,
+                             QStyledItemDelegate, QToolButton, QToolTip,
                              QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 import otc_news_db
@@ -294,6 +294,18 @@ class NewsPanel(QWidget):
         self.post.setOpenExternalLinks(True)
         self.post.setStyleSheet("QTextBrowser { background: #0d1014; color: #d8d8d8; border: 1px solid #2a3038; }")
         right.addWidget(self.post)
+        # a copy icon in the post's top right corner: the post's raw text (as the channel wrote it) to the clipboard
+        self.raw = ""
+        self.copy_btn = QToolButton(self.post.viewport())
+        self.copy_btn.setText("⧉")
+        self.copy_btn.setToolTip("Copy the news' raw text")
+        self.copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_btn.setStyleSheet("QToolButton { background: #1b2229; color: #c8d0d8; border: 1px solid #3a4046; "
+                                    "border-radius: 3px; padding: 1px 5px; font-size: 11pt; } "
+                                    "QToolButton:hover { background: #2a3a4a; color: #ffffff; }")
+        self.copy_btn.clicked.connect(self.copy_raw)
+        self.copy_btn.hide()
+        self.post.viewport().installEventFilter(self)
         self.shares = SharesChart()
         right.addWidget(self.shares)
         right.setSizes([120, 150])
@@ -301,6 +313,29 @@ class NewsPanel(QWidget):
         split.setSizes([600, 420])
         root.addWidget(split, 1)
         self.empty = "No news of {t} in the news channel in this range."
+
+    def eventFilter(self, obj, e):
+        if obj is self.post.viewport() and e.type() == QEvent.Type.Resize:
+            self.place_copy_btn()
+        return super().eventFilter(obj, e)
+
+    def place_copy_btn(self):
+        self.copy_btn.adjustSize()
+        self.copy_btn.move(self.post.viewport().width() - self.copy_btn.width() - 4, 4)
+        self.copy_btn.raise_()
+
+    def copy_raw(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.raw)
+        self.copy_btn.setText("✓")
+        QToolTip.showText(self.copy_btn.mapToGlobal(self.copy_btn.rect().bottomLeft()), "Copied", self.copy_btn)
+        QTimer.singleShot(1200, lambda: self.copy_btn.setText("⧉"))
+
+    def set_raw(self, text):
+        """The shown post's raw text (none: no copy icon)."""
+        self.raw = (text or "").strip()
+        self.copy_btn.setVisible(bool(self.raw))
+        self.place_copy_btn()
 
     # ---- in ----
     def set_ticker(self, ticker):
@@ -382,12 +417,14 @@ class NewsPanel(QWidget):
         else:
             self.post.setHtml(f"<span style='color:{DIM}'>{html.escape(self.empty.format(t=self.ticker or 'it'))}"
                               "</span>")
+            self.set_raw("")
 
     def show_selected(self):
         rows = self.table.selectionModel().selectedRows()
         items = self.shown_items()
         if rows and rows[0].row() < len(items):
             self.post.setHtml(post_html(items[rows[0].row()]))
+            self.set_raw(items[rows[0].row()].get("text"))
 
     def fill_shares(self):
         """The outstanding shares' changes in the range (from the posts kept), oldest first."""
