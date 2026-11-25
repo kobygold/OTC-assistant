@@ -3277,11 +3277,24 @@ class AtmTrades(QObject):
                 self.save()
 
     def _replacement(self, e, side, old_id, shares):
-        """The order that took the place of the trade's old order in thinkorswim: open, the same
-        ticker, side and amount of shares, newer, not followed by another trade. None if none."""
+        """The order that took the place of the trade's old order in thinkorswim: open (or filled
+        already, partly or all: a replacement can fill at once, before the app sees it), the same
+        ticker, side and amount of shares, newer than the old one, not followed by another trade.
+        None if none."""
         tracked = self.tracked_ids()
-        found = [o for o in self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
-                 if o["open"] and o["ticker"] == e["ticker"] and o["side"] == side and o["price"]
+        orders = self.schwab_orders.get(e.get("account") or self.chosen_account(), [])
+        old = next((o for o in orders if o["id"] == str(old_id)), None)
+        since = (old or {}).get("entered") or ""
+
+        def newer(o):
+            try:
+                return datetime.strptime(o.get("entered") or "", "%Y-%m-%dT%H:%M:%S%z") > \
+                    datetime.strptime(since, "%Y-%m-%dT%H:%M:%S%z")
+            except ValueError:
+                return False
+        found = [o for o in orders
+                 if (o["open"] or (int(o.get("filled") or 0) > 0 and newer(o)))
+                 and o["ticker"] == e["ticker"] and o["side"] == side and o["price"]
                  and o["quantity"] == shares and o["id"] != str(old_id) and o["id"] not in tracked]
         return max(found, key=lambda o: o["entered"]) if found else None
 
