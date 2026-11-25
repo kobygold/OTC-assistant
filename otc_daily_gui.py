@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.241"
+APP_VERSION = "2.7.242"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -984,6 +984,16 @@ class MainWindow(QMainWindow):
         self.telegram = TelegramPanel(self.settings, save_settings, self.server, self.shared,
                                       demo_source=self.telegram_demo)
         self.settings_tab_index = self.tabs.addTab(self._build_settings_tab(), "Settings")
+        # a small number before each tab's name: 1, 2, 3... of the tabs shown (the hidden Screener not counted)
+        bar, n = self.tabs.tabBar(), 0
+        for i in range(self.tabs.count()):
+            if not self.tabs.isTabVisible(i):
+                continue
+            n += 1
+            num = QLabel(str(n))
+            num.setStyleSheet("color: #7c8590; font-size: 7pt; background: transparent; padding: 0px 0px 0px 2px;")
+            num.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)    # (a click: its tab)
+            bar.setTabButton(i, QTabBar.ButtonPosition.LeftSide, num)
         # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
         self.updater.done.connect(self.on_update)
