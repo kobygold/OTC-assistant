@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.245"
+APP_VERSION = "2.7.246"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2985,13 +2985,17 @@ class MainWindow(QMainWindow):
 
     def chart_step(self, delta: int):
         """Opens the chart of the next (delta 1) or previous (-1) row of the last list visited, in
-        its sorted order, and selects that row there. A ticker not in the list starts at its top."""
+        its sorted order, and selects that row there. A ticker not in the list starts at its top. No such list
+        (or an empty one): the Mini Favorites' next / previous (those shown)."""
+        if self.tabs.currentIndex() != 1:
+            return
         nav = self.nav_list()
-        if nav is None or self.tabs.currentIndex() != 1:
+        if nav is None or nav[0].rowCount() == 0:
+            side = getattr(self, "fav_side", None)
+            if side is not None:
+                side.step(delta)        # (highlighted at once, opened once the keys stop)
             return
         tbl, col, opener, _ = nav
-        if tbl.rowCount() == 0:
-            return
         r = self.nav_row()
         r = 0 if r is None else r + delta
         if not 0 <= r < tbl.rowCount():
