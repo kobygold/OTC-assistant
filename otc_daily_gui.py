@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.244"
+APP_VERSION = "2.7.245"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -857,11 +857,19 @@ class SelectAllLineEdit(QLineEdit):
             QTimer.singleShot(0, self.selectAll)
 
 
+# the Hebrew keyboard's letters -> the English letter on the same key (typed with the Hebrew layout on: "א" -> "T")
+HEBREW_KEYS = str.maketrans({"ק": "E", "ר": "R", "א": "T", "ט": "Y", "ו": "U", "ן": "I", "ם": "O", "פ": "P",
+                             "ש": "A", "ד": "S", "ג": "D", "כ": "F", "ע": "G", "י": "H", "ח": "J", "ל": "K",
+                             "ך": "L", "ז": "Z", "ס": "X", "ב": "C", "ה": "V", "נ": "B", "מ": "N", "צ": "M",
+                             "/": "Q", "'": "W"})
+
+
 class UpperValidator(QValidator):
-    """Turns typed or pasted text into capitals as it's entered, keeping the cursor where it was."""
+    """Turns typed or pasted text into capitals as it's entered, keeping the cursor where it was; a Hebrew letter
+    (the Hebrew layout on) becomes the English capital on its key ("א" -> "T")."""
 
     def validate(self, text, pos):
-        return QValidator.State.Acceptable, text.upper(), pos
+        return QValidator.State.Acceptable, text.translate(HEBREW_KEYS).upper(), pos
 
 
 class PriceSpinBox(QDoubleSpinBox):
@@ -1609,6 +1617,7 @@ class MainWindow(QMainWindow):
         self.fav_side_info = {}         # ticker -> (last close, the day's change, name): from the candles
         self.fav_side = FavSidePanel(shown=bool(self.settings.get("fav_side_show", True)),
                                      split=self.settings.get("fav_side_split"))
+        self.fav_side.filter.setValidator(UpperValidator(self.fav_side.filter))     # (Hebrew typed: its English capitals)
         self.fav_side.notes_changed.connect(self.on_side_notes)
         self.fav_side.split_changed.connect(self.on_side_split)
         self.fav_side.open_ticker.connect(self.show_chart)
