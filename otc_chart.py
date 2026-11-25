@@ -11,7 +11,7 @@ side, in Israel time, with a dashed line where a trading day starts.
 """
 
 import math
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, timedelta, timezone
 from statistics import median
 
@@ -638,10 +638,13 @@ class CandleChart(DrawingsMixin, QWidget):
                 ytop, height = min(y1, y2), max(abs(y2 - y1), 2.0 if flat else 1.0)
                 p.fillRect(QRectF(x - body_w / 2, ytop - (1 if flat else 0), body_w, height), color)
         if clean:
-            if not self.intraday and self.show_expirations:
+            if self.show_expirations:
                 self._draw_expirations(p, price)
         elif self.intraday:
             self._draw_day_lines(p, (price, vol), i0, i1)
+            if self.show_expirations:
+                p.setClipRect(price.adjusted(1, 1, -1, -1))     # (the day lines left it on the volume pane)
+                self._draw_expirations(p, price)
         else:
             if self.show_expirations:
                 self._draw_expirations(p, price)
@@ -1407,15 +1410,26 @@ class CandleChart(DrawingsMixin, QWidget):
         # Cosmetic: a width in screen pixels, or display scaling would make the lines uneven
         line_pen = QPen(EXPIRATION, 2, Qt.PenStyle.DashLine)
         line_pen.setCosmetic(True)
+        if self.intraday:       # 1D: the candles' market days (no weekdays after the last one)
+            if not n:
+                return
+            start, end = min(max(start, 0), n - 1), min(max(end, 0), n - 1)
         for d in expiration_days(self._date_at(start), self._date_at(end)):
-            # after the expiration day (its candle's right edge, as thinkorswim), not over it
-            i = bisect_left(self.dates, d)
-            if i == n:
-                slot = next(k for k in range(n, end + 1) if self._date_at(k) == d) + 0.5
+            if self.intraday:
+                # after the expiration day's last minute (on its day line), once the next day's candles came
+                k = bisect_right(self.dates, d)
+                if k <= 0 or k >= n:
+                    continue
+                x = (self._x(k - 1, price) + self._x(k, price)) / 2
             else:
-                # A stock with no trades that day: the line goes between the candles around it
-                slot = i + 0.5 if self.dates[i] == d else i - 0.5
-            x = self._x(slot, price)
+                # after the expiration day (its candle's right edge, as thinkorswim), not over it
+                i = bisect_left(self.dates, d)
+                if i == n:
+                    slot = next(k for k in range(n, end + 1) if self._date_at(k) == d) + 0.5
+                else:
+                    # A stock with no trades that day: the line goes between the candles around it
+                    slot = i + 0.5 if self.dates[i] == d else i - 0.5
+                x = self._x(slot, price)
             p.setPen(line_pen)
             p.drawLine(QPointF(x, price.top()), QPointF(x, price.bottom()))
             if x - last_label < text_h:
