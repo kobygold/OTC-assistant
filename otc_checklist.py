@@ -2382,15 +2382,32 @@ class AtmTrades(QObject):
         return ids
 
     @staticmethod
-    def trade_order_ids(e):
+    def trade_order_ids(e, with_pl=True):
         """The ids of the orders the trade was made of: its buys and sells, the replaced ones and the adopted
-        ones, and those of its Schwab P/L's fills."""
+        ones, and (with_pl) those of its Schwab P/L's fills."""
         ids = {str(e[k]) for k in ("order_id", "sell_id") if e.get(k)}
         if str(e.get("id", "")).isdigit():          # (a trade's id: its first buy order's)
             ids.add(str(e["id"]))
-        ids.update(str(x) for x in e.get("replaced_ids", []) + e.get("adopted_ids", []))
-        ids.update(str(f["order"]) for f in (e.get("pl") or {}).get("fills") or [] if f.get("order"))
+        ids.update(str(x) for x in (e.get("replaced_ids") or []) + (e.get("adopted_ids") or []))
+        if with_pl:
+            ids.update(str(f["order"]) for f in (e.get("pl") or {}).get("fills") or [] if f.get("order"))
         return ids
+
+    def own_fills(self, e, fills):
+        """Of the ticker's fills in the trade's time window, the trade's own: those of its orders when they make
+        all of it (what it bought and sold), else all but those of another trade's orders. A round after it (a new
+        buy of the same ticker soon after its sale, BUDZ 2026-11-25) never counts in its P/L."""
+        mine = self.trade_order_ids(e, with_pl=False)
+        own = [f for f in fills if str(f.get("order") or "") in mine]
+        bought = sum(int(f.get("shares") or 0) for f in own if f.get("side") == "BUY")
+        sold = sum(int(f.get("shares") or 0) for f in own if f.get("side") == "SELL")
+        if bought >= int(e.get("filled") or 0) and sold >= int(e.get("sold") or 0) and sold:
+            return own
+        others = set()
+        for x in self.entries:
+            if x is not e and x.get("ticker") == e.get("ticker"):
+                others |= self.trade_order_ids(x, with_pl=False)
+        return [f for f in fills if str(f.get("order") or "") in mine or str(f.get("order") or "") not in others]
 
     def trade_orders(self, e):
         """The trade's orders as Schwab's latest list of its account's orders has them, oldest first."""
@@ -2827,6 +2844,7 @@ class AtmTrades(QObject):
             price = o.get("fill_price") or o.get("price") or 0
             fills.append({"order": o["id"], "side": o["side"], "time": o.get("filled_at") or o.get("entered"),
                           "shares": int(o["filled"]), "price": price, "value": round(o["filled"] * price, 4)})
+        fills = self.own_fills(e, fills)
         if not fills:
             return None
         return pl_summary(estimate_fees(fills, fee), "estimate")
@@ -2867,7 +2885,7 @@ class AtmTrades(QObject):
                 return datetime.strptime(f["time"][:19] + "+0000", "%Y-%m-%dT%H:%M:%S%z")
             except ValueError:
                 return None
-        mine = [f for f in fills if when(f) is not None and start <= when(f) <= end]
+        mine = self.own_fills(e, [f for f in fills if when(f) is not None and start <= when(f) <= end])
         pl = pl_summary(mine, "schwab")
         if pl["bought"] >= int(e.get("filled") or 0) and pl["sold"] >= int(e.get("sold") or 0) and pl["sold"]:
             e["pl"] = pl                # all of its fills: Schwab's P/L, kept with the trade (every computer)
