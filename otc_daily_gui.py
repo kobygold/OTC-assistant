@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.239"
+APP_VERSION = "2.7.240"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1723,6 +1723,7 @@ class MainWindow(QMainWindow):
                          "name": name, "close": close, "change": change, "steps": steps,
                          "atm_tip": atm_cell.toolTip() if steps else "",
                          "checks": False if c is None else c["passed"], "total": len(checklist.SCAN_CHECKS),
+                         "checks_tip": (c or {}).get("tip") or "",
                          "notes": fav.get("notes", "")})
         side.set_rows(rows)
 
@@ -4815,7 +4816,7 @@ class MainWindow(QMainWindow):
         self.atm_checks[ticker] = c
         side = getattr(self, "fav_side", None)
         if side is not None:
-            side.set_checks(ticker, c["passed"], len(checklist.SCAN_CHECKS))
+            side.set_checks(ticker, c["passed"], len(checklist.SCAN_CHECKS), c.get("tip") or "")
         for items in (self.atm_check_items, self.fav_check_items):     # shown on both tabs
             item = items.get(ticker)
             if item is None:

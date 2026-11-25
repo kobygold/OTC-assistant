@@ -379,7 +379,7 @@ class FavSidePanel(QWidget):
         return -1
 
     def fill(self, i):
-        """Row i's checks, from its data (no tooltip on the rows)."""
+        """Row i's checks, from its data (no tooltip on the rows; the ✓ cell's: each check's ✔ / ✘)."""
         t = self.table
         ticker = t.item(i, 0).data(Qt.ItemDataRole.UserRole)
         r = self.rows.get(ticker, {})
@@ -387,13 +387,14 @@ class FavSidePanel(QWidget):
         checks, total = r.get("checks"), r.get("total")
         ck.setText("" if checks is False else "N/A" if checks is None else f"{checks}")
         ck.setForeground(QColor(checklist.MARKS[checklist.OK][1] if checks and checks == total else "#c8c8c8"))
+        ck.setToolTip(r.get("checks_tip") or "")
 
-    def set_checks(self, ticker, checks, total):
-        """A favorite's Check L1/L2 result now (None: N/A)."""
+    def set_checks(self, ticker, checks, total, tip=""):
+        """A favorite's Check L1/L2 result now (None: N/A); tip: its checks' list (HTML, ✔ green, ✘ red)."""
         r = self.rows.get(ticker)
         if r is None:
             return
-        r["checks"], r["total"] = checks, total
+        r["checks"], r["total"], r["checks_tip"] = checks, total, tip
         i = self.row_of(ticker)
         if i >= 0:
             self.fill(i)
