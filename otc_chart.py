@@ -681,23 +681,15 @@ class CandleChart(DrawingsMixin, QWidget):
                     p.setPen(QColor(CLEAN_LABEL))
                     p.drawText(QRectF(price.left(), y - 18, price.width() - 6, 16),
                                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"${fmt_axis(value)}")
+            self._draw_hi_lo(p, price, py, i0, i1)      # the Hi / Lo points
             self._draw_bounce_labels(p, price, py)      # (the purple lines' levels)
             self._draw_x_axis(p, price, vol)
             self._volume_header(p, vol, len(self.dates) - 1)
             p.end()
             return
 
-        # Hi / Lo markers for the visible range
-        if i1 >= i0 and candles:
-            ih = max(range(i0, i1 + 1), key=lambda i: self.h[i])
-            il = min(range(i0, i1 + 1), key=lambda i: self.l[i])
-            # Only when the price is on screen (a zoomed price axis can leave it out)
-            if price.top() <= py(self.h[ih]) <= price.bottom():
-                self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}",
-                             above=True, pane=price)
-            if price.top() <= py(self.l[il]) <= price.bottom():
-                self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}",
-                             above=False, pane=price)
+        if candles:
+            self._draw_hi_lo(p, price, py, i0, i1)
 
         self._draw_drawings(p, price)          # the trendlines, price levels, notes...
         if self.intraday and self.show_ask_lines and legend:
@@ -1011,6 +1003,20 @@ class CandleChart(DrawingsMixin, QWidget):
                 return
 
     # ---- the range the price is bouncing in now (ATM tab) ----
+    def _draw_hi_lo(self, p, price, py, i0, i1):
+        """The Hi / Lo markers of the visible range (the chart's and the screenshot's)."""
+        if i1 < i0:
+            return
+        ih = max(range(i0, i1 + 1), key=lambda i: self.h[i])
+        il = min(range(i0, i1 + 1), key=lambda i: self.l[i])
+        # Only when the price is on screen (a zoomed price axis can leave it out)
+        if price.top() <= py(self.h[ih]) <= price.bottom():
+            self._marker(p, self._x(ih, price), py(self.h[ih]), f"Hi: {fmt_chart_price(self.h[ih])}",
+                         above=True, pane=price)
+        if price.top() <= py(self.l[il]) <= price.bottom():
+            self._marker(p, self._x(il, price), py(self.l[il]), f"Lo: {fmt_chart_price(self.l[il])}",
+                         above=False, pane=price)
+
     def _bounce_x0(self, price):
         x0 = max(self._x(self.bounce_start, price) - self._bar_w(price) / 2, price.left())
         if self.clean_lines is not None and x0 > price.right() - 120:
