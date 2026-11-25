@@ -175,6 +175,41 @@ def log(text):
         pass
 
 
+def trade_change_line(msg, answer, old, store_v):
+    """A line of trade_changes.txt: an ATM trade's change, as the main server took it (or refused it) - who made it
+    (the computer, its app's id: a new id is an app just started), from which version, and what it did."""
+    new = msg.get("data")
+    d = new if isinstance(new, dict) else old if isinstance(old, dict) else {}
+
+    def state(x):
+        return x.get("state", "?") if isinstance(x, dict) else "none"
+    if answer.get("type") == "refused":
+        what = f"REFUSED ({answer.get('why') or 'stale'}): wanted {state(old)} -> {state(new)}"
+    elif new is None:
+        what = f"deleted (was {state(old)})"
+    elif old is None:
+        what = f"new ({state(new)})"
+    else:
+        changed = sorted(k for k in set(old) | set(new) if k not in ("history", "level2") and old.get(k) != new.get(k))
+        what = f"{state(old)} -> {state(new)}" if state(old) != state(new) else state(new)
+        if changed:
+            what += f"; {', '.join(changed[:8])}{' ...' if len(changed) > 8 else ''}"
+    return (f"{msg.get('key')} {d.get('ticker', '?')}: {what} | from {msg.get('from') or '?'} app {msg.get('by') or '?'}"
+            f" | base v{msg.get('base')}, was v{store_v}" + (f", now v{answer.get('v')}" if answer.get("type") == "changed" else ""))
+
+
+def log_trade_change(text):
+    """trade_changes.txt, beside server_log.txt (the main server's: every ATM trade's change it took or refused)."""
+    path = LOG_PATH.with_name("trade_changes.txt")
+    try:
+        if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
+            path.write_text(path.read_text(encoding="utf-8")[-LOG_MAX_BYTES // 2:], encoding="utf-8")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {text}\n")
+    except OSError:
+        pass
+
+
 def login_expired(error: Exception) -> bool:
     text = f"{type(error).__name__} {error}".lower()
     return any(s in text for s in ("invalid_grant", "refresh_token", "unauthorized", "invalid_client", "401"))
@@ -757,12 +792,20 @@ class Server:
     # ------------------------------------------------------------ the shared data ---
     def on_change(self, conn, msg):
         """A change of the shared data: applied here (main server), or passed on to it (client)."""
+        # the computer it comes from (its app's: this one; a client's: stamped there), for trade_changes.txt
+        if conn is None or not getattr(conn, "peer", False):
+            msg.setdefault("from", f"{self.name} {self.version}")
+        elif not msg.get("from"):
+            msg["from"] = f"{getattr(conn, 'name', '?')} {getattr(conn, 'version', '')}".strip()
         if not self.leader:
             self.pending[str(msg.get("id"))] = conn
             self.up_send(msg)
             return
-        old = (self.store.items.get(str(msg.get("key"))) or {}).get("data")
+        before = self.store.items.get(str(msg.get("key"))) or {}
+        old = before.get("data")
         answer, new = self.store.apply(msg)
+        if str(msg.get("key", "")).startswith("atm/"):
+            log_trade_change(trade_change_line(msg, answer, old, before.get("v", 0)))
         if answer["type"] == "changed" and new:
             self.broadcast(answer)
             self.to_peers(answer)
