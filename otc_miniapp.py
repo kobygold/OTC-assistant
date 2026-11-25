@@ -290,7 +290,7 @@ class MiniApp:
 
     def computers_changed(self):
         """(main server) A computer came or went: everyone told again, when the desktop apps open changed."""
-        if self.apps_told is not None and self.desktop_apps() != self.apps_told:
+        if self.desktop_apps() != self.apps_told:      # (published at the start too: the computers that join later)
             try:
                 asyncio.get_running_loop().create_task(self.tell_online())
             except RuntimeError:
@@ -301,8 +301,10 @@ class MiniApp:
         each user once, with the accounts their phones are linked to. Empty when a computer becomes the main
         server (no phone on it yet)."""
         users = [{"name": p.label(), "accounts": sorted(p.accounts)} for p in list(self.phones) if p.user]
+        apps = apps if apps is not None else self.desktop_apps()
+        self.apps_told = apps           # (a computer that comes or goes later: published again, computers_changed)
         self.server.put_shared(ONLINE_KEY, {"users": sorted(users, key=lambda u: u["name"]),
-                                            "apps": apps if apps is not None else self.desktop_apps(), "by": self.server.name})
+                                            "apps": apps, "by": self.server.name})
 
     def accounts_of(self, user_id):
         """The accounts the Telegram user's chat is linked to: tail -> {"tail", "mode", "trading"}."""
