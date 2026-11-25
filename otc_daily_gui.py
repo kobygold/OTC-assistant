@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.255"
+APP_VERSION = "2.7.256"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2803,10 +2803,21 @@ class MainWindow(QMainWindow):
         II (level2: a panel showing the ticker, or None), saved in SHOTS_DIR. (image, path, its text - the trade
         plan, as the checklist's copy icon copies it) or why not."""
         chart.clean_lines = self.screenshot_lines(ticker, ck)
+        # the bounce range's purple lines and levels, always (Bounces off too, or the Mini App's chart): the
+        # chart's scale stretches to show both
+        kept = chart.bounce, chart.bounce_start
+        if chart.bounce is None:
+            try:
+                rng = self.bounce_for(self.candle_rows(ticker), always=True)
+                if rng is not None:
+                    chart.set_bounce(rng)
+            except Exception as ex:          # (no bounce lines then; the picture still made)
+                print(f"screenshot: no bounce range for {ticker}: {ex}")
         try:
             top = chart.grab().toImage()
         finally:
             chart.clean_lines = None
+            chart.bounce, chart.bounce_start = kept
             chart.update()
         dpr = top.devicePixelRatio()
         top.setDevicePixelRatio(1)          # (drawn pixel for pixel: the screen's scaling kept, not shrunk)

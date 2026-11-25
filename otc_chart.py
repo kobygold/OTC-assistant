@@ -544,6 +544,14 @@ class CandleChart(DrawingsMixin, QWidget):
                         lo, hi = lo - pad, hi + pad
                     pad = (hi - lo) * 0.04
                     lo, hi = lo - pad, hi + pad
+        # the screenshot: both bounce levels (the purple lines, their bands) always in sight
+        if self.clean_lines is not None and self.bounce is not None and self.bounce.low and self.bounce.high:
+            b = self.bounce
+            want_lo, want_hi = b.low * (1 - b.tol), b.high * (1 + b.tol)
+            if want_lo < lo or want_hi > hi:
+                lo, hi = min(lo, want_lo), max(hi, want_hi)
+                pad = (hi - lo) * 0.06          # (room for the labels: above the high band, below the low one)
+                lo, hi = lo - pad, hi + pad
         # the open orders don't stretch the scale: one off it is a tag on the pane's edge
         orders = self.order_lines(self.ticker) if self.order_lines and self.ticker else []
         self._scale = (lo, hi)
@@ -611,8 +619,7 @@ class CandleChart(DrawingsMixin, QWidget):
             p.restore()
         if not self.intraday and not clean:     # the zones are for days
             self._draw_zones(p, price, py)
-        if not clean:
-            self._draw_bounce(p, price, py)     # the bounce range (from the days) on the 1-minute view too
+        self._draw_bounce(p, price, py)         # the bounce range (from the days) on the 1-minute view too
 
         legend = None
         if self.intraday and self.show_ask_lines and not clean:
@@ -674,6 +681,7 @@ class CandleChart(DrawingsMixin, QWidget):
                     p.setPen(QColor(CLEAN_LABEL))
                     p.drawText(QRectF(price.left(), y - 18, price.width() - 6, 16),
                                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"${fmt_axis(value)}")
+            self._draw_bounce_labels(p, price, py)      # (the purple lines' levels)
             self._draw_x_axis(p, price, vol)
             self._volume_header(p, vol, len(self.dates) - 1)
             p.end()
@@ -1004,7 +1012,10 @@ class CandleChart(DrawingsMixin, QWidget):
 
     # ---- the range the price is bouncing in now (ATM tab) ----
     def _bounce_x0(self, price):
-        return max(self._x(self.bounce_start, price) - self._bar_w(price) / 2, price.left())
+        x0 = max(self._x(self.bounce_start, price) - self._bar_w(price) / 2, price.left())
+        if self.clean_lines is not None and x0 > price.right() - 120:
+            x0 = price.left()       # (the screenshot: the lines always shown, from the left when the range starts later)
+        return x0
 
     def _draw_bounce(self, p, price, py):
         """Each level as a line, in a light band as wide as the touch tolerance, from the day the
