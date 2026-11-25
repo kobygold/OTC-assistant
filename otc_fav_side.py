@@ -15,7 +15,7 @@ UP, DOWN = "#3ccf3c", "#ff6060"
 CURRENT_BG = "#24405e"                 # the chart's ticker's row
 STEPS_ROLE = Qt.ItemDataRole.UserRole + 1
 R, GAP = 5, 12                          # the small steps' circles
-PANEL_W = 170                           # the panel's width (open)
+PANEL_W = 190                           # the panel's width (open; the index on the left took 20)
 COLUMNS = ["Ticker", "ATM", "✓"]
 ATM_COL, CHECKS_COL = 1, 2
 KEY_OPEN_MS = 150                       # Up / Down held: the chart opens once the keys stop this long
@@ -120,8 +120,14 @@ class FavSidePanel(QWidget):
         t.setHorizontalHeaderLabels(COLUMNS)
         t.horizontalHeaderItem(CHECKS_COL).setToolTip("Check L1/L2: the checks passed (live from the stream)")
         t.horizontalHeaderItem(ATM_COL).setToolTip("The ATM trade's 4 steps: buy sent, bought, sell sent, sold")
-        t.verticalHeader().setVisible(False)
-        t.verticalHeader().setDefaultSectionSize(22)
+        # the index on the left: 1, 2, 3... of the rows shown (not a ticker's: it counts them)
+        v = t.verticalHeader()
+        v.setDefaultSectionSize(22)
+        v.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        v.setDefaultAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        v.setSectionsClickable(False)
+        v.setStyleSheet(f"QHeaderView::section {{ background: #0d1014; color: {DIM}; border: none; "
+                        "padding: 0px 3px 0px 0px; font-size: 8pt; }")
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)    # the chart's ticker's row is the highlight
@@ -130,7 +136,9 @@ class FavSidePanel(QWidget):
         t.setWordWrap(False)
         t.setItemDelegateForColumn(ATM_COL, SmallSteps(t))
         t.setStyleSheet("QTableWidget { background: #0d1014; color: #e0e0e0; border: 1px solid #2a3038; } "
-                        "QTableWidget::item:focus { outline: none; }")
+                        "QTableWidget::item:focus { outline: none; } "
+                        "QTableCornerButton::section { background: #0d1014; border: none; }")
+        t.setCornerButtonEnabled(False)
         t.setItemDelegate(KeepColorDelegate(t))       # selected: each cell keeps its color
         h = t.horizontalHeader()
         h.setMinimumSectionSize(20)
@@ -319,6 +327,8 @@ class FavSidePanel(QWidget):
             hit = not text or text in ticker.upper() or text in (r.get("name") or "").upper()
             self.table.setRowHidden(i, not hit)
             shown += hit
+            # the index: the rows shown counted from 1 (a filter, a favorite added or removed: again 1, 2, 3...)
+            self.table.setVerticalHeaderItem(i, QTableWidgetItem(str(shown) if hit else ""))
         n = len(self.rows)
         if n:
             self.title.setText(f"★ Mini Favorites ({shown} of {n})" if text else f"★ Mini Favorites ({n})")
