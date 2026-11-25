@@ -13,8 +13,9 @@ chart's ticker's news from the news channel's history (news.db, otc_news_db), mo
 import html
 from datetime import datetime, timedelta
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette, QPen
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen,
+                         QPixmap, QPolygonF)
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHeaderView, QLabel, QPushButton,
                              QStyledItemDelegate, QToolButton, QToolTip,
                              QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
@@ -29,6 +30,29 @@ KINDS = {"dilution": "dilution", "shares": "shares down", "filing": "filing", "t
 FILTERS = [("All", None), ("⚠️ Warnings", "warn"), ("Dilution", {"dilution"}), ("Filings", {"filing"}),
            ("Tier", {"tier_down", "tier_up", "grace"}), ("Headlines", {"headline"})]
 RANGES = [("1M", 30), ("3M", 90), ("6M", 180)]
+NEWS_CHANNEL_URL = "https://web.telegram.org/a/#-1002497575051"     # the news channel (OTC Millionaire) in Telegram Web
+
+
+def telegram_icon(size=18):
+    """Telegram's sign: a blue circle with a white paper plane, drawn at 4x and anti-aliased."""
+    scale = 4
+    pix = QPixmap(size * scale, size * scale)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(scale)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#2aabee"))
+    p.drawEllipse(QRectF(0, 0, size, size))
+    s = size / 18
+    p.setBrush(QColor("#ffffff"))
+    p.drawPolygon(QPolygonF([QPointF(3.6 * s, 8.8 * s), QPointF(13.6 * s, 4.9 * s), QPointF(11.9 * s, 13.4 * s),
+                             QPointF(8.9 * s, 11.2 * s), QPointF(7.4 * s, 12.7 * s), QPointF(7.2 * s, 10.3 * s)]))
+    p.setBrush(QColor("#c8daea"))
+    p.drawPolygon(QPolygonF([QPointF(7.2 * s, 10.3 * s), QPointF(12.3 * s, 6.3 * s), QPointF(8.9 * s, 11.2 * s),
+                             QPointF(7.4 * s, 12.7 * s)]))
+    p.end()
+    return QIcon(pix)
 
 
 def short(n):
@@ -305,6 +329,15 @@ class NewsPanel(QWidget):
                                     "QToolButton:hover { background: #2a3a4a; color: #ffffff; }")
         self.copy_btn.clicked.connect(self.copy_raw)
         self.copy_btn.hide()
+        # beside it: the news channel in Telegram Web, in the browser
+        self.tg_btn = QToolButton(self.post.viewport())
+        self.tg_btn.setIcon(telegram_icon())
+        self.tg_btn.setIconSize(QSize(18, 18))
+        self.tg_btn.setToolTip("Open the news channel (OTC Millionaire) in Telegram, in the browser")
+        self.tg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tg_btn.setStyleSheet("QToolButton { background: #1b2229; border: 1px solid #3a4046; border-radius: 3px; "
+                                  "padding: 2px 4px; } QToolButton:hover { background: #2a3a4a; }")
+        self.tg_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(NEWS_CHANNEL_URL)))
         self.post.viewport().installEventFilter(self)
         self.shares = SharesChart()
         right.addWidget(self.shares)
@@ -321,8 +354,15 @@ class NewsPanel(QWidget):
 
     def place_copy_btn(self):
         self.copy_btn.adjustSize()
-        self.copy_btn.move(self.post.viewport().width() - self.copy_btn.width() - 4, 4)
+        self.tg_btn.adjustSize()
+        h = max(self.copy_btn.sizeHint().height(), self.tg_btn.sizeHint().height())
+        self.copy_btn.setFixedHeight(h)
+        self.tg_btn.setFixedSize(h + 4, h)
+        right = self.post.viewport().width() - 4
+        self.copy_btn.move(right - self.copy_btn.width(), 4)
+        self.tg_btn.move((self.copy_btn.x() if self.copy_btn.isVisible() else right) - self.tg_btn.width() - 4, 4)
         self.copy_btn.raise_()
+        self.tg_btn.raise_()
 
     def copy_raw(self):
         from PyQt6.QtWidgets import QApplication
