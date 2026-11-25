@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.240"
+APP_VERSION = "2.7.241"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -4778,8 +4778,7 @@ class MainWindow(QMainWindow):
             return
         self.show_check(ticker, self.check_of(ticker, r, prep, self.atm_check_info, self.probe.held))
 
-    @staticmethod
-    def check_of(ticker, r, prep, info, held):
+    def check_of(self, ticker, r, prep, info, held):
         """A ticker's Checks result {"passed" (None: N/A), "tip"} from its market r ({"q", "bids", "asks",
         "has_l2", "source", "at"}), its candle part prep and (days, period, usd)."""
         rows, rng, reloaders = prep
@@ -4793,8 +4792,12 @@ class MainWindow(QMainWindow):
             c = {"passed": None, "tip": "N/A: " + ("wasn't recorded before the last close" if held
                                                    else "no Level 1 or Level II came")}
         else:
+            try:        # as the checklist panel works it out: the ATM trade's entry / exit, the prices pinned, the fee
+                inputs = self.checklist.plan_inputs(ticker)
+            except Exception:
+                inputs = None
             res = checklist.scan_checks(rows, days, rng, period, r["q"], r["bids"], r["asks"], r["has_l2"], usd,
-                                        reloaders)
+                                        reloaders, inputs)
             lines = []
             for key, label in checklist.SCAN_CHECKS:
                 state, tip = res[key]

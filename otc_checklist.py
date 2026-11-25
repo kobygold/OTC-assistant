@@ -408,13 +408,18 @@ SCAN_CHECKS = (("profit", "Potential profit"), ("ratio", "Profit-to-loss ratio")
                ("avg_volume", "Average volume"), ("steady", "Few dead days (no trades)"))
 
 
-def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD, reloaders=None):
-    """The ATM scanner's checks of a ticker, with the automatic entry, exit and stop:
-    {key: (state, tip)} for SCAN_CHECKS. q: its Level 1 (stream names), bids / asks: its Level II
+def scan_checks(rows, market_days, rng, period, q, bids, asks, has_l2, usd=POSITION_USD, reloaders=None, inputs=None):
+    """The ATM scanner's checks of a ticker, with the automatic entry, exit and stop - or, given inputs (the
+    checklist's plan_inputs: its ATM trade's entry and exit, the prices pinned, its fee), as the checklist panel
+    works them out: {key: (state, tip)} for SCAN_CHECKS. q: its Level 1 (stream names), bids / asks: its Level II
     [(mm, price, size, level)], has_l2: a book came (else the Level II checks are unknown)."""
     bid = (q or {}).get("BID_PRICE") or (bids[0][1] if bids else None)
     ask = (q or {}).get("ASK_PRICE") or (asks[0][1] if asks else None)
-    p = plan(bid, ask, bids, usd)
+    if inputs:
+        p = plan(bid, ask, bids, inputs["usd"], inputs["entry"], inputs["exit"], inputs["stop"], inputs["fee"],
+                 inputs["shares"])
+    else:
+        p = plan(bid, ask, bids, usd)
     out = {}
     for key in ("profit", "ratio"):
         state, need = target_state(key, p[key])
@@ -4441,10 +4446,10 @@ class ChecklistPanel(QWidget):
         self.save_settings(self.settings)
 
     # ---- typed-over values: the size for all tickers, the prices per ticker ----
-    def overrides(self):
-        """{key: number} of the typed-over values in use for the current ticker."""
+    def overrides(self, ticker=None):
+        """{key: number} of the typed-over values in use for the current ticker (or the one given)."""
         out = {}
-        raw = dict(self.settings.get("checklist_prices", {}).get(self.ticker, {}))
+        raw = dict(self.settings.get("checklist_prices", {}).get(ticker or self.ticker, {}))
         if self.settings.get("checklist_size"):
             raw["size"] = self.settings["checklist_size"]
         for key, text in raw.items():
@@ -4907,30 +4912,10 @@ class ChecklistPanel(QWidget):
         """{key: (state, value text, tooltip)} for the auto and info keys."""
         bid = self.bid or (self.bids[0][1] if self.bids else None)
         ask = self.ask or (self.asks[0][1] if self.asks else None)
-        own = self.overrides()
-        default = self.default_usd()
-        usd = own.get("size", default)
-        fee, fee_details = self.fees.get(self.ticker, (None, "No ticker"))
-        fee_used = FEE_USD if fee is None else fee
-        order = self.order()
-        shares = ((self.atm.remaining(order) if order.get("state") in ("bought", "sell_open") else 0)
-                  or order.get("filled") or order.get("shares")) if order else None
-        if order:
-            own["entry"] = order["entry"]       # the buy's price: exit and stop are worked out from it
-        selling = self.selling("exit")
-        if selling:                             # the open sell: its price, or the new exit typed
-            own["exit"] = self.sell_draft_price(selling) or selling["sell_price"]
-        elif order and order.get("state") in ("buy_open", "bought") and not own.get("exit"):
-            own["exit"] = current_exit(order)   # not pinned: the trade's exit (as the Monitor tab's New Price)
-        new = self.drafting()
-        if new is not None:
-            price, n, _, changed = self.draft_values(new)
-            if changed:                     # the new values typed beside the buy's: what they would give
-                own["entry"], shares = price, n
-        pinned_shares = int(own["shares"]) if not order and own.get("shares") else None
-        if pinned_shares:               # the amount pinned for this ticker: the $ follows it
-            shares = pinned_shares
-        p = plan(bid, ask, self.bids, usd, own.get("entry"), own.get("exit"), own.get("stop"), fee_used, shares)
+        i = self.plan_inputs(self.ticker)
+        default, usd, fee, fee_details, fee_used = i["default"], i["usd"], i["fee_read"], i["fee_details"], i["fee"]
+        order, shares, pinned_shares = i["order"], i["shares"], i["pinned_shares"]
+        p = plan(bid, ask, self.bids, usd, i["entry"], i["exit"], i["stop"], fee_used, shares)
         if pinned_shares and p["entry"]:
             usd = round(pinned_shares * p["entry"], 6)
         self.last_plan = (p, usd)       # for the trade plan the ticker copies
@@ -4991,6 +4976,35 @@ class ChecklistPanel(QWidget):
         else:
             r["no_dilution"] = (OK, "", "")
         return r
+
+    def plan_inputs(self, ticker):
+        """What the plan of a ticker is worked out from, as this panel does (its ATM trade's entry and exit, the
+        prices pinned for it, its fee): {"usd", "entry", "exit", "stop", "fee", "shares", ...}. Any ticker (the
+        Mini Favorites' checks too); the new values typed beside an open buy count for the panel's ticker only."""
+        own = self.overrides(ticker)
+        default = self.default_usd()
+        usd = own.get("size", default)
+        fee, fee_details = self.fees.get(ticker, (None, "No ticker"))
+        order = self.order(ticker) if ticker else None
+        shares = ((self.atm.remaining(order) if order.get("state") in ("bought", "sell_open") else 0)
+                  or order.get("filled") or order.get("shares")) if order else None
+        if order:
+            own["entry"] = order["entry"]       # the buy's price: exit and stop are worked out from it
+        if order and order.get("state") == "sell_open" and order.get("sell_price"):
+            own["exit"] = self.sell_draft_price(order) or order["sell_price"]     # the open sell (or its new exit typed)
+        elif order and order.get("state") in ("buy_open", "bought") and not own.get("exit"):
+            own["exit"] = current_exit(order)   # not pinned: the trade's exit (as the Monitor tab's New Price)
+        new = self.drafting() if ticker == self.ticker else None
+        if new is not None:
+            price, n, _, changed = self.draft_values(new)
+            if changed:                     # the new values typed beside the buy's: what they would give
+                own["entry"], shares = price, n
+        pinned_shares = int(own["shares"]) if not order and own.get("shares") else None
+        if pinned_shares:               # the amount pinned for this ticker: the $ follows it
+            shares = pinned_shares
+        return {"usd": usd, "entry": own.get("entry"), "exit": own.get("exit"), "stop": own.get("stop"),
+                "fee": FEE_USD if fee is None else fee, "shares": shares, "default": default, "fee_read": fee,
+                "fee_details": fee_details, "order": order, "pinned_shares": pinned_shares}
 
     def volume_rows(self):
         """vol_entry / vol_exit: of the days in the candles (otc_fills), those with enough volume at / past the entry
