@@ -428,17 +428,15 @@ class CandleChart(DrawingsMixin, QWidget):
         if not n:
             self.update()
             return
-        if self.intraday:       # the last two trading days, as thinkorswim's 1D
-            days = sorted(set(self.dates))
-            start = bisect_left(self.dates, days[-2]) if len(days) > 1 else 0
+        if self.intraday:       # all the 1-minute candles read (otc_intraday.DAYS), the most history there is
+            start = 0
         elif months is None:
             start = 0
         else:
             cutoff = self.dates[-1] - timedelta(days=int(months * 30.44))
             start = bisect_left(self.dates, cutoff)
         if self.intraday:
-            # exactly the last two trading days, however few their candles (a thin OTC ticker trades a few
-            # minutes a day: at least 10 candles would reach days back)
+            # every candle, however few (a thin OTC ticker trades a few minutes a day)
             self.count = float(max(n - start, 1) + RIGHT_PAD_BARS)
             self.first = float(start)
             self.update()
