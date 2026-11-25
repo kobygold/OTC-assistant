@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.259"
+APP_VERSION = "2.7.260"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3614,7 +3614,7 @@ class MainWindow(QMainWindow):
             title = QLabel(name + ":")
             title.setStyleSheet("font-size: 11pt;")
             value = QLabel("—")
-            value.setStyleSheet("font-size: 12pt; font-weight: bold;")       # (the theme's color)
+            value.setStyleSheet("font-size: 12pt; font-weight: bold; color: #ffd54f;")      # (yellow)
             for w in (title, value):
                 w.setToolTip(tip)
                 line.addWidget(w)
