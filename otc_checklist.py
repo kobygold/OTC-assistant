@@ -61,6 +61,7 @@ NA = "N/A"              # a value that isn't known (yet)
 EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed over
 # Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
 TARGETS = {"profit": 25.0, "ratio": 3.0}
+FEE_SIGN_USD = 7.0      # a fee above this: the yellow sign beside the ticker (the red one, dangerous, comes first)
 MIN_SHARES, MIN_SHARES_PENNY = 10_000, 5_000     # the least amount of stocks (Pennies: an entry of 0.01 and up)
 # the lines' tooltips (their label and mark): short, in Hebrew, by the item's key
 LABEL_TIPS = {
@@ -5258,11 +5259,15 @@ class ChecklistPanel(QWidget):
                 w.setToolTip(why)
             sign = getattr(self, "ticker_risk_sign", None)
             if sign is not None:
-                icon = (self.risk_icons or {}).get(risk[0]) if risk else None
+                # the red sign (dangerous); else the yellow one when its fee (read from Schwab) is more than $7
+                fee = (self.fees.get(self.ticker) or (None, ""))[0] if self.ticker else None
+                pricey = not risk and fee is not None and fee > FEE_SIGN_USD
+                icon = (self.risk_icons or {}).get(risk[0] if risk else 1 if pricey else None)
                 sign.setVisible(icon is not None)
                 if icon is not None:
                     sign.setPixmap(icon.pixmap(16, 16))
-                    sign.setToolTip(why)
+                    sign.setToolTip(why if risk else f"Fee ${fee:.2f}: more than ${FEE_SIGN_USD:.2f} (on the buy "
+                                    f"and again on the sell)")
             total += 1
             passed += st == OK
 
