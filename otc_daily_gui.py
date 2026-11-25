@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.258"
+APP_VERSION = "2.7.259"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3598,7 +3598,7 @@ class MainWindow(QMainWindow):
                     ("stocks", "שווי המניות", "המניות שבידיך, לפי המחיר של היום"),
                     ("reserved", "שמור להזמנות קנייה", "הזמנות הקנייה הפתוחות ועמלה על כל אחת"),
                     ("unsettled", "ממתין לסליקה", "כסף ממכירה שעוד לא נסלקה"),
-                    ("withdraw", "זמין למשיכה", "מה שאפשר להוציא מהחשבון"))
+                    ("withdraw", "זמין למשיכה", "מה שאפשר להוציא בלי לפגוע בהזמנות הקנייה הפתוחות"))
 
     def build_balances(self):
         """שווי החשבון and פנוי לקניה on a line (right to left), and under it the breakdown, folded or open."""
