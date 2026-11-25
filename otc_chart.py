@@ -1580,10 +1580,17 @@ class CandleChart(DrawingsMixin, QWidget):
         if self.intraday:
             gap = QFontMetrics(p.font()).horizontalAdvance("88:88") + 14
             starts = set(self._day_starts(max(start, 0), min(end, len(self.dates) - 1)))
+            # the first candle shown always names its day too (at the left edge), so a view of one
+            # day only, or one that starts mid-day, still shows which day it is
+            first = max(start, 0)
+            if first < len(self.dates) and first not in starts:
+                starts.add(first)
             candidates = []
             for i in range(start, end + 1):
                 when = self._time_at(i)
                 x = self._x(i, price)
+                if i == first:
+                    x = max(x, price.left() + gap / 2)
                 if when is not None and price.left() + 10 <= x <= price.right() - 10:
                     candidates.append((x, f"{when:%a}" if i in starts else f"{when:%H:%M}", i in starts))
             self._place_axis_labels(p, vol, candidates, gap)
