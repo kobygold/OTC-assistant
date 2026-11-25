@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.242"
+APP_VERSION = "2.7.243"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -984,16 +984,25 @@ class MainWindow(QMainWindow):
         self.telegram = TelegramPanel(self.settings, save_settings, self.server, self.shared,
                                       demo_source=self.telegram_demo)
         self.settings_tab_index = self.tabs.addTab(self._build_settings_tab(), "Settings")
-        # a small number before each tab's name: 1, 2, 3... of the tabs shown (the hidden Screener not counted)
+        # a small blue number before each tab's name: 1, 2, 3... of the tabs shown (the hidden Screener not counted).
+        # The number and the name are one label (the tab's own text left empty), so the number sits right by it
         bar, n = self.tabs.tabBar(), 0
+        self.tab_names = {}         # tab -> its label (the name white when selected: color_tab_names)
         for i in range(self.tabs.count()):
             if not self.tabs.isTabVisible(i):
                 continue
             n += 1
-            num = QLabel(str(n))
-            num.setStyleSheet("color: #7c8590; font-size: 7pt; background: transparent; padding: 0px 0px 0px 2px;")
-            num.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)    # (a click: its tab)
-            bar.setTabButton(i, QTabBar.ButtonPosition.LeftSide, num)
+            name = QLabel(f"<span style='color:#4fa3f7; font-size:7pt;'>{n}</span>&nbsp;{html.escape(self.tabs.tabText(i))}")
+            name.setTextFormat(Qt.TextFormat.RichText)
+            name.setContentsMargins(8, 0, 2, 0)
+            name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)    # (a click: its tab)
+            self.tabs.setTabToolTip(i, self.tabs.tabText(i))
+            self.tabs.setTabText(i, "")
+            bar.setTabButton(i, QTabBar.ButtonPosition.LeftSide, name)
+            self.tab_names[i] = name
+        bar.setStyleSheet("QTabBar::tab { padding-left: 0px; padding-right: 0px; }")    # (the label has the room)
+        self.tabs.currentChanged.connect(self.color_tab_names)
+        self.color_tab_names()
         # Check for update (the tabs line's right end): the sources from GitHub, then a restart
         self.updater = Updater()
         self.updater.done.connect(self.on_update)
@@ -2731,6 +2740,12 @@ class MainWindow(QMainWindow):
             return
         self.news_asked = time.time()
         self.server.send({"type": "news_refresh"})
+
+    def color_tab_names(self, *_):
+        """The tabs' names (labels, beside their numbers): the selected one white, the others gray (as tab text)."""
+        for i, name in getattr(self, "tab_names", {}).items():
+            name.setStyleSheet(f"color: {'#ffffff' if i == self.tabs.currentIndex() else '#b8b8b8'}; "
+                               "background: transparent;")
 
     def show_news_count(self, n, warn):
         """The News tab: the last 7 days' count, orange (red with a warning)."""
