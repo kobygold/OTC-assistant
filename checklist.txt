@@ -59,6 +59,9 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - הפסד פוטנציאלי - בתוספת עמלות
   info(loss_usd): -(amount of stocks x (entry - stop)) - the fee above for the buy - the sell's (the same, but never more
         than the sale brings: Schwab's cap)
+- ספרד בין תמיכה להתנגדות
+  info(sr_spread): the bounce range's resistance (high level) over its support (low level), in %:
+        (high - low) / low, as the chart's purple High / Low lines. N/A when there's no bounce range
 
 
 ## 1 חיפוש המנייה

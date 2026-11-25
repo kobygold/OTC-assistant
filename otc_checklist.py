@@ -81,6 +81,7 @@ LABEL_TIPS = {
     "loss_gross": "כמות × (כניסה - כרית), במינוס",
     "profit_usd": "כמות × (יציאה - כניסה), פחות עמלות הקנייה והמכירה",
     "loss_usd": "כמות × (כניסה - כרית) ועמלות הקנייה והמכירה, במינוס",
+    "sr_spread": "ההפרש באחוזים בין ההתנגדות (הקו העליון) לתמיכה (הקו התחתון) של טווח הקפיצות. N/A כשאין טווח",
     "range": "טווח הקפיצות הנוכחי התחיל לפני 30 יום לפחות",
     "no_diluter": "מי ראשון באסק: ✘ מדלל, ? עושה שוק לא ברור, ✔ אף אחד מהם",
     "buyers": "טריפס: סך הביד ≥ סך האסק. דאבס ומעלה: האסק עד פי 2 מהביד",
@@ -106,7 +107,7 @@ def min_shares_check(shares, entry):
 # the buy; the gains and losses worked out from them)
 # the thin lines between the panel's groups of rows: above the ticker, and after these (the Mini App draws them too)
 SPLIT_BEFORE = ("ticker",)
-SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "vol_exit", "fee", "loss_usd")
+SPLIT_AFTER = ("ticker", "shares", "stop", "ratio", "vol_exit", "fee", "loss_usd", "sr_spread")
 LOCKED = ("size", "entry", "exit", "stop", "profit", "loss", "profit_gross", "loss_gross", "profit_usd", "loss_usd",
           "ratio")
 LOCKED_W = 84             # px: the fixed cells' width
@@ -4965,6 +4966,13 @@ class ChecklistPanel(QWidget):
 
         r.update(self.volume_rows())
         r["range"] = range_check(self.rows, self.range)
+        # the support (low) and resistance (high): the chart's levels (its purple lines; set by the app), else the
+        # range of the month check (which looks further back) where the app gives none (the Mini App's)
+        rng = self.levels if hasattr(self, "levels") else self.range
+        r["sr_spread"] = ((INFO, f"{(rng.high - rng.low) / rng.low * 100:.1f}%",
+                           f"Resistance {fmt_price(rng.high)} / support {fmt_price(rng.low)} (the bounce range since "
+                           f"{rng.since})") if rng is not None and rng.low else
+                          (INFO, NA, "No bounce range (no support and resistance levels) for this ticker"))
         r["min_shares"] = min_shares_check(p["shares"], p["entry"])
         if not self.l2_live:
             for key in ("l2_live", "no_diluter", "buyers", "cushion"):

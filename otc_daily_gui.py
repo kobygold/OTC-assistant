@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.251"
+APP_VERSION = "2.7.252"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -2490,6 +2490,8 @@ class MainWindow(QMainWindow):
         if not self.checklist.isVisible() or not self.chart.ticker:
             return
         days, rng = self.checklist_inputs(self.chart_rows)
+        # the support / resistance spread: the chart's own levels (its purple Low / High lines), Bounces on or off
+        self.checklist.levels = self.bounce_for(self.chart_rows, always=True)
         self.checklist.set_chart(self.chart.ticker, self.chart_rows, days, rng, self.avg_period.value())
 
     def candle_rows(self, ticker):
@@ -2564,10 +2566,10 @@ class MainWindow(QMainWindow):
             return None
         return self.bounce_for(self.chart_rows)
 
-    def bounce_for(self, chart_rows):
-        """The bounce range of a ticker's daily candles with the ATM tab's settings (Bounces on), or None: the
-        desktop chart's and the Mini App's."""
-        if not self.bounces_show.isChecked() or not chart_rows:
+    def bounce_for(self, chart_rows, always=False):
+        """The bounce range of a ticker's daily candles with the ATM tab's settings (Bounces on, or always), or
+        None: the desktop chart's and the Mini App's."""
+        if not (always or self.bounces_show.isChecked()) or not chart_rows:
             return None
         con = db()
         try:
