@@ -44,8 +44,13 @@ def run(args, timeout=120):
 class Updater(QObject):
     done = pyqtSignal(dict)
 
-    def check(self):
-        threading.Thread(target=lambda: self.done.emit(self._safe(self._check)), name="update", daemon=True).start()
+    def check(self, auto=False):
+        """auto: the app's own check every few minutes (its answer has "auto": True: no message, the button only)."""
+        def go():
+            r = self._safe(self._check)
+            r["auto"] = bool(auto)
+            self.done.emit(r)
+        threading.Thread(target=go, name="update", daemon=True).start()
 
     def update(self):
         threading.Thread(target=lambda: self.done.emit(self._safe(self._update)), name="update", daemon=True).start()

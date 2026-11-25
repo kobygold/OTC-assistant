@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.262"
+APP_VERSION = "2.7.263"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -89,6 +89,8 @@ ICON_PATH = APP_DIR / "app_icon.ico"
 CAPTION_MAX = 1024      # Telegram: a picture's text at most this long
 REJECT_KEEP_S = 60      # the Orders button: a rejection kept on it this long (not covered by the next news)
 SHOTS_DIR = APP_DIR / "screenshots"     # the camera's pictures (the chart and its Level II)
+AUTO_UPDATE_S = 300                     # GitHub looked at by itself this often (a newer version: the button red)
+UPDATE_BLINK_MS = 5000                  # still not updated at the next look: the button blinks this long
 SHOT_ENTRY = SHOT_EXIT = "#e066e6"     # the screenshot's lines: the entry and the exit (light purple, as thinkorswim's)
 
 # Massive refusing 3 days in a row ("not authorized"), all older than a month, means
@@ -1041,6 +1043,17 @@ class MainWindow(QMainWindow):
                                    "files (git pull) and restarts it.")
         self.update_btn.clicked.connect(self.check_update)
         right_row.addWidget(self.update_btn)
+        # checked by itself every AUTO_UPDATE_S: a newer version on GitHub turns the button red; still not
+        # updated at the next check: it blinks for UPDATE_BLINK_MS (then red again, until the next check)
+        self.update_btn_style = self.update_btn.styleSheet()
+        self.update_waiting = None          # the newer version found (None: none)
+        self.update_blink = QTimer(self)
+        self.update_blink.setInterval(250)
+        self.update_blink.timeout.connect(self.blink_update_btn)
+        self.auto_update_timer = QTimer(self)
+        self.auto_update_timer.timeout.connect(self.auto_check_update)
+        self.auto_update_timer.start(AUTO_UPDATE_S * 1000)
+        QTimer.singleShot(60_000, self.auto_check_update)          # (the first: a minute after the start)
         self.restart_btn = QPushButton("Restart")
         self.restart_btn.setToolTip("Closes the app and starts it again (its server too)")
         self.restart_btn.clicked.connect(self.restart_app)
@@ -3899,6 +3912,46 @@ class MainWindow(QMainWindow):
         self.clock_timer.start(1000 - now.microsecond // 1000 + 5)
 
     # ---- Check for update ----
+    def auto_check_update(self):
+        """Every AUTO_UPDATE_S: GitHub looked at quietly (not while a check or an update of the button runs)."""
+        if self.update_btn.isEnabled():
+            self.updater.check(auto=True)
+
+    def mark_update(self, r):
+        """A check's answer on the button: red while GitHub has a newer version; one seen at the check before too
+        (still not updated): it blinks for UPDATE_BLINK_MS. Back to plain when there's none."""
+        if r.get("error") or r.get("step") != "check":
+            return
+        if not hasattr(self, "update_tip"):
+            self.update_tip = self.update_btn.toolTip()         # (its usual tooltip)
+        if not r.get("behind"):
+            self.update_waiting = None
+            self.update_blink.stop()
+            self.update_btn.setStyleSheet(self.update_btn_style)
+            self.update_btn.setToolTip(self.update_tip)
+            return
+        again = self.update_waiting is not None
+        self.update_waiting = r.get("version") or "?"
+        self.update_btn.setToolTip(f"Version {self.update_waiting} is on GitHub (this is {APP_VERSION}): click to "
+                                   f"update.\n\n{self.update_tip}")
+        self.paint_update_btn(True)
+        if again and r.get("auto"):
+            self.blink_left = UPDATE_BLINK_MS // self.update_blink.interval()
+            self.update_blink.start()
+
+    def paint_update_btn(self, red):
+        self.update_btn.setStyleSheet(
+            "QPushButton { background: #d32f2f; color: #ffffff; font-weight: bold; } QPushButton:hover { background: #e53935; }"
+            if red else self.update_btn_style)
+
+    def blink_update_btn(self):
+        self.blink_left -= 1
+        if self.blink_left <= 0 or self.update_waiting is None:
+            self.update_blink.stop()
+            self.paint_update_btn(self.update_waiting is not None)      # (red again until the next check)
+            return
+        self.paint_update_btn(self.blink_left % 2 == 0)
+
     def check_update(self, quick=False):
         """quick (Ctrl+U): a newer version is updated to at once (not asked), and none is told by the button only."""
         self.update_quick = bool(quick)
@@ -3907,6 +3960,9 @@ class MainWindow(QMainWindow):
         self.updater.check()
 
     def on_update(self, r):
+        self.mark_update(r)
+        if r.get("auto"):
+            return                  # (the quiet check: the button's color only)
         self.update_btn.setEnabled(True)
         self.update_btn.setText("Check for update")
         if r.get("error"):
