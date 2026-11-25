@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.257"
+APP_VERSION = "2.7.258"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3523,6 +3523,7 @@ class MainWindow(QMainWindow):
         # the stocks owned in the account: sell them on the bid or the ask
         owned = self.owned_box = QGroupBox("Portfolio")
         play = QVBoxLayout(owned)
+        play.addWidget(self.build_balances())       # the account's money, above its stocks
         self.owned_table = PositionsTable(self.checklist.atm)
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         play.addWidget(self.owned_table)
@@ -3591,6 +3592,99 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1500, lambda: self.schwab_accounts_read or self.read_schwab_accounts())
         self.show_schwab_accounts()
         return tab
+
+    # ---- the Monitor tab's Portfolio: the account's money (Schwab's balances, read with its stocks) ----
+    BALANCE_ROWS = (("cash", "מזומן", "כל המזומן בחשבון"),
+                    ("stocks", "שווי המניות", "המניות שבידיך, לפי המחיר של היום"),
+                    ("reserved", "שמור להזמנות קנייה", "הזמנות הקנייה הפתוחות ועמלה על כל אחת"),
+                    ("unsettled", "ממתין לסליקה", "כסף ממכירה שעוד לא נסלקה"),
+                    ("withdraw", "זמין למשיכה", "מה שאפשר להוציא מהחשבון"))
+
+    def build_balances(self):
+        """שווי החשבון and פנוי לקניה on a line (right to left), and under it the breakdown, folded or open."""
+        box = QWidget()
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 4)
+        line = QHBoxLayout()
+        self.balance_labels = {}
+        for key, name, tip in (("total", "שווי החשבון", "המזומן והמניות לפי המחיר של היום"),
+                               ("free", "פנוי לקניה", "מה שנשאר לעסקה חדשה אחרי הזמנות הקנייה הפתוחות "
+                                                     "(כל אחת: כמות × מחיר, ועמלה)")):
+            title = QLabel(name + ":")
+            title.setStyleSheet("font-size: 11pt;")
+            value = QLabel("—")
+            value.setStyleSheet("font-size: 12pt; font-weight: bold;")       # (the theme's color)
+            for w in (title, value):
+                w.setToolTip(tip)
+                line.addWidget(w)
+            line.addSpacing(24)
+            self.balance_labels[key] = value
+        self.balances_btn = QToolButton()
+        self.balances_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.balances_btn.setStyleSheet("QToolButton { border: none; color: #4fa3f7; font-size: 10pt; }")
+        self.balances_btn.setToolTip("הפירוט: הצג / הסתר")
+        self.balances_btn.clicked.connect(lambda: self.open_balances(not self.balances_table.isVisible()))
+        line.addWidget(self.balances_btn)
+        line.addStretch()
+        self.balances_time = QLabel("")
+        self.balances_time.setStyleSheet("color: #808080;")
+        line.addWidget(self.balances_time)
+        lay.addLayout(line)
+        t = self.balances_table = QTableWidget(len(self.BALANCE_ROWS), 3)
+        t.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        t.setHorizontalHeaderLabels(["שם", "מה זה", "עכשיו"])
+        t.verticalHeader().hide()
+        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        t.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        t.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for r, (_key, name, what) in enumerate(self.BALANCE_ROWS):
+            t.setItem(r, 0, QTableWidgetItem(name))
+            t.setItem(r, 1, QTableWidgetItem(what))
+            money = QTableWidgetItem("—")
+            money.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            t.setItem(r, 2, money)
+        t.resizeColumnsToContents()
+        t.setColumnWidth(2, max(t.columnWidth(2), 100))
+        t.setFixedWidth(sum(t.columnWidth(c) for c in range(3)) + 4)
+        lay.addWidget(t, 0, Qt.AlignmentFlag.AlignLeading)      # (right to left: on the right)
+        self.open_balances(bool(self.settings.get("balances_open")), save=False)
+        self.checklist.atm.changed.connect(self.show_balances)
+        self.show_balances()
+        return box
+
+    def open_balances(self, on, save=True):
+        self.balances_table.setVisible(on)
+        if on:
+            QTimer.singleShot(0, self.fit_balances_table)      # (its rows' height: known once shown)
+        self.balances_btn.setText(("▾" if on else "◂") + " פירוט")
+        if save:
+            self.settings["balances_open"] = on
+            save_settings(self.settings)
+
+    def fit_balances_table(self):
+        """The breakdown as tall as its rows (no scrolling, no row cut)."""
+        t = self.balances_table
+        t.resizeRowsToContents()
+        t.setFixedHeight(max(t.horizontalHeader().height(), t.horizontalHeader().sizeHint().height())
+                         + t.verticalHeader().length() + 2 * t.frameWidth() + 2)
+
+    def show_balances(self):
+        """The chosen account's money, as last read (with its stocks)."""
+        atm_trades = self.checklist.atm
+        b = atm_trades.money.get(atm_trades.chosen_account() or "") or {}
+
+        def usd(v):
+            return "—" if v is None else f"${v:,.2f}"
+        for key, label in self.balance_labels.items():
+            label.setText(usd(b.get(key)))
+        for r, (key, _name, _what) in enumerate(self.BALANCE_ROWS):
+            self.balances_table.item(r, 2).setText(usd(b.get(key)))
+        when = str(b.get("time") or "")
+        self.balances_time.setText(f"נקרא {when[11:16]}" if when else "")
+        self.balances_time.setToolTip("" if b else "עוד לא נקרא מ-Schwab (או שהשרת הראשי לפני גרסה 2.7.258)")
 
     def update_tracked(self):
         """Streamed and recorded by the server, besides what the app shows: every account's
@@ -4136,6 +4230,7 @@ class MainWindow(QMainWindow):
         self.telegram.refresh()         # Settings → Telegram: this account's phones
         self.show_position_default()    # and its default position $
         self.show_mini_online()         # and its Mini App users
+        self.show_balances()            # and its money (Portfolio)
 
     def _build_atm_tab(self):
         tab = QWidget()

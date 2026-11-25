@@ -174,10 +174,33 @@ def read_orders(client, account_hash):
     return [o for o in map(order_info, r.json() or []) if o]
 
 
-def read_positions(client, account_hash):
-    """The stocks owned in the account, as position_info()."""
+def balances_info(account):
+    """The account's money, from Schwab's securitiesAccount (the same reply as its stocks): {"total": cash + stocks
+    at today's price, "free": cash left after the open buy orders (Schwab's projected balance: each one's shares x
+    its limit price and its fee set aside), "cash", "stocks", "reserved": set aside for the open buy orders,
+    "unsettled": sale money not settled yet, "withdraw": what can be taken out, "time"}, or None."""
+    cur, proj = account.get("currentBalances") or {}, account.get("projectedBalances") or {}
+    if not cur:
+        return None
+    trade = cur.get("cashAvailableForTrading")
+    free = proj.get("cashAvailableForTrading", trade)
+    return {"total": cur.get("liquidationValue"), "free": free, "cash": cur.get("cashBalance"),
+            "stocks": cur.get("longMarketValue"),
+            "reserved": round(trade - free, 2) if trade is not None and free is not None else None,
+            "unsettled": cur.get("unsettledCash"), "withdraw": cur.get("cashAvailableForWithdrawal"),
+            "time": datetime.now().isoformat(timespec="seconds")}
+
+
+def read_account(client, account_hash):
+    """The stocks owned in the account (as position_info()) and its money (balances_info())."""
     r = client.get_account(account_hash, fields=[client.Account.Fields.POSITIONS])
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}")
-    raw = (r.json() or {}).get("securitiesAccount", {}).get("positions", []) or []
-    return [p for p in map(position_info, raw) if p]
+    account = (r.json() or {}).get("securitiesAccount", {}) or {}
+    raw = account.get("positions", []) or []
+    return [p for p in map(position_info, raw) if p], balances_info(account)
+
+
+def read_positions(client, account_hash):
+    """The stocks owned in the account, as position_info()."""
+    return read_account(client, account_hash)[0]

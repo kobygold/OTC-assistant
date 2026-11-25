@@ -25,8 +25,8 @@ from PyQt6.QtGui import (QColor, QCursor, QIcon, QKeySequence, QPainter, QPalett
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                              QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
-from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, limit_order, limit_text, market_day, order_info, position_info,
-                        transaction_fills)
+from otc_orders import (ORDER_DONE, ORDERS_BACK_DAYS, balances_info, limit_order, limit_text, market_day, order_info,
+                        position_info, transaction_fills)
 from otc_chart import fmt_price, fmt_volume
 from otc_level2 import MM_RED, MM_YELLOW, reload_text
 from otc_trade import (DONE, FEE_USD, HALF, STEP_NAMES, bid_fill, current_exit, estimate_fees, pl_lines, pl_summary,
@@ -842,6 +842,7 @@ class SchwabTrader(QObject):
     orders = pyqtSignal(str, object, str)
     replaced = pyqtSignal(str, str, object, float, str)
     positions = pyqtSignal(str, object, str)    # account tail, [position_info()] or None, error
+    balances = pyqtSignal(str, object)          # account tail, balances_info(): its money (read with its stocks)
     sent = pyqtSignal(str, object, str)         # a sell from the stocks owned: key, order id or None, message
     transactions = pyqtSignal(str, object, str)     # key, [transaction_fills()] or None, error
     order_quote = pyqtSignal(str, str, object)      # account tail, order id, the market when it was sent
@@ -882,6 +883,8 @@ class SchwabTrader(QObject):
         account, data, error = msg.get("account", ""), msg.get("data"), msg.get("error", "")
         if kind == "positions":
             self.positions.emit(account, data, error)
+            if msg.get("balances") is not None:        # (a main server before v2.7.258: none)
+                self.balances.emit(account, msg["balances"])
             return
         self.orders.emit(account, data, error)
         if data is None:
@@ -994,8 +997,12 @@ class SchwabTrader(QObject):
             if r.status_code != 200:
                 self.positions.emit(account_tail, None, f"HTTP {r.status_code}")
                 return
-            raw = (r.json() or {}).get("securitiesAccount", {}).get("positions", []) or []
+            account = (r.json() or {}).get("securitiesAccount", {}) or {}
+            raw = account.get("positions", []) or []
             self.positions.emit(account_tail, [p for p in map(position_info, raw) if p], "")
+            money = balances_info(account)
+            if money is not None:
+                self.balances.emit(account_tail, money)
         except Exception as e:
             self.positions.emit(account_tail, None, f"{type(e).__name__}: {e}")
 
@@ -1867,6 +1874,7 @@ class AtmTrades(QObject):
         self.cancel_ids = {}        # key -> the order id the app is canceling (not a thinkorswim change)
         self.app_canceled = set()   # order ids the app canceled
         self.positions = {}         # account tail -> [position_info()]: the stocks owned, read with each check
+        self.money = {}             # account tail -> balances_info(): its money, read with its stocks
         # With several computers, only the main server's app decides what an order's status does to
         # a trade (bought, sold, canceled, changed in thinkorswim); the others show what it decided
         # (the shared data), so two computers never race to write the same trade
@@ -1881,6 +1889,7 @@ class AtmTrades(QObject):
             trader.transactions.connect(self._transactions_read)
             trader.replaced.connect(self._replaced)
             trader.positions.connect(self._positions)
+            trader.balances.connect(self._balances)
             trader.sent.connect(self._sent)
             trader.order_quote.connect(self.keep_order_quote)
             trader.snapshot_of = self.snapshot_now
@@ -2563,6 +2572,12 @@ class AtmTrades(QObject):
                 self.settings[key] = usd
                 self.save_settings(self.settings)
         return keep
+
+    def _balances(self, account, money):
+        old = self.money.get(account) or {}
+        if {k: v for k, v in money.items() if k != "time"} != {k: v for k, v in old.items() if k != "time"}:
+            self.money[account] = money
+            self.changed.emit()
 
     def _positions(self, account, positions, error):
         if positions is None:

@@ -96,7 +96,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from otc_orders import account_numbers, place_limit, read_orders, read_positions
+from otc_orders import account_numbers, place_limit, read_account, read_orders
 import otc_alerts
 from otc_recorder import Recorder, at_close, in_session, last_close, subtract_ranges
 from otc_shared import SharedStore
@@ -1526,11 +1526,16 @@ class Server:
                     if (account != "*" and tail != account) or (what, tail) in done:
                         continue
                     done.add((what, tail))
+                    balances = None
                     try:
                         data, error = await asyncio.to_thread(self._read, what, account_hash), ""
+                        if isinstance(data, tuple):         # (the positions: with the account's money)
+                            data, balances = data
                     except Exception as e:
                         data, error = None, f"{type(e).__name__}: {e}"
                     msg = {"type": what, "account": tail, "data": data, "error": error}
+                    if what == "positions" and balances is not None:
+                        msg["balances"] = balances
                     if data is not None:
                         self.last_reads[(what, tail)] = msg
                     self.broadcast(msg)
@@ -1563,7 +1568,7 @@ class Server:
             client = self.ensure_client()
             if client is None:
                 raise RuntimeError("no Schwab login")
-            return (read_orders if what == "orders" else read_positions)(client, account_hash)
+            return (read_orders if what == "orders" else read_account)(client, account_hash)
 
     # ---- the price / volume alerts (otc_alerts): checked by the main server on each quote ----
     def check_alerts(self, ticker):
