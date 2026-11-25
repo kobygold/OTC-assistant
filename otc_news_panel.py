@@ -359,8 +359,8 @@ class NewsPanel(QWidget):
         self.copy_btn.setFixedHeight(h)
         self.tg_btn.setFixedSize(h + 4, h)
         right = self.post.viewport().width() - 4
-        self.copy_btn.move(right - self.copy_btn.width(), 4)
-        self.tg_btn.move((self.copy_btn.x() if self.copy_btn.isVisible() else right) - self.tg_btn.width() - 4, 4)
+        self.tg_btn.move(right - self.tg_btn.width(), 4)              # (Telegram at the corner, copy left of it)
+        self.copy_btn.move(self.tg_btn.x() - self.copy_btn.width() - 4, 4)
         self.copy_btn.raise_()
         self.tg_btn.raise_()
 
