@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.267"
+APP_VERSION = "2.7.268"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3607,38 +3607,57 @@ class MainWindow(QMainWindow):
         return tab
 
     # ---- the Monitor tab's Portfolio: the account's money (Schwab's balances, read with its stocks) ----
-    BALANCE_ROWS = (("cash", "מזומן", "כל המזומן בחשבון"),
-                    ("stocks", "שווי המניות", "המניות שבידיך, לפי המחיר של היום"),
-                    ("reserved", "שמור להזמנות קנייה", "הזמנות הקנייה הפתוחות ועמלה על כל אחת"),
-                    ("unsettled", "ממתין לסליקה", "כסף ממכירה שעוד לא נסלקה"),
-                    ("withdraw", "זמין למשיכה", "מה שאפשר להוציא בלי לפגוע בהזמנות הקנייה הפתוחות"))
+    # (key, English name, what it is, and both in Hebrew: shown on hover)
+    BALANCE_ROWS = (("cash", "Cash", "All the cash in the account",
+                     "מזומן", "כל המזומן בחשבון"),
+                    ("stocks", "Stocks value", "The stocks you own, at today's price",
+                     "שווי המניות", "המניות שבידיך, לפי המחיר של היום"),
+                    ("reserved", "Reserved for buy orders", "The open buy orders, and a fee for each",
+                     "שמור להזמנות קנייה", "הזמנות הקנייה הפתוחות ועמלה על כל אחת"),
+                    ("unsettled", "Unsettled", "Money from a sale not settled yet",
+                     "ממתין לסליקה", "כסף ממכירה שעוד לא נסלקה"),
+                    ("withdraw", "Withdrawable", "What can be taken out without hurting the open buy orders",
+                     "זמין למשיכה", "מה שאפשר להוציא בלי לפגוע בהזמנות הקנייה הפתוחות"))
+    BALANCE_TOP = (("total", "Account value", "Cash and stocks, at today's price",
+                    "שווי החשבון", "המזומן והמניות לפי המחיר של היום"),
+                   ("free", "Free to buy", "What's left for a new trade after the open buy orders "
+                                          "(each: shares × price, and a fee)",
+                    "פנוי לקניה", "מה שנשאר לעסקה חדשה אחרי הזמנות הקנייה הפתוחות (כל אחת: כמות × מחיר, ועמלה)"),
+                   ("pl_done", "Finished trades P/L", "The sold ATM trades' P/L, summed (cleared ones too), after fees",
+                    "רווח/הפסד בעסקאות שהסתיימו",
+                    "סכום הרווח/הפסד של עסקאות ATM שנמכרו (גם אלה שנוקו מהרשימה), אחרי העמלות"))
+
+    @staticmethod
+    def hebrew_tip(he_name, he_what, more=""):
+        """A tooltip in Hebrew (right to left): the name in bold, then what it is."""
+        extra = "".join(f"<br>{html.escape(x)}" for x in more.split("\n") if x) if more else ""
+        what = f"<br>{html.escape(he_what)}" if he_what else ""
+        return f'<div dir="rtl"><b>{html.escape(he_name)}</b>{what}{extra}</div>'
 
     def build_balances(self):
-        """שווי החשבון and פנוי לקניה on a line (right to left), and under it the breakdown, folded or open."""
+        """Account value, Free to buy and Finished trades P/L on a line, and under it the breakdown, folded or
+        open (English; each one's Hebrew on hover)."""
         box = QWidget()
-        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 4)
         line = QHBoxLayout()
         self.balance_labels = {}
-        for key, name, tip in (("total", "שווי החשבון", "המזומן והמניות לפי המחיר של היום"),
-                               ("free", "פנוי לקניה", "מה שנשאר לעסקה חדשה אחרי הזמנות הקנייה הפתוחות "
-                                                     "(כל אחת: כמות × מחיר, ועמלה)"),
-                               ("pl_done", "רווח/הפסד בעסקאות שהסתיימו",
-                                "סכום הרווח/הפסד של עסקאות ATM שנמכרו (גם אלה שנוקו מהרשימה), אחרי העמלות")):
+        self.balance_tips = {}
+        for key, name, _what, he_name, he_what in self.BALANCE_TOP:
             title = QLabel(name + ":")
             title.setStyleSheet("font-size: 11pt;")
             value = QLabel("—")
             value.setStyleSheet("font-size: 12pt; font-weight: bold; color: #ffd54f;")      # (yellow)
+            self.balance_tips[key] = (he_name, he_what)
             for w in (title, value):
-                w.setToolTip(tip)
+                w.setToolTip(self.hebrew_tip(he_name, he_what))
                 line.addWidget(w)
             line.addSpacing(24)
             self.balance_labels[key] = value
         self.balances_btn = QToolButton()
         self.balances_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.balances_btn.setStyleSheet("QToolButton { border: none; color: #4fa3f7; font-size: 10pt; }")
-        self.balances_btn.setToolTip("הפירוט: הצג / הסתר")
+        self.balances_btn.setToolTip(self.hebrew_tip("פירוט", "הצג / הסתר"))
         self.balances_btn.clicked.connect(lambda: self.open_balances(not self.balances_table.isVisible()))
         line.addWidget(self.balances_btn)
         line.addStretch()
@@ -3647,24 +3666,25 @@ class MainWindow(QMainWindow):
         line.addWidget(self.balances_time)
         lay.addLayout(line)
         t = self.balances_table = QTableWidget(len(self.BALANCE_ROWS), 3)
-        t.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        t.setHorizontalHeaderLabels(["שם", "מה זה", "עכשיו"])
+        t.setHorizontalHeaderLabels(["Name", "What it is", "Now"])
+        for c, (he, what) in enumerate((("שם", ""), ("מה זה", ""), ("עכשיו", "לפי הקריאה האחרונה מ-Schwab"))):
+            t.horizontalHeaderItem(c).setToolTip(self.hebrew_tip(he, what))
         t.verticalHeader().hide()
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         t.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         t.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for r, (_key, name, what) in enumerate(self.BALANCE_ROWS):
-            t.setItem(r, 0, QTableWidgetItem(name))
-            t.setItem(r, 1, QTableWidgetItem(what))
+        for r, (_key, name, what, he_name, he_what) in enumerate(self.BALANCE_ROWS):
             money = QTableWidgetItem("—")
-            money.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            t.setItem(r, 2, money)
+            money.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            for c, item in enumerate((QTableWidgetItem(name), QTableWidgetItem(what), money)):
+                item.setToolTip(self.hebrew_tip(he_name, he_what))
+                t.setItem(r, c, item)
         t.resizeColumnsToContents()
         t.setColumnWidth(2, max(t.columnWidth(2), 100))
         t.setFixedWidth(sum(t.columnWidth(c) for c in range(3)) + 4)
-        lay.addWidget(t, 0, Qt.AlignmentFlag.AlignLeading)      # (right to left: on the right)
+        lay.addWidget(t, 0, Qt.AlignmentFlag.AlignLeft)
         self.open_balances(bool(self.settings.get("balances_open")), save=False)
         self.checklist.atm.changed.connect(self.show_balances)
         self.show_balances()
@@ -3674,7 +3694,7 @@ class MainWindow(QMainWindow):
         self.balances_table.setVisible(on)
         if on:
             QTimer.singleShot(0, self.fit_balances_table)      # (its rows' height: known once shown)
-        self.balances_btn.setText(("▾" if on else "◂") + " פירוט")
+        self.balances_btn.setText(("▾" if on else "▸") + " Details")
         if save:
             self.settings["balances_open"] = on
             save_settings(self.settings)
@@ -3697,11 +3717,13 @@ class MainWindow(QMainWindow):
             if key != "pl_done":
                 label.setText(usd(b.get(key)))
         self.show_done_pl()
-        for r, (key, _name, _what) in enumerate(self.BALANCE_ROWS):
-            self.balances_table.item(r, 2).setText(usd(b.get(key)))
+        for r, row in enumerate(self.BALANCE_ROWS):
+            self.balances_table.item(r, 2).setText(usd(b.get(row[0])))
         when = str(b.get("time") or "")
-        self.balances_time.setText(f"נקרא {when[11:16]}" if when else "")
-        self.balances_time.setToolTip("" if b else "עוד לא נקרא מ-Schwab (או שהשרת הראשי לפני גרסה 2.7.258)")
+        self.balances_time.setText(f"Read {when[11:16]}" if when else "Not read yet")
+        self.balances_time.setToolTip(self.hebrew_tip("נקרא", "הזמן שבו נקראו הסכומים מ-Schwab") if b else
+                                      self.hebrew_tip("עוד לא נקרא", "עוד לא נקרא מ-Schwab (או שהשרת הראשי לפני "
+                                                                     "גרסה 2.7.258)"))
 
     def show_done_pl(self):
         """The finished (sold) ATM trades' P/L, summed: Schwab's own where read, else the estimate."""
@@ -3722,8 +3744,8 @@ class MainWindow(QMainWindow):
             return
         label.setText(("+" if total >= 0 else "−") + f"${abs(total):,.2f}")
         label.setStyleSheet("font-size: 12pt; font-weight: bold; color: %s;" % ("#4caf50" if total >= 0 else "#ef5350"))
-        label.setToolTip(f"{n} עסקאות שהסתיימו" + (f" ({est} מהן לפי הערכה, עוד לא מ-Schwab)" if est else "")
-                         + "\nאחרי העמלות")
+        label.setToolTip(self.hebrew_tip(*self.balance_tips["pl_done"], more=f"{n} עסקאות שהסתיימו" + (
+            f" ({est} מהן לפי הערכה, עוד לא מ-Schwab)" if est else "")))
 
     def update_tracked(self):
         """Streamed and recorded by the server, besides what the app shows: every account's
