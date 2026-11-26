@@ -129,6 +129,9 @@ ORDER_CHECK_S = 15          # the timer's tick; the Monitor tab's quotes while i
 POSITIONS_TAB_S = 60        # the positions while the Monitor tab is open (Schwab's Day P/L isn't streamed)
 SAFETY_CHECK_S = 300        # the orders, while an ATM trade has an order working (a fill's event missed)
 NO_STREAM_CHECK_S = 60      # all of it, while the account activity stream is off (Level II off, reconnecting)
+STUCK_CHECK_S = 30          # the watchdog looks this often (at the orders already read: no Schwab call)
+STUCK_AFTER_S = 180         # a trade still open this long after Schwab's orders show its order ended: told
+STUCK_GONE_AFTER_S = 900    # ...or this long while it waits for a replacement (changed in thinkorswim?)
 ORDER_EVENT_DELAY_MS = 700  # an order event's check waits this long: the events come a few together
 # An ATM trade's states: the name shown, its colour and its text colour (the table's price colours)
 STATES = {"buy_open": ("Step 1/4: Wait for Buy", "#e0404f", "#ffffff"),
@@ -1851,6 +1854,9 @@ class AtmTrades(QObject):
     market_changed = pyqtSignal(str)    # a ticker's bid / ask / Level II
     order_news = pyqtSignal(dict)   # an order of an account filled (partly), canceled, placed...: see order_events
     buy_sent = pyqtSignal(str)      # a Buy ATM went out for this ticker
+    # a trade not updated although Schwab's orders show its order ended long ago (see watch_stuck): {"id", "ticker",
+    # "account", "side", "order", "status", "state", "minutes"}
+    stuck = pyqtSignal(dict)
 
     def __init__(self, path: Path, settings: dict, save_settings, fee_reader=None, trader=None):
         super().__init__()
@@ -1908,6 +1914,12 @@ class AtmTrades(QObject):
         self.timer.timeout.connect(self.pl_tick)        # (a sold trade: Schwab's P/L)
         self.timer.start(ORDER_CHECK_S * 1000)
         QTimer.singleShot(3000, self.check)
+        # the watchdog: Schwab's orders (as they come anyway) against the trades, every app (no Schwab reads)
+        self.stuck_since = {}       # (trade id, order id) -> when its order was first seen ended, the trade not updated
+        self.stuck_told = set()     # (trade id, order id) told already
+        self.stuck_timer = QTimer(self)
+        self.stuck_timer.timeout.connect(self.watch_stuck)
+        self.stuck_timer.start(STUCK_CHECK_S * 1000)
         # a Sell Partial waits for its buy's rest to be canceled (here, or told by the shared data)
         self.changed.connect(self.partial_followup, Qt.ConnectionType.QueuedConnection)
 
@@ -3377,6 +3389,36 @@ class AtmTrades(QObject):
                 self._done(e, gone["side"], gone["status"], gone.get("filled", 0))
                 self.save()
         self.changed.emit()
+
+    def watch_stuck(self):
+        """The watchdog (every app): an open trade (Wait for Buy / Wait for Sell) whose own order Schwab's latest
+        orders show ended (filled, canceled, replaced...) STUCK_AFTER_S ago but still isn't updated: the main
+        server's app isn't updating the trades (not running, an error, an old copy written over it...): told once
+        (stuck). Only what was read anyway is looked at."""
+        now = time.time()
+        seen = set()
+        for e in self.entries:
+            state = e.get("state")
+            field = {"buy_open": "order_id", "sell_open": "sell_id"}.get(state)
+            if not field or not e.get(field) or e["id"] in self.sending or e["id"] in self.canceling \
+                    or e.get("ticker") in self.sending:
+                continue
+            account = e.get("account") or self.chosen_account()
+            o = next((o for o in self.schwab_orders.get(account, []) if o["id"] == str(e[field])), None)
+            if o is None or o.get("status") not in ORDER_DONE:
+                continue
+            key = (e["id"], o["id"])
+            seen.add(key)
+            since = self.stuck_since.setdefault(key, now)
+            if key in self.stuck_told or now - since < (STUCK_GONE_AFTER_S if e.get("gone") else STUCK_AFTER_S):
+                continue
+            self.stuck_told.add(key)
+            self.stuck.emit({"id": e["id"], "ticker": e.get("ticker"), "account": account,
+                             "side": "BUY" if state == "buy_open" else "SELL", "order": o["id"],
+                             "status": o.get("status"), "state": state, "minutes": int((now - since) // 60)})
+        # updated meanwhile (or gone): forgotten, so a later stuck order of the trade is told again
+        self.stuck_since = {k: v for k, v in self.stuck_since.items() if k in seen}
+        self.stuck_told &= seen
 
     def set_sell_at(self, e, price):
         """The price Sell ATM sells at (starts as the planned exit): the trade's exit now, the same on the

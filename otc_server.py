@@ -153,6 +153,26 @@ def code_hash(path: Path = Path(__file__)) -> str:
     return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
 
 
+# The oldest app that may change the shared data (trades, favorites, alerts...): an older one pushed its old copy of
+# the trades over the newer ones when it connected (noam-laptop's 2.7.204, 2026-11-25 21:35); since 2.7.252 an app
+# changes only what it changed, from the version it read. An older app still gets the data; its changes are refused.
+MIN_WRITE_VERSION = "2.7.252"
+
+
+def version_key(version):
+    """"2.7.252" -> (2, 7, 252); None when it isn't a version."""
+    try:
+        return tuple(int(x) for x in str(version).strip().split("."))
+    except ValueError:
+        return None
+
+
+def too_old_to_write(version) -> bool:
+    """An app version older than MIN_WRITE_VERSION (an unknown one isn't refused)."""
+    v = version_key(version)
+    return v is not None and v < version_key(MIN_WRITE_VERSION)
+
+
 def app_version() -> str:
     try:
         text = (APP_DIR / "otc_daily_gui.py").read_text(encoding="utf-8")
@@ -363,6 +383,7 @@ class Server:
         self.alert_rev = None                   # the shared data's rev the index was made at
         self.cluster_task = None
         self.version = app_version()
+        self.too_old_told = set()               # (main server) the apps whose changes were refused as too old, logged once
         self.token_path = token_path
         self.code = code_hash()
         self.conns = set()                      # this computer's apps
@@ -803,6 +824,21 @@ class Server:
             return
         before = self.store.items.get(str(msg.get("key"))) or {}
         old = before.get("data")
+        sender = str(msg.get("from") or "")
+        sender_version = sender.rsplit(" ", 1)[-1] if " " in sender else ""
+        if too_old_to_write(sender_version):
+            key = str(msg.get("key"))
+            answer = {"type": "refused", "id": str(msg.get("id", "")), "key": key, "v": before.get("v", 0),
+                      "data": old, "why": f"the app is too old ({sender_version}, needs {MIN_WRITE_VERSION}+): update it"}
+            if sender not in self.too_old_told:     # (once per computer and version: an old app retries)
+                self.too_old_told.add(sender)
+                self.event(f"Changes refused from {sender}: older than {MIN_WRITE_VERSION}, it can't change the "
+                           "shared data (trades, favorites, alerts) until it's updated")
+            if key.startswith("atm/"):
+                log_trade_change(trade_change_line(msg, answer, old, before.get("v", 0)))
+            if conn is not None:
+                conn.put(answer)
+            return
         answer, new = self.store.apply(msg)
         if str(msg.get("key", "")).startswith("atm/"):
             log_trade_change(trade_change_line(msg, answer, old, before.get("v", 0)))

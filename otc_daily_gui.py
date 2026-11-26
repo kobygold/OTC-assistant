@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.273"
+APP_VERSION = "2.7.274"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3561,6 +3561,7 @@ class MainWindow(QMainWindow):
         self.restore_order_news()
         self.checklist.atm.order_news.connect(self.on_order_event)
         self.checklist.atm.order_news.connect(self.on_order_filled)     # (a buy done: its Bid alert away)
+        self.checklist.atm.stuck.connect(self.on_trade_stuck)           # (the watchdog: a trade not updated)
         page = QWidget()
         play2 = QVBoxLayout(page)
         play2.setContentsMargins(0, 0, 0, 0)
@@ -5351,6 +5352,27 @@ class MainWindow(QMainWindow):
     def drop_buy_alerts(self, account, ticker):
         """The buy is done: the ticker's Bid alert made by its buy order taken away."""
         self.drop_order_alerts(account, ticker, ("buy",))
+
+    def on_trade_stuck(self, s):
+        """The watchdog: a trade the main server's app didn't update although its order ended at Schwab long ago -
+        in the Order Log and on the Orders button, and a message (not blocking: the app goes on)."""
+        info = getattr(getattr(self, "computers", None), "info", None) or {}
+        main = info.get("leader") or "the main server"
+        ended = {"FILLED": "filled", "CANCELED": "was canceled", "REJECTED": "was rejected", "EXPIRED": "expired",
+                 "REPLACED": "was replaced"}.get(s.get("status"), str(s.get("status")).lower())
+        step = "Wait for Buy" if s.get("side") == "BUY" else "Wait for Sell"
+        text = (f"{s['ticker']}: NOT UPDATED - its {s['side'].lower()} order {ended} at Schwab {s['minutes']} min ago, "
+                f"but the trade is still on {step}: is the app on {main} running and up to date?")
+        line = self.log_order_line(text, s.get("account"))
+        self.add_order_news(line)
+        box = QMessageBox(QMessageBox.Icon.Warning, "ATM trade not updated",
+                          f"{s['ticker']}: its {s['side'].lower()} order (…{str(s['order'])[-3:]}) {ended} at Schwab "
+                          f"{s['minutes']} minutes ago, but the trade is still on {step}.\n\n"
+                          f"Only the main server's app ({main}) updates the trades. Check that its app is running, "
+                          "connected and up to date (the Computers tab).", QMessageBox.StandardButton.Ok, self)
+        box.setModal(False)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.show()
 
     def on_order_filled(self, ev):
         """Schwab's news: a buy order filled (all of it): its Bid alert isn't needed (any account's)."""
