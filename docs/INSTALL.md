@@ -2,6 +2,8 @@
 
 For someone setting up OTC Assistant with their **own** Schwab account, Telegram account and Tailscale network.
 
+Also as a PDF: [OTC Assistant Installation Guide.pdf](OTC%20Assistant%20Installation%20Guide.pdf)
+
 ## At a glance
 
 ![How the parts connect: your PC in the middle; Schwab and Massive on the left; the OTC Millionaire channel, your Telegram bot and your phone on the right](install-overview.png)
