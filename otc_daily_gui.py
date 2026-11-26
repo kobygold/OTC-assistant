@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.266"
+APP_VERSION = "2.7.267"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3623,7 +3623,9 @@ class MainWindow(QMainWindow):
         self.balance_labels = {}
         for key, name, tip in (("total", "שווי החשבון", "המזומן והמניות לפי המחיר של היום"),
                                ("free", "פנוי לקניה", "מה שנשאר לעסקה חדשה אחרי הזמנות הקנייה הפתוחות "
-                                                     "(כל אחת: כמות × מחיר, ועמלה)")):
+                                                     "(כל אחת: כמות × מחיר, ועמלה)"),
+                               ("pl_done", "רווח/הפסד בעסקאות שהסתיימו",
+                                "סכום הרווח/הפסד של עסקאות ATM שנמכרו (גם אלה שנוקו מהרשימה), אחרי העמלות")):
             title = QLabel(name + ":")
             title.setStyleSheet("font-size: 11pt;")
             value = QLabel("—")
@@ -3692,12 +3694,36 @@ class MainWindow(QMainWindow):
         def usd(v):
             return "—" if v is None else f"${v:,.2f}"
         for key, label in self.balance_labels.items():
-            label.setText(usd(b.get(key)))
+            if key != "pl_done":
+                label.setText(usd(b.get(key)))
+        self.show_done_pl()
         for r, (key, _name, _what) in enumerate(self.BALANCE_ROWS):
             self.balances_table.item(r, 2).setText(usd(b.get(key)))
         when = str(b.get("time") or "")
         self.balances_time.setText(f"נקרא {when[11:16]}" if when else "")
         self.balances_time.setToolTip("" if b else "עוד לא נקרא מ-Schwab (או שהשרת הראשי לפני גרסה 2.7.258)")
+
+    def show_done_pl(self):
+        """The finished (sold) ATM trades' P/L, summed: Schwab's own where read, else the estimate."""
+        atm_trades = self.checklist.atm
+        chosen = atm_trades.chosen_account() or ""
+        total, n, est = 0.0, 0, 0
+        for e in atm_trades.entries:
+            if e.get("state") != "sold" or (e.get("account") or chosen) != chosen:
+                continue
+            pl = atm_trades.trade_pl(e)
+            total += pl["net"] if pl else atm_trades.profit(e)
+            n += 1
+            est += not pl or pl.get("source") != "schwab"
+        label = self.balance_labels["pl_done"]
+        if not n:
+            label.setText("—")
+            label.setStyleSheet("font-size: 12pt; font-weight: bold; color: #ffd54f;")
+            return
+        label.setText(("+" if total >= 0 else "−") + f"${abs(total):,.2f}")
+        label.setStyleSheet("font-size: 12pt; font-weight: bold; color: %s;" % ("#4caf50" if total >= 0 else "#ef5350"))
+        label.setToolTip(f"{n} עסקאות שהסתיימו" + (f" ({est} מהן לפי הערכה, עוד לא מ-Schwab)" if est else "")
+                         + "\nאחרי העמלות")
 
     def update_tracked(self):
         """Streamed and recorded by the server, besides what the app shows: every account's
