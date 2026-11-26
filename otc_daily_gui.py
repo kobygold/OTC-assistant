@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.268"
+APP_VERSION = "2.7.269"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -3536,7 +3536,6 @@ class MainWindow(QMainWindow):
         # the stocks owned in the account: sell them on the bid or the ask
         owned = self.owned_box = QGroupBox("Portfolio")
         play = QVBoxLayout(owned)
-        play.addWidget(self.build_balances())       # the account's money, above its stocks
         self.owned_table = PositionsTable(self.checklist.atm)
         self.owned_table.open_chart.connect(lambda ticker: (self.tabs.setCurrentIndex(1), self.show_chart(ticker)))
         play.addWidget(self.owned_table)
@@ -3565,6 +3564,9 @@ class MainWindow(QMainWindow):
         page = QWidget()
         play2 = QVBoxLayout(page)
         play2.setContentsMargins(0, 0, 0, 0)
+        money = self.build_balances()           # the account's money, above the Portfolio (always shown)
+        money.layout().setContentsMargins(6, 2, 0, 6)
+        play2.addWidget(money)
         for box in sections:
             box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
             play2.addWidget(box)
