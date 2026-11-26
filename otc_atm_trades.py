@@ -39,6 +39,7 @@ def fill_text(v) -> str:
 ORDER_SUB_TITLES = {"Ticker": ("Side", "BUY / SELL"), "Steps": ("Order #", "Schwab's order number"),
                     "State": ("Status", "Schwab's status of the order"),
                     "Sent": ("Placed", "When the order was placed"),
+                    "End": ("Ended", "When the order ended: filled (all), canceled, rejected or expired"),
                     "Shares": ("Filled / Ordered", "The shares filled of those the order asked for"),
                     "Entry": ("Limit", "The order's limit price (a buy's or a sell's)"),
                     "Exit plan": ("Filled at", "The price Schwab filled it at (the fills' average), as Schwab has "
@@ -579,6 +580,9 @@ class AtmTable(SortMixin, QTableWidget):
         self.cell(row, COL["State"], word, "#1db31d" if word == "Working" else YELLOW if word == "Pending" else
                   "#c8c8c8" if word == "Filled" else DIM, bold=word in ("Working", "Pending", "Filled"), bg=sub)
         self.cell(row, COL["Sent"], entered_text(o.get("entered")), DIM, bg=sub, tip="When the order was placed")
+        ended = o.get("closed") or (o.get("filled_at") if o.get("status") == "FILLED" else "")
+        self.cell(row, COL["End"], entered_text(ended) if ended else "", DIM, bg=sub,
+                  tip=f"{status_word(o.get('status'))} {entered_text(ended)}" if ended else "Not ended: still working")
         got, asked = int(o.get("filled") or 0), int(o.get("quantity") or 0)
         side = RED if buy else GREEN        # (the numbers from Filled / Ordered on: a buy's red, a sell's green)
         self.cell(row, COL["Shares"], f"{got:,} / {asked:,}", side, bold=True,
