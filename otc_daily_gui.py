@@ -69,13 +69,13 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.269"
+APP_VERSION = "2.7.270"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
 ORDER_LOG_LOAD = 500                    # its last lines shown at the start
 ORDER_LOG_TAG = "\t@"                   # a line's account, after its text (not shown): "...\t@159"
-MONITOR_PERIODS = (("Last day", 1), ("Last 2 days", 2), ("Last week", 7), ("All", 0))     # the Monitor tab's Show
+MONITOR_PERIODS = (("Last day", 1), ("Last 2 days", 2), ("Last 7 days", 7), ("All", 0))     # the Monitor tab's Show
 ORDERS_BLINK_S = 10                     # the Orders button blinks this long with new news (or until seen)
 ORDERS_BLINK_MS = 450                   # ...its color on / off this often
 ORDERS_PLAIN = "QPushButton { padding: 3px 14px; }"      # the Orders button without news (or seen)
