@@ -368,7 +368,7 @@ class AtmTable(SortMixin, QTableWidget):
         if title == "Sent":
             return e.get("time")
         if title == "End":
-            return self.end_time(e)
+            return self.end_time(e)[0]
         if title == "Shares":
             return e.get("shares")
         if title == "Exit plan":
@@ -650,9 +650,11 @@ class AtmTable(SortMixin, QTableWidget):
                   + (f"\nSell sent {e['sell_time']}" if e.get("sell_time") else "")
                   + (f"\nSold {e['sold_time']}" if e.get("sold_time") else "")
                   + (f"\nCanceled {e['canceled_time']}" if e.get("canceled_time") else ""))
-        end = self.end_time(e)
+        end, noticed = self.end_time(e)
+        word = "Sold" if state == "sold" else "Canceled"
         self.cell(row, COL["End"], end.replace("T", " ")[5:16] if end else "", DIM,
-                  tip=(f"{'Sold' if state == 'sold' else 'Canceled'} {end}" if end else ""))
+                  tip=(f"{word} {end.replace('T', ' ')}" + (f" (Schwab's time; the app noticed it {noticed.replace('T', ' ')})"
+                                                            if noticed else "") if end else ""))
         if state in ("buy_open", "canceled"):
             shares = f"{e['shares']:,}" + (f" ({e['filled']:,} bought)" if e.get("filled") else "")
         elif state == "sold":
@@ -778,14 +780,30 @@ class AtmTable(SortMixin, QTableWidget):
                 width = max(width, w.sizeHint().width())
         return width
 
-    @staticmethod
-    def end_time(e):
-        """When the trade ended (its ISO time): sold (all), or canceled; else None."""
-        if e.get("state") == "sold":
-            return e.get("sold_time") or None
-        if e.get("state") == "canceled":
-            return e.get("canceled_time") or None
-        return None
+    def end_time(self, e):
+        """(when the trade ended, when the app noticed it) as local ISO times: sold (all) or canceled. The end is
+        Schwab's own time of its last order's end (its last fill, its cancel); the app's noticed time (sold_time /
+        canceled_time) only when Schwab's isn't known (then it's the end), or when it's over a minute later.
+        (None, None) while it works."""
+        from datetime import datetime
+        state = e.get("state")
+        noticed = e.get("sold_time") if state == "sold" else e.get("canceled_time") if state == "canceled" else None
+        if state not in ("sold", "canceled"):
+            return None, None
+        side = "SELL" if state == "sold" else "BUY"
+        times = [o.get("filled_at") or o.get("closed") if side == "SELL" else o.get("closed") or o.get("filled_at")
+                 for o in self.atm.trade_orders(e) if o.get("side") == side and not o.get("open")
+                 and (side == "BUY" or int(o.get("filled") or 0) > 0)]
+        local = [local_iso(t) for t in times if t]
+        local = [t for t in local if t]
+        if not local:
+            return noticed or None, None
+        end = max(local)
+        try:
+            late = noticed and (datetime.fromisoformat(noticed) - datetime.fromisoformat(end)).total_seconds() > 60
+        except ValueError:
+            late = False
+        return end, noticed if late else None
 
     @staticmethod
     def order_price(e):
@@ -854,6 +872,16 @@ ORDER_COLUMNS = [
     ("Cancel", ""),
 ]
 OCOL = {title: i for i, (title, _) in enumerate(ORDER_COLUMNS)}
+
+
+def local_iso(iso):
+    """Schwab's time (UTC, "...+0000") as a local ISO time ("2026-11-24T18:12:17"), or None."""
+    from datetime import datetime
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S%z").astimezone().replace(tzinfo=None).isoformat(
+            timespec="seconds")
+    except (TypeError, ValueError):
+        return None
 
 
 def entered_text(iso):
