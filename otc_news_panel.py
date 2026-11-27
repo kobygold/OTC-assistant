@@ -322,7 +322,6 @@ class NewsPanel(QWidget):
         self.raw = ""
         self.copy_btn = QToolButton(self.post.viewport())
         self.copy_btn.setText("⧉")
-        self.copy_btn.setToolTip("Copy the news' raw text")
         self.copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_btn.setStyleSheet("QToolButton { background: #1b2229; color: #c8d0d8; border: 1px solid #3a4046; "
                                     "border-radius: 3px; padding: 1px 5px; font-size: 11pt; } "

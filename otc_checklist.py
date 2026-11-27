@@ -306,11 +306,11 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
 
 
 def graph_tip(tip):
-    """A tooltip whose text graph line (TRADED_DAY / DEAD_DAY) is in a fixed-width font: its days evenly apart."""
-    import html
-    lines = [html.escape(line) for line in tip.split("\n")]
-    return "<br>".join(f"<span style='font-family: Consolas, monospace; font-size: 11pt;'>{line}</span>"
-                       if TRADED_DAY in line and DEAD_DAY in line and "(" not in line else line for line in lines)
+    """The value's tooltip: only the tip's text graph line (TRADED_DAY / DEAD_DAY), in a fixed-width font (its
+    days evenly apart), on a single line."""
+    graph = next((line for line in tip.split("\n") if line and set(line) <= {TRADED_DAY, DEAD_DAY, " "}), "")
+    return (f"<p style='white-space: pre; font-family: Consolas, monospace; font-size: 11pt;'>{graph}</p>"
+            if graph else "")
 
 
 def volume_stats(rows, market_days, period):
@@ -630,7 +630,6 @@ class CopyBox(QWidget):
         self.button = QToolButton()
         self.button.setObjectName("cl_copy")
         self.button.setIcon(copy_icon())
-        self.button.setToolTip("Copy")
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.clicked.connect(self.copy)
         policy = self.button.sizePolicy()
@@ -4052,7 +4051,6 @@ class ChecklistPanel(QWidget):
                         self.new_plan_btn.setIcon(copy_icon())
                         self.new_plan_btn.setText("New plan")
                         self.new_plan_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-                        self.new_plan_btn.setToolTip("Copy the trade plan with the new values (this column)")
                         self.new_plan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                         self.new_plan_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                         self.new_plan_btn.clicked.connect(
@@ -5300,7 +5298,6 @@ class ChecklistPanel(QWidget):
                 self.boxes[key].set_copyable(not order)
         if isinstance(self.boxes.get("ticker"), CopyBox):   # an ATM trade: its plan's copy always there
             self.boxes["ticker"].set_always(bool(order))
-            self.boxes["ticker"].button.setToolTip("Copy the trade plan (the order's)" if order else "Copy")
         # ...and the values without a fixed cell start where the fixed cells' values do
         for item, _, _, value in self.widgets:
             if item.key == "ticker" and isinstance(value, QLabel):

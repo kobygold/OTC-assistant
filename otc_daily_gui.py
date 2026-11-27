@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.284"
+APP_VERSION = "2.7.285"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1233,7 +1233,6 @@ class MainWindow(QMainWindow):
         # a copy icon: the ticker copied ("Copied: ABCD" by the mouse for a second)
         self.ticker_copy_btn = QToolButton()
         self.ticker_copy_btn.setIcon(checklist.copy_icon())
-        self.ticker_copy_btn.setToolTip("Copy the chart's ticker")
         self.ticker_copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ticker_copy_btn.setAutoRaise(True)
         self.ticker_copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
