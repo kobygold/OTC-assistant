@@ -98,7 +98,7 @@ Price types: Trips = under 0.001 (0.000X), Dubs = 0.001 to 0.0099 (0.00XX), Penn
 - אם היה חריג — בדקתי חדשות/עדכון חברה / שזו קנייה מהאסק (לא דילול)
   manual(news_checked)
 - אין יותר מדי ימים מתים (ימים בלי מסחר)
-  auto(steady): 10 or fewer days without trades in the last 30 trading days, and not the last 4 in a row
+  auto(steady): 15 or fewer days without trades in the last 30 trading days, and not the last 4 in a row
 
 
 ## $ פקודת קנייה

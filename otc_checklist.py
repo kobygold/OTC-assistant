@@ -52,7 +52,7 @@ FEE_HIGH = 7.0          # a fee above this is shown in the section titles' yello
 COVER_X = 2             # the stop: bids for at least this many times our amount of stocks
 VOL_DAYS = 30           # market days in the volume checks
 SPIKE_X = 2.0           # a day with this many times the average volume is unusual
-MAX_DEAD = 10           # most days without trades in VOL_DAYS for a steady volume
+MAX_DEAD = 15           # most days without trades in VOL_DAYS for a steady volume
 DEAD_RUN = 4            # this many last market days all without trades: not steady
 VOL_PART = 2.0          # the median volume must be at least this many times our amount of stocks
 COPIED_MS = 1200        # how long the "Copied" popup stays, in ms
@@ -88,7 +88,7 @@ LABEL_TIPS = {
     "cushion": f"בידים מתחת לכניסה של לפחות פי {COVER_X} מכמות המניות",
     "avg_volume": "ווליום חציוני (30 יום) לפחות פי 2 מכמות המניות",
     "no_spike": "אין יום עם פי 2 ומעלה מהחציון ב-30 הימים האחרונים (✔ גם אם סימנת שבדקת חדשות)",
-    "steady": f"עד 10 ימים בלי מסחר ב-30 הימים האחרונים, ולא {DEAD_RUN} האחרונים ברצף",
+    "steady": f"עד {MAX_DEAD} ימים בלי מסחר ב-30 הימים האחרונים, ולא {DEAD_RUN} האחרונים ברצף",
 }
 MANUAL_TIP = "לחיצה: ✔ / ✘ / ריק"
 
@@ -400,7 +400,7 @@ def volume_checks(rows, market_days, period, shares):
                            f"{shares:,} stocks = {need:,.0f}")
     r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the median volume or more on " + ", ".join(spikes)
                       + ". Check it's not dilution.") if spikes else (OK, "", ""))
-    r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, "",
+    r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, f"{dead}",
                    f"{dead} of {len(market_days)} market days without trades (up to {MAX_DEAD} is fine)"
                    + (f" · the last {run} market days without trades (bad from {DEAD_RUN})" if run else ""))
     return r
