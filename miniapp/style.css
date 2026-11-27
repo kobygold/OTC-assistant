@@ -83,6 +83,9 @@ button { font-family: inherit; color: inherit; }
 #sheet .box { background: #161a1f; border-radius: 18px 18px 0 0; border-top: 1px solid #2c3136;
   padding: 10px 16px calc(20px + env(safe-area-inset-bottom)); max-height: 70%; overflow-y: auto; }
 #sheet .grip { width: 40px; height: 5px; border-radius: 3px; background: #3a4046; margin: 0 auto 10px; }
+#sheet .tipGraph { display: flex; align-items: flex-end; gap: 4px; height: 16px; margin-top: 4px; }   /* (one line: a bar per day, apart) */
+#sheet .tipGraph i { flex: 0 0 6px; height: 2px; background: #c9d1d9; }      /* a day without trades: _ */
+#sheet .tipGraph i.on { height: 16px; }                                       /* with trades: █ */
 #sheet .tip { white-space: pre-wrap; font-size: 17px; line-height: 1.45; color: #c9d1d9; }
 #sheet .tip b { color: var(--text); }
 #sheet .choice { width: 100%; height: 48px; margin-top: 8px; border-radius: 10px; border: 1px solid #3a4046;

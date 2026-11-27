@@ -783,6 +783,8 @@ def checklist_view(panel):
             elif value is not None:
                 c = COLOR.search(value.styleSheet() or "")
                 row.update(value=value.text(), value_color=c.group(1) if c else "#d8d8d8")
+                if value.toolTip():         # (the value's own tooltip: the dead days' graph)
+                    row["value_tip"] = _plain_lines(value.toolTip())
             locked = panel.locked.get(item.key)
             if locked is not None and not locked.isHidden() and locked.text():
                 row["plan"] = locked.text()
@@ -811,6 +813,13 @@ def checklist_view(panel):
             "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
             "fills": {"summary": panel.fills_summary, "days": panel.fills_days} if panel.fills_summary else None,
             "sections": sections, "buttons": buttons}
+
+
+def _plain_lines(html):
+    """A rich tooltip as plain text, its <br> as new lines."""
+    import html as h
+    import re
+    return h.unescape(re.sub(r"<[^>]+>", "", re.sub(r"<br\s*/?>", "\n", str(html or "")))).strip()
 
 
 def _plain(html):

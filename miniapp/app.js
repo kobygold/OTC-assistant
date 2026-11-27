@@ -574,6 +574,11 @@ function renderEdit(card, key) {
 
 // ---------------------------------------------------------------- Alerts (view "alerts") ---
 // ---------------------------------------------------------------- Inbox (view "news": the bot's messages) ---
+// a tip's text; a text graph's line (the dead days': █ / _ only) drawn as a bar per day, evenly apart (never joined)
+function tipHtml(text) {
+  return String(text).split("\n").map(l => /^[█_ ]+$/.test(l) && l.includes(" ") ?
+    `<span class="tipGraph" dir="ltr">${[...l.replace(/ /g, "")].map(c => `<i class="${c === "█" ? "on" : ""}"></i>`).join("")}</span>` : esc(l)).join("\n");
+}
 function newsSeen() { return Number(localGet("seen:" + S.account) || 0); }
 function newsUnread() {
   const v = S.views["news/" + S.account];
@@ -686,11 +691,11 @@ function renderChecklist(view) {
           `data-name="${esc(t.name)}"${t.enabled ? "" : " disabled"} aria-label="${esc(t.tip)}">${t.name === "cl_pin" ? PIN : t.name === "cl_reset" ? "↺" : esc(t.text)}</button>`;
         // − on the box's left, + and the pin on its right
         const minus = (t) => t.name === "cl_step" && t.text === "−";
-        out += `<div class="ckRow"><span class="lab" data-tip="${esc(r.tip)}">${mark(r)}${esc(r.text)}</span>` +
+        out += `<div class="ckRow"><span class="lab" data-tip="${esc(r.tip + (r.value_tip ? "\n\n" + r.value_tip : ""))}">${mark(r)}${esc(r.text)}</span>` +
           `<span class="tools" dir="ltr">${(r.tools || []).filter(t => !minus(t)).map(tool).join("")}</span>` +
           `<span class="valBox" dir="ltr">${(r.tools || []).filter(minus).map(tool).join("")}${val}</span><span dir="ltr" class="plan">${esc(r.plan || "")}</span></div>`;
       } else {
-        out += `<button class="ckItem" ${r.kind === "manual" ? `data-mark="${esc(r.key)}"` : `data-tip="${esc(r.tip)}"`}>${mark(r)}<span>${esc(r.text)}` +
+        out += `<button class="ckItem" ${r.kind === "manual" ? `data-mark="${esc(r.key)}"` : `data-tip="${esc(r.tip + (r.value_tip ? "\n\n" + r.value_tip : ""))}"`}>${mark(r)}<span>${esc(r.text)}` +
           (r.value ? ` <span dir="ltr" class="itemVal" style="color:${esc(r.value_color || "#9aa3ad")}">· ${esc(r.value)}</span>` : "") + `</span></button>`;
       }
       if (r.split_after) out += `<div class="split"></div>`;
@@ -1074,7 +1079,7 @@ function setup() {
       S.from = "news"; S.listOf = "favs"; S.ticker = t.dataset.news; S.tab = "checklist"; subscribe(); render(); return;
     }
     if (t.id === "sheet") { if (e.target === t && !(S.act && S.act.wait)) { S.act = null; S.edit = null; sheet(""); } return; }
-    if (t.dataset.tip) sheet(`<div class="tip">${esc(t.dataset.tip)}</div>`);
+    if (t.dataset.tip) sheet(`<div class="tip">${tipHtml(t.dataset.tip)}</div>`);
   });
   // (the panel's place, as the finger leaves it; a finger on the page: its own place from now on)
   const screen = document.getElementById("screen");
