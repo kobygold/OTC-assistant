@@ -305,7 +305,8 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
 
 
 def volume_stats(rows, market_days, period):
-    """(median, [unusual days], days without trades, last days in a row without trades) from the
+    """(median, [unusual days], days without trades, last days in a row without trades, days without trades
+    of the last DEAD_RUN) from the
     candles (date, open, high, low, close, volume, ...). The median is the chart's MedianVolume: the
     last `period` days with trades. Unusual days and days without trades are counted over the given
     market days. None if there are no market days."""
@@ -321,7 +322,8 @@ def volume_stats(rows, market_days, period):
         if v:
             break
         run += 1
-    return med, spikes, dead, run
+    recent = sum(1 for v in vols[-DEAD_RUN:] if not v)
+    return med, spikes, dead, run, recent
 
 
 def target_state(key, number):
@@ -389,7 +391,7 @@ def volume_checks(rows, market_days, period, shares):
             r[key] = (UNKNOWN, "", "No candles")
         r["avg_volume"] = (UNKNOWN, NA, "No candles")
         return r
-    med, spikes, dead, run = stats
+    med, spikes, dead, run, recent = stats
     about = f"MedianVolume ({period}), as on the chart (its Averaging days)"
     if not shares:
         r["avg_volume"] = (UNKNOWN, fmt_volume(med), about + ". No amount of stocks to compare it with yet")
@@ -400,8 +402,9 @@ def volume_checks(rows, market_days, period, shares):
                            f"{shares:,} stocks = {need:,.0f}")
     r["no_spike"] = ((BAD, "", f"{SPIKE_X:g}x the median volume or more on " + ", ".join(spikes)
                       + ". Check it's not dilution.") if spikes else (OK, "", ""))
-    r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, f"{dead}",
-                   f"{dead} of {len(market_days)} market days without trades (up to {MAX_DEAD} is fine)"
+    r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, f"{dead}/{len(market_days)} ({recent}/{min(DEAD_RUN, len(market_days))})",
+                   f"{dead} of {len(market_days)} market days without trades (up to {MAX_DEAD} is fine); "
+                   f"{recent} of the last {DEAD_RUN}"
                    + (f" · the last {run} market days without trades (bad from {DEAD_RUN})" if run else ""))
     return r
 
