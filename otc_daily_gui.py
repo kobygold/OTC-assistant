@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.279"
+APP_VERSION = "2.7.280"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -5379,9 +5379,26 @@ class MainWindow(QMainWindow):
         if ev.get("kind") == "filled" and ev.get("side") == "BUY":
             self.drop_buy_alerts(ev.get("account"), ev.get("ticker"))
 
+    def best_now(self, ticker):
+        """(best bid, best ask) of the ticker now, as far as this app knows (the checklist's, else the Mini App's
+        stream: Level 1, else the Level II's top); None where unknown."""
+        bid = ask = None
+        cl = self.checklist
+        if (cl.ticker or "").upper() == ticker.upper():
+            bid, ask = cl.bid, cl.ask
+        mv = getattr(self, "mini_views", None)
+        if mv is not None and (bid is None or ask is None):
+            q = mv.quotes.get(ticker, {})
+            bids, asks = mv.books.get(ticker, ([], []))
+            bid = bid or q.get("BID_PRICE") or (max(r[1] for r in bids) if bids else None)
+            ask = ask or q.get("ASK_PRICE") or (min(r[1] for r in asks) if asks else None)
+        return bid or None, ask or None
+
     def order_alert(self, ticker, side, price, account):
         """A buy made or changed: an alert on Bid >= its price + 0.0001; a sell: on Ask <= its price - 0.0001.
-        The ticker's earlier one of that side (still waiting) is replaced by it."""
+        The ticker's earlier one of that side (still waiting) is replaced by it. Not when the price isn't the best
+        at the moment (a buy under the best bid, a sell over the best ask): it's known, no alert needed (the
+        earlier one goes away all the same)."""
         if not self.shared_imported or not ticker or not price:
             return
         account = account or self.shared_account()
@@ -5395,6 +5412,13 @@ class MainWindow(QMainWindow):
             if (isinstance(a, dict) and a.get("ticker") == ticker and a.get("auto") == auto
                     and a.get("state") == "active"):
                 self.shared.put(prefix + a["id"], None)
+        bid, ask = self.best_now(ticker)
+        best = bid if buy else ask
+        if best and (price < best - 1e-9 if buy else price > best + 1e-9):
+            self.alerts_refresh()
+            self.notify(f"No alert: {ticker}'s {auto} order at {fmt_price(price)} isn't the best now "
+                        f"(the best {'bid' if buy else 'ask'} is {fmt_price(best)})", 8000)
+            return
         now = datetime.now().isoformat(timespec="seconds")
         a = {"id": f"{ticker}-{auto}-{int(time.time() * 1000)}-{secrets.token_hex(2)}", "ticker": ticker, "field": "bid" if buy else "ask",
              "cond": "ge" if buy else "le", "value": value, "state": "active", "created": now,
