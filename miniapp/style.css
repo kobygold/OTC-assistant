@@ -117,7 +117,7 @@ button { font-family: inherit; color: inherit; }
 #toast b { color: #3ddc5c; }
 .okMark { color: #1db31d; font-variant-emoji: text; }
 .l2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-family: var(--mono); font-size: 12.5px; }
-.l2row { display: grid; grid-template-columns: 12px 34px 50px minmax(0, 1fr); column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
+.l2row { display: grid; grid-template-columns: 12px 31px 47px minmax(0, 1fr); column-gap: 3px; align-items: center; padding: 3px 4px; border-radius: 3px; }
 .l2row .p { text-align: right; } .l2row .s { text-align: right; }
 .l2row.mine .mm { white-space: nowrap; overflow: visible; }      /* "Me...": over the price's empty left side */
 /* the Level II box (the Level II tab, the Ticker's): edge to edge - over the page's side padding (.cardPage's 14 px),
@@ -127,7 +127,7 @@ button { font-family: inherit; color: inherit; }
 .bookWide .boxHead { padding: 0 8px; }
 .bookWide .l2 { column-gap: 3px; }
 .bookWide .l2row { padding-left: 2px; padding-right: 2px; border-radius: 0;
-  grid-template-columns: 12px 34px 50px minmax(0, 1fr); }     /* (the price: a fixed width, left; the size: the rest;
+  grid-template-columns: 12px 31px 47px minmax(0, 1fr); }     /* (the price: a fixed width, left; the size: the rest;
                                                               every row alike, so the columns line up) */
 .dim { color: var(--dim2); font-size: 15.5px; }
 .actions { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 10px 12px; background: var(--bg); border-top: 1px solid var(--line); }
