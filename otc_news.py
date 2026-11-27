@@ -475,8 +475,9 @@ class NewsReader:
             chats = [p["chat_id"] for p in bot.phones(tail)]
             if chats:
                 head = "⚠️" if item["level"] == "warn" else "📰"
-                bot.send_to(chats, f"{head} {item['ticker']} news ({', '.join(why)}, account ...{tail})\n"
-                                   f"{item['summary']}")
+                text = f"{head} {item['ticker']} news ({', '.join(why)}, account ...{tail})\n{item['summary']}"
+                bot.remember([tail], text, item["ticker"])      # (the Mini App's Inbox too)
+                bot.send_to(chats, text)
 
     def prune(self):
         """News older than KEEP_DAYS out of the shared data (once an hour)."""
