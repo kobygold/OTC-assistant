@@ -52,6 +52,7 @@ FEE_HIGH = 7.0          # a fee above this is shown in the section titles' yello
 COVER_X = 2             # the stop: bids for at least this many times our amount of stocks
 VOL_DAYS = 30           # market days in the volume checks
 SPIKE_X = 2.0           # a day with this many times the average volume is unusual
+TRADED_DAY, DEAD_DAY = "█", "_"     # the dead days' graph (the value's tooltip): a day with trades, without
 MAX_DEAD = 15           # most days without trades in VOL_DAYS for a steady volume
 DEAD_RUN = 4            # this many last market days all without trades: not steady
 VOL_PART = 2.0          # the median volume must be at least this many times our amount of stocks
@@ -304,9 +305,17 @@ def plan(bid, ask, bids, usd=POSITION_USD, entry=None, exit=None, stop=None, fee
     return out
 
 
+def graph_tip(tip):
+    """A tooltip whose text graph line (TRADED_DAY / DEAD_DAY) is in a fixed-width font: its days evenly apart."""
+    import html
+    lines = [html.escape(line) for line in tip.split("\n")]
+    return "<br>".join(f"<span style='font-family: Consolas, monospace; font-size: 11pt;'>{line}</span>"
+                       if TRADED_DAY in line and DEAD_DAY in line and "(" not in line else line for line in lines)
+
+
 def volume_stats(rows, market_days, period):
     """(median, [unusual days], days without trades, last days in a row without trades, days without trades
-    of the last DEAD_RUN) from the
+    of the last DEAD_RUN, the days as a text graph: TRADED_DAY / DEAD_DAY each, oldest first) from the
     candles (date, open, high, low, close, volume, ...). The median is the chart's MedianVolume: the
     last `period` days with trades. Unusual days and days without trades are counted over the given
     market days. None if there are no market days."""
@@ -323,7 +332,8 @@ def volume_stats(rows, market_days, period):
             break
         run += 1
     recent = sum(1 for v in vols[-DEAD_RUN:] if not v)
-    return med, spikes, dead, run, recent
+    graph = " ".join(TRADED_DAY if v else DEAD_DAY for v in vols)     # (apart: days alike in a row easy to count)
+    return med, spikes, dead, run, recent, graph
 
 
 def target_state(key, number):
@@ -391,7 +401,7 @@ def volume_checks(rows, market_days, period, shares):
             r[key] = (UNKNOWN, "", "No candles")
         r["avg_volume"] = (UNKNOWN, NA, "No candles")
         return r
-    med, spikes, dead, run, recent = stats
+    med, spikes, dead, run, recent, graph = stats
     about = f"MedianVolume ({period}), as on the chart (its Averaging days)"
     if not shares:
         r["avg_volume"] = (UNKNOWN, fmt_volume(med), about + ". No amount of stocks to compare it with yet")
@@ -405,7 +415,9 @@ def volume_checks(rows, market_days, period, shares):
     r["steady"] = (OK if dead <= MAX_DEAD and run < DEAD_RUN else BAD, f"{dead}/{len(market_days)} ({recent}/{min(DEAD_RUN, len(market_days))})",
                    f"{dead} of {len(market_days)} market days without trades (up to {MAX_DEAD} is fine); "
                    f"{recent} of the last {DEAD_RUN}"
-                   + (f" · the last {run} market days without trades (bad from {DEAD_RUN})" if run else ""))
+                   + (f" · the last {run} market days without trades (bad from {DEAD_RUN})" if run else "")
+                   + f"\nThe last {len(market_days)} market days, oldest first ({TRADED_DAY} trades, {DEAD_DAY} none):"
+                   f"\n{graph}")
     return r
 
 
@@ -5506,6 +5518,7 @@ class ChecklistPanel(QWidget):
                 continue
             if value is not None:
                 value.setText(val)
+                value.setToolTip(graph_tip(tip) if DEAD_DAY in tip and TRADED_DAY in tip else "")
                 if item.key == "fee":
                     high = val.startswith("$") and float(val[1:]) > FEE_HIGH
                     value.setStyleSheet("color: #e3b23c;" if high else "")    # the section titles' color
