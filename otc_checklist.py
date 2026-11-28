@@ -69,8 +69,6 @@ MIN_SHARES_TIERS = ((175.0, 1), (1.0, 100), (0.51, 1_000), (0.20, 2_500), (0.10,
 LABEL_TIPS = {
     "ticker": "הטיקר שבגרף. ✘ כשהאות החמישית מסוכנת (Q, E, D, W, R)",
     "size": "גודל הפוזיציה ב-$ (ברירת המחדל מההגדרות)",
-    "shares": "כמות המניות: גודל הפוזיציה / מחיר הכניסה. ✔ מהכמות המינימלית לציטוט לפי המחיר: עד 0.0999 - 10,000;"
-              " 0.10 - 5,000; 0.20 - 2,500; 0.51 - 1,000; 1.00 - 100; 175.00 ומעלה - 1",
     "entry": "מחיר כניסה: טריפס - הביד; דאבס ומעלה - הביד + 0.0001",
     "exit": "מחיר יציאה: טריפס - האסק; דאבס ומעלה - האסק - 0.0001",
     "stop": f"כרית בטחון: מחיר יציאה שמכסה לפחות פי-{COVER_X} מכמות המניות שיש לנו",
@@ -94,6 +92,20 @@ LABEL_TIPS = {
     "steady": f"עד {MAX_DEAD} ימים בלי מסחר ב-30 הימים האחרונים, ולא {DEAD_RUN} האחרונים ברצף",
 }
 MANUAL_TIP = "לחיצה: ✔ / ✘ / ריק"
+
+
+def shares_tip():
+    """The amount of stocks' label tooltip: what it is (Hebrew), and the minimum quote size table by the price."""
+    rows = []
+    for i, (start, need) in reversed(list(enumerate(MIN_SHARES_TIERS))):
+        end = MIN_SHARES_TIERS[i - 1][0] if i else None
+        low = fmt_price(max(start, 0.0001))
+        rng = f"{low}+" if end is None else f"{low} – {fmt_price(end - (0.01 if start >= 1 else 0.0001))}"
+        rows.append(f"<tr><td>{rng}</td><td align='right'>{need:,}</td></tr>")
+    return ("<div dir='rtl'>כמות המניות: גודל הפוזיציה / מחיר הכניסה.<br>✔ מהכמות המינימלית לפי מחיר הכניסה:</div>"
+            "<table dir='ltr' cellspacing='0' cellpadding='3' border='1' style='border-collapse: collapse;'>"
+            "<tr><th align='left'>Price (Bid or Offer)</th><th align='right'>Minimum Quote Size</th></tr>"
+            + "".join(rows) + "</table>")
 
 
 def min_shares_need(price):
@@ -5536,7 +5548,8 @@ class ChecklistPanel(QWidget):
             total += 1
             passed += state in (OK, SOLVED)
         for item, mark, text, _value in self.widgets:      # (the labels' tips: short, in Hebrew)
-            tip = MANUAL_TIP if item.kind == "manual" else LABEL_TIPS.get(item.key, "")
+            tip = MANUAL_TIP if item.kind == "manual" else (shares_tip() if item.key == "shares"
+                                                            else LABEL_TIPS.get(item.key, ""))
             mark.setToolTip(tip)
             text.setToolTip(tip)
         self.summary.setText(f"{self.ticker} · {passed}/{total} ✔" if self.ticker else "")

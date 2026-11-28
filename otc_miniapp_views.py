@@ -769,7 +769,7 @@ def checklist_view(panel):
             mark, text, value = found
             m = MARK.search(mark.text() or "")
             row = {"key": item.key, "kind": item.kind, "text": text.text(), "mark": m.group(2) if m else "",
-                   "mark_color": m.group(1) if m else "", "tip": mark.toolTip() or text.toolTip(),
+                   "mark_color": m.group(1) if m else "", "tip": _tip_text(mark.toolTip() or text.toolTip()),
                    "split_before": item.key in checklist.SPLIT_BEFORE, "split_after": item.key in checklist.SPLIT_AFTER}
             box_w = getattr(panel, "boxes", {}).get(item.key)
             if box_w is not None and box_w.isHidden():
@@ -813,6 +813,18 @@ def checklist_view(panel):
             "order_lines": [ln for ln in (getattr(panel, "order_text", "") or "").split("\n") if ln] if not panel.order_label.isHidden() else [],
             "fills": {"summary": panel.fills_summary, "days": panel.fills_days} if panel.fills_summary else None,
             "sections": sections, "buttons": buttons}
+
+
+def _tip_text(tip):
+    """A label's tooltip for the phone: as it is, or a rich one (the amount of stocks' table) as plain lines - a
+    table's row a line, its cells apart."""
+    import html as h
+    import re
+    if "<" not in (tip or ""):
+        return tip
+    t = re.sub(r"</t[dh]>\s*<t[dh][^>]*>", "   ", tip)
+    t = re.sub(r"<br\s*/?>|</tr>|</div>", "\n", t)
+    return h.unescape(re.sub(r"<[^>]+>", "", t)).strip()
 
 
 def _plain_lines(html):
