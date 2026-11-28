@@ -69,7 +69,7 @@ from otc_update import Updater
 from otc_server_link import ServerLink, SharedData, set_link
 
 APP_NAME = "OTC Assistant"
-APP_VERSION = "2.7.287"
+APP_VERSION = "2.7.288"
 
 APP_DIR = Path(__file__).resolve().parent
 ORDER_LOG = APP_DIR / "order_log.txt"   # the Monitor tab's Order Log, kept between runs (this computer's)
@@ -1621,6 +1621,7 @@ class MainWindow(QMainWindow):
         # held at the close (outside the market's hours): gray, and the live values dropped first
         self.level2.held_changed.connect(self.chart.set_held)
         self.level2.reloaders_changed.connect(self.checklist.set_reloaders)
+        self.checklist.net_changed.connect(self.level2.set_net)      # the Bid's pillow
         self.level2.market_reset.connect(self.on_market_reset)
         self.level2.check_hold()
         # On the left: the favorites, each with its status in short (a double-click opens it here); it

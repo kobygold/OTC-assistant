@@ -34,7 +34,9 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QImage, QPainter, QTextDocument
+from PyQt6.QtGui import (
+    QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextDocument,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -66,6 +68,7 @@ BUYER = 5               # the sign (magenta) of CSTI / GTSM caught keeping / ref
 UNSOLICITED = {"CSTI", "GTSM"}      # the market makers watched for it (on both sides)...
 UNSOLICITED_SIZE = 10_000           # ...showing this amount
 SIGN_W = 16             # the Ask table's sign column
+NET_COLORS = {"ok": "#1db31d", "bad": "#e0404f"}      # the pillow: the checklist's ratio ✔ / ✘ (else gray)
 HOLD_CHECK_MS = 2000    # how often the market's hours are looked at (the hold starts / ends on time)
 RELOAD_CHECK_MS = 60_000    # how often the shown ticker's record is looked at for reloaders, in the session
 MARKET_LOG = Path(__file__).resolve().parent / "market_log"     # the server's record (otc_recorder)
@@ -289,6 +292,45 @@ class ElidedLabel(QLabel):
                         if self.fontMetrics().horizontalAdvance(self.full) > room else self.full)
 
 
+def pillow_icon(color: str) -> QIcon:
+    """A pillow (the checklist's safety net), in this color."""
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()           # a cushion: its sides pinched in, its corners sticking out
+    path.moveTo(1, 3)
+    path.quadTo(16, 8, 31, 3)
+    path.quadTo(27, 16, 31, 29)
+    path.quadTo(16, 24, 1, 29)
+    path.quadTo(5, 16, 1, 3)
+    p.setPen(QPen(QColor(color).darker(150), 1.5))
+    p.setBrush(QColor(color))
+    p.drawPath(path)
+    p.setPen(QPen(QColor(255, 255, 255, 110), 1.5))     # a seam
+    seam = QPainterPath()
+    seam.moveTo(7, 10)
+    seam.quadTo(16, 13, 25, 10)
+    p.drawPath(seam)
+    p.end()
+    icon = QIcon(pix)
+    icon.addPixmap(pix, QIcon.Mode.Selected)
+    return icon
+
+
+def pair_icon(left: QIcon, right: QIcon) -> QIcon:
+    """Two signs side by side (the wide sign column)."""
+    pix = QPixmap(68, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.drawPixmap(0, 0, left.pixmap(32, 32))
+    p.drawPixmap(36, 0, right.pixmap(32, 32))
+    p.end()
+    icon = QIcon(pix)
+    icon.addPixmap(pix, QIcon.Mode.Selected)
+    return icon
+
+
 class Level2Panel(QWidget):
     live_quote = pyqtSignal(str, dict)            # ticker, Level 1 fields: for the chart's price and volume tags
     book_changed = pyqtSignal(str, list, list)    # ticker, bids, asks, as shown
@@ -333,6 +375,7 @@ class Level2Panel(QWidget):
         self.close_info = None                 # the shown ticker's close (the server's answer), when held
         self.reloaders = {}                    # yellow market maker -> its reload events (the shown ticker)
         self.buyers = {}                       # "BID" / "ASK" -> {CSTI / GTSM: its events} (the shown ticker)
+        self.net = ("", None, "")             # the checklist's (ticker, safety net, ratio state): the Bid's pillow
         self.market_log = MARKET_LOG
         self.live_q = {}                       # the shown ticker's latest streamed quote and book
         self.live_book = ([], [])
@@ -427,7 +470,9 @@ class Level2Panel(QWidget):
             hdr.resizeSection(0, SIGN_W)
             t.setIconSize(QSize(SIGN_W - 4, SIGN_W - 4))
             t.horizontalHeaderItem(0).setToolTip(
-                "Magenta: Probably Unsolicited Stock (CSTI / GTSM keeps or refills its 10,000 while it's sold to)."
+                "Pillow: the checklist's safety net (green: the profit-to-loss ratio reaches its target, red: it "
+                "doesn't). Magenta: Probably Unsolicited Stock (CSTI / GTSM keeps or refills its 10,000 while it's "
+                "sold to)."
                 if bid else "Red: a Dilutive Market Maker. Yellow: might sometimes be a Dilutive Market Maker. "
                             "Magenta: Probably Unsolicited Stock (CSTI / GTSM keeps or refills its 10,000 while it's "
                             "bought from).")
@@ -831,6 +876,21 @@ class Level2Panel(QWidget):
         # without my rows: the chart and the checklist count only the market's
         self.book_changed.emit(ticker, bids, asks)
 
+    def set_net(self, ticker, price, state):
+        """The checklist's safety net and its profit-to-loss ratio's state (ok / bad / else): the Bid's pillow."""
+        net = (ticker, price, state)
+        if net != self.net:
+            self.net = net
+            if ticker == self.ticker:
+                self.refresh_mine()
+
+    def net_row(self, rows):
+        """The Bid row for the pillow: the first of the market's at or below the checklist's safety net."""
+        ticker, price, _state = self.net
+        if ticker != self.ticker or price is None:
+            return None
+        return next((r for r, row in enumerate(rows) if not row[4] and row[1] <= price + 1e-12), None)
+
     def refresh_mine(self):
         """Fills the tables again: the book with my open orders' rows (after an order changed)."""
         bids, asks = self.shown_book
@@ -868,6 +928,14 @@ class Level2Panel(QWidget):
         self.shown_rows[side] = list(rows)
         prev, trend = self.prev[side], self.trend[side]
         table.setRowCount(len(rows))
+        net_at = self.net_row(rows) if side == "BID" else None
+        seen = self.buyers.get(side, {})
+        both = net_at is not None and rows[net_at][0] in seen and BUYER in self.mm_icons
+        # the sign column: twice as wide only while a row has both signs (the pillow and the magenta)
+        width = 2 * SIGN_W - 2 if both else SIGN_W
+        if table.horizontalHeader().sectionSize(0) != width:
+            table.horizontalHeader().resizeSection(0, width)
+            table.setIconSize(QSize(width - 4, SIGN_W - 4))
         for r, (mm, price, size, level, mine) in enumerate(rows):
             # Size colored by its last change, as in thinkorswim: green up, red down
             if not mine and not self.held:
@@ -890,10 +958,17 @@ class Level2Panel(QWidget):
                     sign.setIcon(self.mm_icons[risk])
                     sign.setToolTip(MM_TIPS[risk] if risk < 3 else
                                     f"{MM_TIPS[risk]}\n\n{reload_text(self.reloaders[mm])}")
-            seen = self.buyers.get(side, {})
             if not mine and not sign.toolTip() and mm in seen and BUYER in self.mm_icons:
                 sign.setIcon(self.mm_icons[BUYER])          # (magenta: CSTI / GTSM keeping its 10,000)
                 sign.setToolTip(unsolicited_tip(seen[mm], side))
+            if r == net_at:         # the checklist's safety net: a pillow, beside the magenta sign when both
+                _t, net, state = self.net
+                pillow = pillow_icon(NET_COLORS.get(state, "#8a8a8a"))
+                tip = (f"The checklist's safety net: {fmt_price(net)}\n"
+                       + {"ok": "Green: the profit-to-loss ratio reaches its target",
+                          "bad": "Red: the profit-to-loss ratio doesn't reach its target"}.get(state, "The ratio isn't known"))
+                sign.setIcon(pair_icon(pillow, sign.icon()) if sign.toolTip() else pillow)
+                sign.setToolTip(f"{tip}\n\n{sign.toolTip()}" if sign.toolTip() else tip)
             cells.insert(0, sign)
             first = 1
             for col, item in enumerate(cells):

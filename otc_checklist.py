@@ -3842,6 +3842,7 @@ class ChecklistPanel(QWidget):
     ticks_changed = pyqtSignal()
     _fills_done = pyqtSignal(object, object)    # (from the reading thread) the fill chances' inputs, (rows, summary)
     fee_changed = pyqtSignal(str)       # a ticker's fee read from Schwab (the chart's yellow bar when high)
+    net_changed = pyqtSignal(str, object, str)  # ticker, the safety net (or None), the ratio's OK / BAD / UNKNOWN
 
     def __init__(self, path: Path, settings: dict, save_settings, token_path: Path = None, parent=None, share=None):
         """share: the app's checklist panel, for a hidden copy of it (the Mini App's checklist of any ticker): the
@@ -5554,3 +5555,15 @@ class ChecklistPanel(QWidget):
             text.setToolTip(tip)
         self.summary.setText(f"{self.ticker} · {passed}/{total} ✔" if self.ticker else "")
         self.score = (passed, total)        # Buy ATM asks first when not all are ✔
+        self.send_net()
+
+    def send_net(self):
+        """The safety net and the profit-to-loss ratio's state (as the ratio's color here): Level II's pillow."""
+        p = self.last_plan[0] if self.ticker and getattr(self, "last_plan", None) else {}
+        state = target_state("ratio", p.get("ratio"))[0] if p else UNKNOWN
+        if p and p.get("ratio") is None and p.get("loss") == 0 and (p.get("profit") or 0) > 0:
+            state = OK              # (no loss at all, and a profit)
+        net = (self.ticker or "", p.get("stop"), state)
+        if net != getattr(self, "net_sent", None):
+            self.net_sent = net
+            self.net_changed.emit(*net)
