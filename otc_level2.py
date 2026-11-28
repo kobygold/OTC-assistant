@@ -964,7 +964,7 @@ class Level2Panel(QWidget):
             if r == net_at:         # the checklist's safety net: a pillow, beside the magenta sign when both
                 _t, _net, state = self.net
                 pillow = pillow_icon(NET_COLORS.get(state, "#8a8a8a"))
-                tip = {"ok": "safety-net loss < 1/3", "bad": "safety-net loss >= 1/3"}.get(
+                tip = {"ok": "safety-net loss < 1:3", "bad": "safety-net loss >= 1:3"}.get(
                     state, "safety-net loss: unknown")
                 sign.setIcon(pair_icon(pillow, sign.icon()) if sign.toolTip() else pillow)
                 sign.setToolTip(f"{tip}\n\n{sign.toolTip()}" if sign.toolTip() else tip)
