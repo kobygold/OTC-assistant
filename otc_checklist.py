@@ -63,12 +63,14 @@ EDITABLE = ("size", "entry", "exit", "stop")     # info values that can be typed
 # Info values with a mark too: a ✔ once they reach their target (profit in %, ratio as 1:X)
 TARGETS = {"profit": 25.0, "ratio": 3.0}
 FEE_SIGN_USD = 7.0      # a fee above this: the yellow sign beside the ticker (the red one, dangerous, comes first)
-MIN_SHARES, MIN_SHARES_PENNY = 10_000, 5_000     # the least amount of stocks (Pennies: an entry of 0.01 and up)
+# the least amount of stocks by the entry price (the minimum quote size): (price from, stocks), highest first
+MIN_SHARES_TIERS = ((175.0, 1), (1.0, 100), (0.51, 1_000), (0.20, 2_500), (0.10, 5_000), (0.0, 10_000))
 # the lines' tooltips (their label and mark): short, in Hebrew, by the item's key
 LABEL_TIPS = {
     "ticker": "הטיקר שבגרף. ✘ כשהאות החמישית מסוכנת (Q, E, D, W, R)",
     "size": "גודל הפוזיציה ב-$ (ברירת המחדל מההגדרות)",
-    "shares": f"כמות המניות: גודל הפוזיציה / מחיר הכניסה. ✔ מ-{MIN_SHARES:,} (פני: מ-{MIN_SHARES_PENNY:,})",
+    "shares": "כמות המניות: גודל הפוזיציה / מחיר הכניסה. ✔ מהכמות המינימלית לציטוט לפי המחיר: עד 0.0999 - 10,000;"
+              " 0.10 - 5,000; 0.20 - 2,500; 0.51 - 1,000; 1.00 - 100; 175.00 ומעלה - 1",
     "entry": "מחיר כניסה: טריפס - הביד; דאבס ומעלה - הביד + 0.0001",
     "exit": "מחיר יציאה: טריפס - האסק; דאבס ומעלה - האסק - 0.0001",
     "stop": f"כרית בטחון: מחיר יציאה שמכסה לפחות פי-{COVER_X} מכמות המניות שיש לנו",
@@ -94,14 +96,23 @@ LABEL_TIPS = {
 MANUAL_TIP = "לחיצה: ✔ / ✘ / ריק"
 
 
+def min_shares_need(price):
+    """(the least amount of stocks, the price range's text) at this price: the minimum quote size."""
+    for i, (start, need) in enumerate(MIN_SHARES_TIERS):
+        if price >= start - 1e-9:
+            end = MIN_SHARES_TIERS[i - 1][0] if i else None
+            return need, (f"{fmt_price(start)} and up" if end is None else
+                          f"{fmt_price(max(start, 0.0001))} to {fmt_price(end - (0.01 if start >= 1 else 0.0001))}")
+    return MIN_SHARES_TIERS[-1][1], ""
+
+
 def min_shares_check(shares, entry):
-    """(state, value, tip): the amount of stocks is at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
+    """(state, value, tip): the amount of stocks is at least the minimum quote size at the entry price."""
     if not shares or not entry:
         return UNKNOWN, NA, "No amount of stocks yet"
-    need = MIN_SHARES_PENNY if entry >= 0.01 else MIN_SHARES
-    why = "a Penny (0.01 and up)" if entry >= 0.01 else "under 0.01"
+    need, why = min_shares_need(entry)
     return (OK if shares >= need else BAD, f"{shares:,}",
-            f"At least {need:,} stocks (an entry of {fmt_price(entry)}: {why})"
+            f"At least {need:,} stock{'s' if need > 1 else ''} (an entry of {fmt_price(entry)}: {why})"
             + ("" if shares >= need else f": {need - shares:,} short"))
 # Once Buy ATM was pressed these show the plan sent, fixed, in a cell of their own. Entry and size
 # show only that; the others keep a live cell beside it (exit and stop typed or automatic, as before
@@ -5380,7 +5391,7 @@ class ChecklistPanel(QWidget):
             passed += st == OK
 
         def shares_mark(mark, text):
-            """The amount of stocks' mark: at least MIN_SHARES (Pennies: MIN_SHARES_PENNY)."""
+            """The amount of stocks' mark: at least the minimum quote size at the entry (MIN_SHARES_TIERS)."""
             nonlocal passed, total
             st, _v, why = results.get("min_shares", (UNKNOWN, "", ""))
             set_mark(mark, st)
