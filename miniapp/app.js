@@ -253,12 +253,15 @@ function renderCard(view) {
 }
 function renderBook(book) {
   if (!book) return "";
-  const side = (rows, ask) => rows.slice(0, 12).map(r => `<div class="l2row${r.mine ? " mine" : ""}" style="background:${esc(r.bg)};color:${esc(r.fg || "#e3b23c")}"${r.tip ? ` data-tip="${esc(r.tip)}"` : ""}>` +
-    (`<span class="sign">${r.sign ? `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(r.sign.tip)}"><circle cx="6" cy="6" r="4.6" fill="${esc(r.sign.color)}" stroke="${esc(r.sign.ring || r.sign.color)}" stroke-width="1.6"/></svg>` : ""}</span>`) +
+  // the sign column: the checklist's safety net (a pillow), the market maker's sign; twice as wide only while a
+  // row has both
+  const pillow = n => `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(n.tip)}"><path d="M0.6 1.2Q6 3 11.4 1.2Q9.9 6 11.4 10.8Q6 9 0.6 10.8Q2.1 6 0.6 1.2Z" fill="${esc(n.color)}" stroke="rgba(0,0,0,.35)" stroke-width="0.6"/></svg>`;
+  const side = (rows, ask) => rows.slice(0, 12).map(r => `<div class="l2row${r.mine ? " mine" : ""}" style="background:${esc(r.bg)};color:${esc(r.fg || "#e3b23c")}"${r.tip || r.net ? ` data-tip="${esc([r.net && r.net.tip, r.tip || (r.net && r.sign && r.sign.tip)].filter(Boolean).join("\n\n"))}"` : ""}>` +
+    (`<span class="sign">${r.net ? pillow(r.net) : ""}${r.sign ? `<svg width="11" height="11" viewBox="0 0 12 12" role="img" aria-label="${esc(r.sign.tip)}"><circle cx="6" cy="6" r="4.6" fill="${esc(r.sign.color)}" stroke="${esc(r.sign.ring || r.sign.color)}" stroke-width="1.6"/></svg>` : ""}</span>`) +
     `<span class="mm">${esc(r.mm)}</span><span class="p">${esc(r.price)}</span><span class="s" style="color:${r.trend > 0 ? "#1db31d" : r.trend < 0 ? "#e0404f" : esc(r.fg || "#e3b23c")}">${esc(r.size)}</span></div>`).join("");
   // (bookWide: edge to edge, the two sides close together - room for big sizes; the Level II tab and the Ticker's)
   return `<div class="box bookWide"><div class="boxHead"><b>Level II</b>${book.note ? `<span class="l2note">${esc(book.note)}</span>` : ""}</div><div class="l2">` +
-    `<div class="bids">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
+    `<div class="bids${book.bids.some(r => r.net && r.sign) ? " twoSigns" : ""}">${side(book.bids, false) || `<div class="dim">No bids</div>`}</div><div>${side(book.asks, true) || `<div class="dim">No asks</div>`}</div></div></div>`;
 }
 
 // the checklist's ✔ and ✘ drawn in their color (as text, phones draw ✔ as a gray emoji)

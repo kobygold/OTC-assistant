@@ -570,7 +570,7 @@ class MiniViews(QObject):
     def card(self, account, ticker):
         from otc_chart import GOLD, HELD, HELD_LEVELS, LEVEL_COLORS
         from otc_daily_gui import RISK_COLORS, ticker_risk
-        from otc_level2 import BUYER, MINE, MM_TIPS, Level2Panel, mm_risk, unsolicited_tip
+        from otc_level2 import BUYER, MINE, MM_TIPS, NET_COLORS, Level2Panel, mm_risk, net_tip, unsolicited_tip
         w = self.win
         panel = self.panel_for(ticker)
         q, bids, asks, note = self.market(ticker)
@@ -583,9 +583,16 @@ class MiniViews(QObject):
         orders = panel.atm.chart_orders(ticker) if account == panel.atm.chosen_account() else []
         shades = HELD_LEVELS if held else LEVEL_COLORS
 
+        # the checklist's safety net: a pillow on the first Bid row of the market's at or below it (green / red by
+        # the profit-to-loss ratio), as the desktop's Level II
+        net_ticker, net, net_state = getattr(panel, "net_sent", None) or ("", None, "")
+
         def book(rows, side):
             out = []
-            for mm, price, size, level, mine in Level2Panel._with_mine(rows, orders, side):
+            rows = Level2Panel._with_mine(rows, orders, side)
+            net_at = (next((r for r, row in enumerate(rows) if not row[4] and row[1] <= net + 1e-12), None)
+                      if side == "BID" and net_ticker == ticker and net is not None else None)
+            for r, (mm, price, size, level, mine) in enumerate(rows):
                 size_trend = 0 if held or mine else self.sizes.get((ticker, side, mm), (0, 0))[1]
                 row = {"mm": mm, "price": fmt_price(price), "size": f"{size:,}",
                        "bg": MINE if mine else shades[min(level, len(shades) - 1)],
@@ -602,6 +609,8 @@ class MiniViews(QObject):
                     elif mm in seen:        # (CSTI / GTSM keeping its 10,000: "Probably Unsolicited Stock", magenta)
                         row["sign"] = {"level": BUYER, "color": RISK_COLORS[BUYER][0], "ring": "",
                                        "tip": unsolicited_tip(seen[mm], side)}
+                    if r == net_at:
+                        row["net"] = {"color": NET_COLORS.get(net_state, "#8a8a8a"), "tip": net_tip(net_state)}
                 out.append(row)
             return out
         e = panel.order()

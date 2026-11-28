@@ -133,6 +133,8 @@ button { font-family: inherit; color: inherit; }
 .bookWide .l2row { padding-left: 2px; padding-right: 2px; border-radius: 0;
   grid-template-columns: 12px 38px 48px minmax(0, 1fr); }     /* (the price: a fixed width, left; the size: the rest;
                                                               every row alike, so the columns line up) */
+.l2row .sign { display: flex; gap: 1px; }
+.l2 .twoSigns .l2row { grid-template-columns: 23px 38px 48px minmax(0, 1fr); }   /* (a pillow and a sign: both) */
 .dim { color: var(--dim2); font-size: 15.5px; }
 .actions { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 10px 12px; background: var(--bg); border-top: 1px solid var(--line); }
 .actions button { height: 48px; border-radius: 12px; border: none; font-size: 18px; font-weight: 700; }

@@ -292,6 +292,11 @@ class ElidedLabel(QLabel):
                         if self.fontMetrics().horizontalAdvance(self.full) > room else self.full)
 
 
+def net_tip(state):
+    """The pillow's tooltip, by the checklist's profit-to-loss ratio (ok: green, bad: red)."""
+    return {"ok": "safety-net loss < 1:3", "bad": "safety-net loss >= 1:3"}.get(state, "safety-net loss: unknown")
+
+
 def pillow_icon(color: str) -> QIcon:
     """A pillow (the checklist's safety net), in this color."""
     pix = QPixmap(32, 32)
@@ -964,8 +969,7 @@ class Level2Panel(QWidget):
             if r == net_at:         # the checklist's safety net: a pillow, beside the magenta sign when both
                 _t, _net, state = self.net
                 pillow = pillow_icon(NET_COLORS.get(state, "#8a8a8a"))
-                tip = {"ok": "safety-net loss < 1:3", "bad": "safety-net loss >= 1:3"}.get(
-                    state, "safety-net loss: unknown")
+                tip = net_tip(state)
                 sign.setIcon(pair_icon(pillow, sign.icon()) if sign.toolTip() else pillow)
                 sign.setToolTip(f"{tip}\n\n{sign.toolTip()}" if sign.toolTip() else tip)
             cells.insert(0, sign)
