@@ -962,11 +962,10 @@ class Level2Panel(QWidget):
                 sign.setIcon(self.mm_icons[BUYER])          # (magenta: CSTI / GTSM keeping its 10,000)
                 sign.setToolTip(unsolicited_tip(seen[mm], side))
             if r == net_at:         # the checklist's safety net: a pillow, beside the magenta sign when both
-                _t, net, state = self.net
+                _t, _net, state = self.net
                 pillow = pillow_icon(NET_COLORS.get(state, "#8a8a8a"))
-                tip = (f"The checklist's safety net: {fmt_price(net)}\n"
-                       + {"ok": "Green: the profit-to-loss ratio reaches its target",
-                          "bad": "Red: the profit-to-loss ratio doesn't reach its target"}.get(state, "The ratio isn't known"))
+                tip = {"ok": "safety-net loss < 1/3", "bad": "safety-net loss >= 1/3"}.get(
+                    state, "safety-net loss: unknown")
                 sign.setIcon(pair_icon(pillow, sign.icon()) if sign.toolTip() else pillow)
                 sign.setToolTip(f"{tip}\n\n{sign.toolTip()}" if sign.toolTip() else tip)
             cells.insert(0, sign)
